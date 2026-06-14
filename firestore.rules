@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserData(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && 
+        (
+          request.auth.token.email == 'pegyirenyi@gmail.com' || 
+          request.auth.token.email == 'admin@ges.edu' || 
+          request.auth.token.email == 'headteacher@ges.edu'
+        );
+    }
+
+    function isUserRole(role) {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData(request.auth.uid).role == role;
+    }
+
+    function isAdminOrHead() {
+      return isBootstrappedAdmin() || isUserRole('Admin') || isUserRole('Headteacher');
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_ \\-.()]+$');
+    }
+
+    // Schools access (Public read, Admin/Head write)
+    match /schools/{schoolId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(schoolId);
+    }
+
+    // Students access (Admin/Head full access)
+    match /students/{studentId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(studentId);
+    }
+
+    // Teachers access (Admin/Head full access)
+    match /teachers/{teacherId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(teacherId);
+    }
+
+    // Attendance access (Admin/Head full access)
+    match /attendance/{recordId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(recordId);
+    }
+
+    // Assessments access (Admin/Head full access)
+    match /assessments/{assessmentId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(assessmentId);
+    }
+
+    // Fees access (Admin/Head full access)
+    match /fees/{feeId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(feeId);
+    }
+
+    // Users credentials registry access (User can read and write their own or Admin can write)
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && (request.auth.uid == userId || isUserRole('Admin')) && isValidId(userId);
+    }
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "entities": {
+    "SchoolInfo": {
+      "title": "SchoolInfo",
+      "description": "Profile information for the school setup",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "motto": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "schoolNumber": { "type": "string" },
+        "emisCode": { "type": "string" },
+        "gpsAddress": { "type": "string" },
+        "schoolType": { "type": "string", "enum": ["Public", "Private"] },
+        "headteacherName": { "type": "string" },
+        "telephone": { "type": "string" },
+        "email": { "type": "string" },
+        "qualifications": { "type": "string" },
+        "highestAcademicQualifications": { "type": "string" },
+        "district": { "type": "string" },
+        "circuit": { "type": "string" }
+      },
+      "required": ["id", "name", "schoolType", "headteacherName"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Profile information for an enrolled student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "firstName": { "type": "string" },
+        "middleName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "class": { "type": "string" },
+        "gender": { "type": "string", "enum": ["Male", "Female"] },
+        "dateOfBirth": { "type": "string" },
+        "placeOfBirth": { "type": "string" },
+        "status": { "type": "string", "enum": ["Day", "Boarder"] },
+        "section": { "type": "string", "enum": ["Faith", "Harmony", "Humility", "Peace"] },
+        "nationality": { "type": "string" },
+        "guardianName": { "type": "string" },
+        "guardianTelephone": { "type": "string" },
+        "guardianOccupation": { "type": "string" },
+        "residentialAddress": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "firstName", "lastName", "class", "gender", "dateOfBirth", "section", "status"]
+    },
+    "Teacher": {
+      "title": "Teacher",
+      "description": "Profile information for a school teacher",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "firstName": { "type": "string" },
+        "middleName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "gender": { "type": "string", "enum": ["Male", "Female"] },
+        "dateOfBirth": { "type": "string" },
+        "placeOfBirth": { "type": "string" },
+        "subjectsTaught": { "type": "string" },
+        "professionalQualifications": { "type": "string" },
+        "highestAcademicQualifications": { "type": "string" },
+        "rank": { "type": "string" },
+        "dateOfFirstAppointment": { "type": "string" },
+        "dateOfPostingToCurrentStation": { "type": "string" },
+        "staffId": { "type": "string" },
+        "ntcNumber": { "type": "string" },
+        "ssnitNumber": { "type": "string" },
+        "district": { "type": "string" },
+        "circuit": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "firstName", "lastName", "gender", "staffId", "rank"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily attendance mark for a student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "class": { "type": "string" },
+        "status": { "type": "string", "enum": ["Present", "Holiday", "Absent"] }
+      },
+      "required": ["id", "date", "studentId", "class", "status"]
+    },
+    "StudentAssessment": {
+      "title": "StudentAssessment",
+      "description": "Academic scores and remarks for a student in a subject",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "class": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "term": { "type": "string" },
+        "subject": { "type": "string" },
+        "exercises": { "type": "array" },
+        "tests": { "type": "array" },
+        "projectWork": { "type": "number" },
+        "groupWork": { "type": "number" },
+        "classScoreTotal": { "type": "number" },
+        "classScore50": { "type": "number" },
+        "examScore100": { "type": "number" },
+        "examScore50": { "type": "number" },
+        "totalScore": { "type": "number" },
+        "gradeLevel": { "type": "string", "enum": ["L1", "L2", "L3", "L4", "L5"] },
+        "remarks": { "type": "string" },
+        "position": { "type": "number" },
+        "teacherRemarks": { "type": "string" }
+      },
+      "required": ["id", "studentId", "class", "academicYear", "term", "subject", "totalScore", "gradeLevel"]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Role-assigned user profile mapping to login state",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["Admin", "Headteacher"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "name", "role"]
+    },
+    "StudentFeeBill": {
+      "title": "StudentFeeBill",
+      "description": "Record of student fee bills and historical payment installments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "class": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "term": { "type": "string" },
+        "schoolFees": { "type": "number" },
+        "utilityBill": { "type": "number" },
+        "sportsFees": { "type": "number" },
+        "ptaDues": { "type": "number" },
+        "otherFee": { "type": "number" },
+        "otherFeeDescription": { "type": "string" },
+        "payments": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "studentId", "class", "academicYear", "term"]
+    }
+  },
+  "firestore": {
+    "/schools/{schoolId}": {
+      "schema": "SchoolInfo",
+      "description": "Collection hosting general school metadata"
+    },
+    "/students/{studentId}": {
+      "schema": "Student",
+      "description": "Database registers of student personal profiles"
+    },
+    "/teachers/{teacherId}": {
+      "schema": "Teacher",
+      "description": "Database registers of educator professional profiles"
+    },
+    "/attendance/{recordId}": {
+      "schema": "AttendanceRecord",
+      "description": "Persistent attendance records by student-date"
+    },
+    "/assessments/{assessmentId}": {
+      "schema": "StudentAssessment",
+      "description": "Enforcement sheets of student academic scores, curriculum rankings, remarks, and positions"
+    },
+    "/users/{userId}": {
+      "schema": "UserAccount",
+      "description": "Credentials reference index holding roles for Admins and Headteachers"
+    },
+    "/fees/{feeId}": {
+      "schema": "StudentFeeBill",
+      "description": "Student fee bills and historical payment installments details"
+    }
+  }
+}

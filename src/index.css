@@ -1,0 +1,365 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+/* Print CSS Styles to support beautiful report card and profile printouts */
+@media print {
+  body {
+    background-color: white !important;
+    color: black !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .shadow-md, .shadow-lg, .shadow-sm {
+    box-shadow: none !important;
+  }
+  .rounded-lg, .rounded-xl, .rounded-2xl {
+    border-radius: 0 !important;
+  }
+  .border {
+    border: 1px solid #ddd !important;
+  }
+}
+
+/* Animations and extra custom styles */
+.fade-in {
+  animation: fadeIn 0.4s ease-out forwards;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ==========================================================================
+   Crystal Glass Theme (Elegant, Glassmorphism, Catching Typography)
+   ========================================================================== */
+
+.theme-crystal-glass {
+  background: radial-gradient(circle at 50% 50%, rgba(224, 242, 254, 0.4) 0%, rgba(238, 242, 255, 0.35) 50%, rgba(245, 243, 255, 0.5) 100%), #f8fafc !important;
+  color: #1e293b !important;
+}
+
+/* Glass panel background for card and containers */
+.theme-crystal-glass .bg-white,
+.theme-crystal-glass div.bg-white,
+.theme-crystal-glass form.bg-white,
+.theme-crystal-glass div.bg-slate-50,
+.theme-crystal-glass select.bg-white,
+.theme-crystal-glass table.bg-white,
+.theme-crystal-glass .bg-slate-50\/70 {
+  background-color: rgba(255, 255, 255, 0.45) !important;
+  backdrop-filter: blur(12px) saturate(125%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.6) !important;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Translucent Header */
+.theme-crystal-glass header {
+  background: rgba(15, 23, 42, 0.85) !important;
+  backdrop-filter: blur(12px) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Tab Ribbon - Translucent and Elegant */
+.theme-crystal-glass nav#module-tabs-ribbon {
+  background-color: rgba(255, 255, 255, 0.5) !important;
+  backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.02) !important;
+}
+
+/* Fonts styling */
+.theme-crystal-glass h1,
+.theme-crystal-glass h2,
+.theme-crystal-glass h3,
+.theme-crystal-glass h4 {
+  font-family: 'Space Grotesk', sans-serif !important;
+  letter-spacing: -0.025em !important;
+  font-weight: 700 !important;
+  color: #0f172a !important;
+}
+
+/* Exaggerating subheaders and badges with modern style */
+.theme-crystal-glass label {
+  font-family: 'Inter', sans-serif !important;
+  font-weight: 600 !important;
+  font-size: 11px !important;
+  letter-spacing: 0.025em !important;
+  color: #475569 !important;
+}
+
+/* Light border highlights */
+.theme-crystal-glass .border,
+.theme-crystal-glass .border-slate-200,
+.theme-crystal-glass .border-slate-100,
+.theme-crystal-glass .border-slate-350 {
+  border-color: rgba(226, 232, 240, 0.7) !important;
+}
+
+.theme-crystal-glass input:not([type="checkbox"]):not([type="radio"]),
+.theme-crystal-glass select,
+.theme-crystal-glass textarea {
+  background-color: rgba(255, 255, 255, 0.6) !important;
+  backdrop-filter: blur(6px) !important;
+  border: 1px solid rgba(203, 213, 225, 0.8) !important;
+  border-radius: 10px !important;
+  color: #0f172a !important;
+}
+
+.theme-crystal-glass input:focus,
+.theme-crystal-glass select:focus {
+  border-color: #0284c7 !important;
+  background-color: rgba(255, 255, 255, 0.85) !important;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1) !important;
+}
+
+/* Table rows styling */
+.theme-crystal-glass tbody tr {
+  border-bottom: 1px solid rgba(226, 232, 240, 0.5) !important;
+}
+
+.theme-crystal-glass tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.45) !important;
+}
+
+/* ==========================================================================
+   Sophisticated Dark Theme Overrides
+   ========================================================================== */
+
+/* Root backgrounds */
+.theme-sophisticated-dark {
+  background-color: #020617 !important;
+  color: #cbd5e1 !important;
+}
+
+/* Containers (Cards, tabs, ribbons, headers) */
+.theme-sophisticated-dark header {
+  background-color: #0f172a !important; /* Secondary Panel BG */
+  border-bottom: 1px solid #1e293b !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.4) !important;
+}
+
+.theme-sophisticated-dark nav#module-tabs-ribbon {
+  background-color: #0f172a !important;
+  border-color: #1e293b !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* Target anything inside theme wrapper that has bg-white or slate-50 */
+.theme-sophisticated-dark .bg-white,
+.theme-sophisticated-dark div.bg-white,
+.theme-sophisticated-dark form.bg-white,
+.theme-sophisticated-dark div.bg-slate-50,
+.theme-sophisticated-dark select.bg-white {
+  background-color: #0f172a !important;
+  color: #cbd5e1 !important;
+}
+
+/* Modals backdrop & internal container */
+.theme-sophisticated-dark .bg-black\/50,
+.theme-sophisticated-dark .bg-slate-900\/40,
+.theme-sophisticated-dark .bg-black\/40 {
+  background-color: rgba(2, 6, 23, 0.75) !important;
+  backdrop-filter: blur(4px) !important;
+}
+
+/* All borders */
+.theme-sophisticated-dark .border,
+.theme-sophisticated-dark .border-slate-200,
+.theme-sophisticated-dark .border-slate-100,
+.theme-sophisticated-dark .border-slate-300,
+.theme-sophisticated-dark .border-blue-100,
+.theme-sophisticated-dark .border-emerald-100,
+.theme-sophisticated-dark .border-rose-100,
+.theme-sophisticated-dark .border-[#e2e8f0],
+.theme-sophisticated-dark .border-t,
+.theme-sophisticated-dark .border-b,
+.theme-sophisticated-dark .border-r,
+.theme-sophisticated-dark .border-l {
+  border-color: #1e293b !important;
+}
+
+/* Text coloring overrides to preserve visual hierarchies in dark mode */
+.theme-sophisticated-dark .text-slate-800,
+.theme-sophisticated-dark .text-slate-700,
+.theme-sophisticated-dark .text-slate-950,
+.theme-sophisticated-dark h1,
+.theme-sophisticated-dark h2,
+.theme-sophisticated-dark h3,
+.theme-sophisticated-dark h4,
+.theme-sophisticated-dark h5,
+.theme-sophisticated-dark h6,
+.theme-sophisticated-dark .font-bold {
+  color: #f8fafc !important;
+}
+
+/* Special white text preservation on brand header, badges or highlighted titles */
+.theme-sophisticated-dark header h1,
+.theme-sophisticated-dark header span,
+.theme-sophisticated-dark h1.text-white,
+.theme-sophisticated-dark h2.text-white,
+.theme-sophisticated-dark h3.text-white,
+.theme-sophisticated-dark button.text-white,
+.theme-sophisticated-dark .text-white {
+  color: #ffffff !important;
+}
+
+.theme-sophisticated-dark .text-slate-900 {
+  color: #cbd5e1 !important;
+}
+
+.theme-sophisticated-dark .text-slate-600,
+.theme-sophisticated-dark .text-slate-500,
+.theme-sophisticated-dark .text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+/* Secondary bg highlights */
+.theme-sophisticated-dark .bg-slate-50,
+.theme-sophisticated-dark div.bg-slate-50,
+.theme-sophisticated-dark tr.bg-slate-50,
+.theme-sophisticated-dark .bg-slate-100 {
+  background-color: #1e293b !important;
+  color: #e2e8f0 !important;
+}
+
+/* Ribbon Tab hover states */
+.theme-sophisticated-dark nav#module-tabs-ribbon button:not(.bg-indigo-600):not(.bg-blue-600):not(.bg-emerald-600):not(.bg-rose-600):not(.bg-purple-600):not(.bg-amber-600) {
+  color: #94a3b8 !important;
+  background-color: transparent !important;
+}
+
+.theme-sophisticated-dark nav#module-tabs-ribbon button:not(.bg-indigo-600):not(.bg-blue-600):not(.bg-emerald-600):not(.bg-rose-600):not(.bg-purple-600):not(.bg-amber-600):hover {
+  background-color: #1e293b !important;
+  color: #f1f5f9 !important;
+}
+
+/* Inputs and Select fields overrides */
+.theme-sophisticated-dark input:not([type="checkbox"]):not([type="radio"]),
+.theme-sophisticated-dark select,
+.theme-sophisticated-dark textarea {
+  background-color: #020617 !important;
+  border: 1px solid #334155 !important;
+  color: #f1f5f9 !important;
+}
+
+.theme-sophisticated-dark input:not([type="checkbox"]):not([type="radio"]):focus,
+.theme-sophisticated-dark select:focus,
+.theme-sophisticated-dark textarea:focus {
+  border-color: #6366f1 !important;
+  outline: none !important;
+}
+
+/* Tables style details */
+.theme-sophisticated-dark table {
+  border-collapse: collapse !important;
+}
+
+.theme-sophisticated-dark thead tr {
+  background-color: #020617 !important;
+}
+
+.theme-sophisticated-dark thead th {
+  color: #94a3b8 !important;
+  border-bottom: 2px solid #1e293b !important;
+}
+
+.theme-sophisticated-dark tbody tr {
+  border-bottom: 1px solid #1e293b !important;
+}
+
+.theme-sophisticated-dark tbody tr:hover {
+  background-color: rgba(30, 41, 59, 0.4) !important;
+}
+
+/* Badges and tags */
+.theme-sophisticated-dark .bg-blue-50,
+.theme-sophisticated-dark .bg-emerald-50,
+.theme-sophisticated-dark .bg-amber-50,
+.theme-sophisticated-dark .bg-purple-50,
+.theme-sophisticated-dark .bg-indigo-50,
+.theme-sophisticated-dark .bg-indigo-50\/70,
+.theme-sophisticated-dark .bg-indigo-100 {
+  background-color: #1e293b !important;
+  color: #e2e8f0 !important;
+  border-color: #334155 !important;
+}
+
+/* Left panel background under school profile */
+.theme-sophisticated-dark .bg-slate-50\/70 {
+  background-color: #1e293b !important;
+}
+
+/* Fixes for printing alignment */
+@media print {
+  /* Global reset for all themes to guarantee clean printouts */
+  html, body, #root, [class*="theme-"], [class*="theme-"] #root {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  
+  /* Reset background-colors, borders and colors on any themed elements */
+  [class*="theme-"] *,
+  [class*="theme-"] div, 
+  [class*="theme-"] main,
+  [class*="theme-"] card,
+  [class*="theme-"] form,
+  [class*="theme-"] table {
+    background-color: transparent !important;
+    background: transparent !important;
+    color: #000000 !important;
+    border-color: #334155 !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    backdrop-filter: none !important;
+  }
+
+  /* Black text enforcement for clear printing */
+  [class*="theme-"] h1,
+  [class*="theme-"] h2,
+  [class*="theme-"] h3,
+  [class*="theme-"] h4,
+  [class*="theme-"] h5,
+  [class*="theme-"] h6,
+  [class*="theme-"] span,
+  [class*="theme-"] p,
+  [class*="theme-"] strong,
+  [class*="theme-"] th,
+  [class*="theme-"] td,
+  [class*="theme-"] label,
+  [class*="theme-"] font {
+    color: #000000 !important;
+  }
+
+  /* Specific border enforcement for lists and tables */
+  table, th, td, tr, border-collapse, .border, .border-slate-200, .border-slate-400 {
+    border: 1px solid #475569 !important;
+    border-color: #475569 !important;
+  }
+
+  /* Layout toggling */
+  .no-print, .no-print * {
+    display: none !important;
+  }
+  
+  .print-only, .print\:block {
+    display: block !important;
+  }
+}
