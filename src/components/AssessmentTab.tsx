@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   StudentAssessment, ClassType, CLASSES, AcademicYearType, ACADEMIC_YEARS, 
   TermType, TERMS, SubjectType, SUBJECTS, Student 
@@ -10,7 +11,7 @@ import {
 } from 'recharts';
 import { 
   Printer, Save, CheckSquare, RefreshCw, Layers, Award, FileText, LayoutGrid, BarChart3, HelpCircle, AlertCircle, Sparkles, FileDown,
-  Eye, EyeOff
+  Eye, EyeOff, ShieldAlert, Trash2, RotateCcw, Eraser
 } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 
@@ -39,6 +40,9 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState('');
   const [reportCardPreviewMode, setReportCardPreviewMode] = useState(false);
+  const [worksheetPreviewMode, setWorksheetPreviewMode] = useState(false);
+  const [broadsheetPreviewMode, setBroadsheetPreviewMode] = useState(false);
+  const [performancePreviewMode, setPerformancePreviewMode] = useState(false);
   const [showPreviewPane, setShowPreviewPane] = useState(true);
   const [pdfFloatingMinimized, setPdfFloatingMinimized] = useState(false);
 
@@ -125,6 +129,84 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
     setUnsavedChanges(false);
     setSaveFeedback('Gradesheet successfully saved!');
     setTimeout(() => setSaveFeedback(''), 3500);
+  };
+
+  const handleClearInputs = () => {
+    const cleared = activeWorksheet.map(row => {
+      const resetRow = {
+        ...row,
+        classScore1: 0,
+        classScore2: 0,
+        classScore3: 0,
+        classScore4: 0,
+        examScore: 0,
+        classTotal: 0,
+        classFifty: 0,
+        examFifty: 0,
+        totalScore: 0,
+        grade: 'F',
+        remarks: 'Fail',
+        position: ''
+      };
+      return DbController.calculateScoreDetails(resetRow);
+    });
+    
+    const ranked = DbController.calculatePositions(cleared);
+    setActiveWorksheet(ranked);
+    setUnsavedChanges(true);
+    if (isAutoSave) {
+      DbController.saveAssessmentsSheet(ranked);
+      setUnsavedChanges(false);
+    }
+    alert("Resetted active gradesheet assessment scores to zero values.");
+  };
+
+  const handleDeleteActiveSelection = () => {
+    if (selectedStudentId) {
+      if (window.confirm("Are you sure you want to reset and delete grades for the currently selected student?")) {
+        const cleared = activeWorksheet.map(row => {
+          if (row.studentId === selectedStudentId) {
+            const resetRow = {
+              ...row,
+              classScore1: 0,
+              classScore2: 0,
+              classScore3: 0,
+              classScore4: 0,
+              examScore: 0,
+              classTotal: 0,
+              classFifty: 0,
+              examFifty: 0,
+              totalScore: 0,
+              grade: 'F',
+              remarks: 'Fail',
+              position: ''
+            };
+            return DbController.calculateScoreDetails(resetRow);
+          }
+          return row;
+        });
+
+        const ranked = DbController.calculatePositions(cleared);
+        setActiveWorksheet(ranked);
+        setUnsavedChanges(true);
+        if (isAutoSave) {
+          DbController.saveAssessmentsSheet(ranked);
+          setUnsavedChanges(false);
+        }
+        alert("Grades deleted and reset for the selected student.");
+      }
+    } else {
+      alert("Please select a student first in the worksheet or individual report view.");
+    }
+  };
+
+  const handleDeleteAllAssessments = () => {
+    if (window.confirm("CRITICAL WARNING: Are you sure you want to completely delete all historical Class Assessments from the entire database? This cannot be undone.")) {
+      localStorage.setItem('school_assessments', JSON.stringify([]));
+      setActiveWorksheet([]);
+      onManualSave();
+      alert("Successfully purged all recorded class assessments from database.");
+    }
   };
 
   const [printBlocked, setPrintBlocked] = useState(false);
@@ -379,13 +461,20 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
               <p className="text-[10px] text-slate-400 mt-0.5">Input parameters are constrained: Exercises (0-10), Class Tests (0-20), Project Work/Group Work (0-10), Examination Exams (0-100)</p>
             </div>
             
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <span className="text-[10px] bg-indigo-50 border border-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-semibold">
                 Class: {selectedClass}
               </span>
               <span className="text-[10px] bg-teal-50 border border-teal-100 text-teal-700 px-2 py-0.5 rounded-full font-semibold">
                 Subject: {selectedSubject}
               </span>
+              <button
+                type="button"
+                onClick={() => setWorksheetPreviewMode(true)}
+                className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 no-print"
+              >
+                <Eye size={12} /> Toggle Preview Mode
+              </button>
             </div>
           </div>
 
@@ -633,10 +722,19 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                       Official Student Progress Statement Card
                     </p>
                   </div>
-                  <div className="w-14 h-14 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[6.5px] text-slate-400 font-mono text-center leading-normal select-none">
-                    <div className="font-bold scale-90">PASSPORT</div>
-                    <div className="scale-75">STAMP</div>
-                  </div>
+                  {compiledReport.student.photoUrl ? (
+                    <img 
+                      src={compiledReport.student.photoUrl} 
+                      alt={`${compiledReport.student.firstName} ${compiledReport.student.lastName}`} 
+                      className="w-14 h-14 rounded border border-slate-300 object-cover flex-shrink-0" 
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-14 h-14 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[6.5px] text-slate-400 font-mono text-center leading-normal select-none">
+                      <div className="font-bold scale-90">PASSPORT</div>
+                      <div className="scale-75">STAMP</div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Student Personal Data metadata */}
@@ -860,10 +958,19 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                       Official Student Progress Statement Card
                     </p>
                   </div>
-                  <div className="w-16 h-16 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none">
-                    <div className="font-bold scale-90">PASSPORT</div>
-                    <div className="scale-75">STAMP</div>
-                  </div>
+                  {compiledReport.student.photoUrl ? (
+                    <img 
+                      src={compiledReport.student.photoUrl} 
+                      alt={`${compiledReport.student.firstName} ${compiledReport.student.lastName}`} 
+                      className="w-16 h-16 rounded border border-slate-300 object-cover flex-shrink-0" 
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-16 h-16 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none">
+                      <div className="font-bold scale-90">PASSPORT</div>
+                      <div className="scale-75">STAMP</div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Student Personal Data metadata */}
@@ -969,17 +1076,408 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
           </div>
         )}
 
+        {worksheetPreviewMode && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setWorksheetPreviewMode(false);
+            }}
+            className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 overflow-y-auto flex flex-col items-center py-6 px-4 no-scrollbar font-sans text-xs cursor-pointer"
+          >
+            <div onClick={(e) => e.stopPropagation()} className="w-full max-w-7xl flex flex-col items-center cursor-default bg-white p-6 rounded-xl shadow-xl mt-4">
+              <div className="w-full flex items-center justify-between border-b pb-4 mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-2.5 w-2.5 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                  </span>
+                  <h3 className="font-bold text-slate-900 text-sm uppercase">Marks Input Sheet Immersive Widescreen Preview</h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] bg-indigo-50 border border-indigo-100 text-indigo-700 px-2.5 py-1 rounded-full font-semibold">Class: {selectedClass}</span>
+                  <span className="text-[10px] bg-teal-50 border border-teal-100 text-teal-700 px-2.5 py-1 rounded-full font-semibold">Subject: {selectedSubject}</span>
+                  {isAutoSave && <span className="text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 px-2.5 py-1 rounded-full font-semibold">Auto-Save Active</span>}
+                  <button
+                    type="button"
+                    onClick={() => setWorksheetPreviewMode(false)}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 border border-slate-200 hover:bg-slate-100/90 text-slate-755 transition font-bold rounded-lg cursor-pointer text-xs bg-slate-50"
+                  >
+                    <EyeOff size={13} /> Exit Preview
+                  </button>
+                </div>
+              </div>
+
+              {/* Duplicate editable worksheet table */}
+              <div className="w-full overflow-x-auto border border-slate-200 rounded-lg">
+                {activeWorksheet.length === 0 ? (
+                  <div className="p-12 text-center text-slate-400 space-y-2">
+                    <AlertCircle size={32} className="text-slate-300 mx-auto" />
+                    <h4 className="font-bold text-slate-600">No Student Rolls Available</h4>
+                  </div>
+                ) : (
+                  <table className="w-full text-left border-collapse table-fixed min-w-[900px] text-[11px]">
+                    <thead>
+                      <tr className="bg-slate-50/85 border-b border-slate-200 text-slate-600">
+                        <th className="py-2.5 px-2 font-black text-slate-500 w-12 text-center">No</th>
+                        <th className="py-2.5 px-2 font-black text-slate-500 w-48 truncate">Student Full Name</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 border-l border-slate-200 font-mono">Ex 1 (10)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 2 (10)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 3 (10)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 4 (10)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40 border-l border-slate-200 font-mono">Ts 1 (20)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40 font-mono">Ts 2 (20)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40 border-l border-slate-200 font-mono">Proj (10)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40 font-mono">Grp (10)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-700 text-center bg-slate-100 border-l border-slate-200 font-mono">Class 50%</th>
+                        <th className="py-2.5 px-1.5 font-bold text-slate-600 text-center bg-indigo-50 border-l border-slate-200 font-mono">Exam (100)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-700 text-center bg-indigo-50 font-mono">Exam 50%</th>
+                        <th className="py-2.5 px-1 font-black text-slate-900 text-center border-l border-slate-200 font-mono">Total (100)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-700 text-center bg-emerald-50">Remark</th>
+                        <th className="py-2.5 px-1 font-black text-indigo-700 text-center bg-purple-50">Pos</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {activeWorksheet.map((row, idx) => (
+                        <tr key={row.studentId} className="hover:bg-slate-50/20 transition">
+                          <td className="py-1 px-1.5 text-center font-mono text-slate-300 font-bold">{idx + 1}</td>
+                          <td className="py-1 px-2 font-semibold text-slate-800 truncate leading-tight font-sans text-left">
+                            <div>{row.studentName}</div>
+                            <span className="text-[9px] text-slate-400 font-mono font-normal">ID: {row.studentId}</span>
+                          </td>
+                          {[0, 1, 2, 3].map(exIdx => (
+                            <td key={`ex-${exIdx}`} className="py-1 px-0.5 bg-blue-50/10 border-l border-slate-100">
+                              <input
+                                type="number"
+                                min="0"
+                                max="10"
+                                step="0.1"
+                                value={row.exercises[exIdx] || 0}
+                                onChange={(e) => handleScoreInput(row.studentId, 'exercises', exIdx, e.target.value)}
+                                className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded focus:bg-slate-50 focus:border-indigo-400 focus:outline-none font-mono"
+                              />
+                            </td>
+                          ))}
+                          {[0, 1].map(tsIdx => (
+                            <td key={`ts-${tsIdx}`} className="py-1 px-0.5 bg-teal-50/10 border-l border-slate-100">
+                              <input
+                                type="number"
+                                min="0"
+                                max="20"
+                                step="0.1"
+                                value={row.tests[tsIdx] || 0}
+                                onChange={(e) => handleScoreInput(row.studentId, 'tests', tsIdx, e.target.value)}
+                                className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded focus:bg-slate-50 font-mono"
+                              />
+                            </td>
+                          ))}
+                          <td className="py-1 px-0.5 bg-amber-50/10 border-l border-slate-100">
+                            <input
+                              type="number"
+                              min="0"
+                              max="10"
+                              step="0.1"
+                              value={row.projectWork || 0}
+                              onChange={(e) => handleScoreInput(row.studentId, 'projectWork', 0, e.target.value)}
+                              className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded focus:bg-slate-50 font-mono"
+                            />
+                          </td>
+                          <td className="py-1 px-0.5 bg-amber-50/10">
+                            <input
+                              type="number"
+                              min="0"
+                              max="10"
+                              step="0.1"
+                              value={row.groupWork || 0}
+                              onChange={(e) => handleScoreInput(row.studentId, 'groupWork', 0, e.target.value)}
+                              className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded font-mono"
+                            />
+                          </td>
+                          <td className="py-1 px-0.5 text-center font-bold text-slate-805 bg-slate-105 border-l border-slate-200 font-mono">
+                            {row.classScore50} <span className="text-[9px] text-slate-400 block font-normal">/{row.classScoreTotal}</span>
+                          </td>
+                          <td className="py-1 px-0.5 bg-indigo-50/10 border-l border-slate-200">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.1"
+                              value={row.examScore100 || 0}
+                              onChange={(e) => handleScoreInput(row.studentId, 'examScore100', 0, e.target.value)}
+                              className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-250 rounded text-indigo-700 font-mono"
+                            />
+                          </td>
+                          <td className="py-1 px-0.5 text-center font-bold text-slate-700 bg-indigo-55 font-mono">
+                            {row.examScore50}
+                          </td>
+                          <td className="py-1 px-0.5 text-center font-black text-rose-700 border-l border-slate-200 bg-slate-100 font-mono text-xs">
+                            {row.totalScore}%
+                          </td>
+                          <td className="py-1 px-0.5 text-center bg-emerald-50 text-[10px] truncate leading-none">
+                            <strong className="text-emerald-800">{row.remarks}</strong>
+                            <span className="text-[8px] text-slate-400 block font-mono mt-0.5">GES: {row.gradeLevel}</span>
+                          </td>
+                          <td className="py-1 px-0.5 text-center bg-purple-50 text-indigo-800 font-black font-mono">
+                            {row.position ? `${row.position}` : 'N/A'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {!isAutoSave && (
+                <div className="w-full mt-5 flex justify-end">
+                  <button
+                    onClick={() => {
+                      handleManualSave();
+                      setWorksheetPreviewMode(false);
+                    }}
+                    className={`flex items-center gap-1.5 px-6 py-2.5 rounded-xl font-black shadow-md cursor-pointer active:translate-y-0.5 transition ${theme.btnColors}`}
+                  >
+                    <Save size={14} /> Save Academic Marks & Exit
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {broadsheetPreviewMode && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setBroadsheetPreviewMode(false);
+            }}
+            className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 overflow-y-auto flex flex-col items-center py-6 px-4 no-scrollbar font-sans text-xs cursor-pointer"
+          >
+            <div onClick={(e) => e.stopPropagation()} className="w-full max-w-7xl flex flex-col items-center cursor-default bg-white p-6 rounded-xl shadow-xl mt-4">
+              <div className="w-full flex items-center justify-between border-b pb-4 mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-2.5 w-2.5 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                  </span>
+                  <h3 className="font-bold text-slate-900 text-sm uppercase">Class Cumulative Broadsheet Ledger Preview</h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] bg-indigo-50 border border-indigo-100 text-indigo-700 px-2.5 py-1 rounded-full font-semibold">Class: {selectedClass}</span>
+                  <span className="text-[10px] bg-indigo-50 border border-indigo-100 text-indigo-700 px-2.5 py-1 rounded-full font-semibold">Term: {selectedTerm}</span>
+                  <button
+                    type="button"
+                    onClick={() => setBroadsheetPreviewMode(false)}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 border border-slate-200 hover:bg-slate-100/90 text-slate-755 transition font-bold rounded-lg cursor-pointer text-xs bg-slate-50"
+                  >
+                    <EyeOff size={13} /> Exit Preview
+                  </button>
+                </div>
+              </div>
+
+              <div className="w-full overflow-x-auto border border-slate-200 rounded-lg">
+                {broadsheetData.length === 0 ? (
+                  <div className="p-12 text-center text-slate-400">
+                    <AlertCircle size={32} className="text-slate-300 mx-auto mb-2" />
+                    <span>No cumulative grades establishing broadsheet fields.</span>
+                  </div>
+                ) : (
+                  <table className="w-full text-left border-collapse text-[11px] min-w-[800px]">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
+                        <th className="py-2.5 px-3 text-center w-12 font-black">Rank</th>
+                        <th className="py-2.5 px-2 w-48 font-black">Student Full Name</th>
+                        {SUBJECTS.slice(0, 5).map(sub => (
+                          <th key={sub} className="py-2.5 px-1 text-center truncate font-bold">{sub.substring(0, 10)}...</th>
+                        ))}
+                        <th className="py-2.5 px-2 text-center bg-slate-100 font-bold">Subjects Graded</th>
+                        <th className="py-2.5 px-2 text-center bg-indigo-50 font-black">Mean Term Avg</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {broadsheetData.map((row, index) => (
+                        <tr key={row.student.id} className="hover:bg-slate-50/20">
+                          <td className="py-2 px-3 text-center font-bold font-mono text-purple-700 bg-purple-50">{index + 1}</td>
+                          <td className="py-2 px-2 font-semibold text-slate-800 font-sans">{row.student.firstName} {row.student.lastName}</td>
+                          {SUBJECTS.slice(0, 5).map(sub => {
+                            const score = row.subjectScores[sub];
+                            return (
+                              <td key={sub} className="py-2 px-1 text-center font-mono font-semibold border-l border-slate-100">
+                                {score !== undefined ? `${score}%` : <span className="text-slate-300">-</span>}
+                              </td>
+                            );
+                          })}
+                          <td className="py-2 px-2 text-center text-slate-550 font-mono bg-slate-50">{row.subjectsCount} registered</td>
+                          <td className="py-2 px-2 text-center font-black bg-indigo-50 text-indigo-800 font-mono text-xs">{row.averageOverallScore}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {performancePreviewMode && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setPerformancePreviewMode(false);
+            }}
+            className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 overflow-y-auto flex flex-col items-center py-6 px-4 no-scrollbar font-sans text-xs cursor-pointer"
+          >
+            <div onClick={(e) => e.stopPropagation()} className="w-full max-w-6xl flex flex-col items-center cursor-default bg-white p-6 rounded-xl shadow-xl mt-4">
+              <div className="w-full flex items-center justify-between border-b pb-4 mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-2.5 w-2.5 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                  </span>
+                  <h3 className="font-bold text-slate-900 text-sm uppercase">Subject Performance Analytics Immersive Preview</h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] bg-indigo-50 border border-indigo-100 text-indigo-700 px-2.5 py-1 rounded-full font-semibold">Class: {selectedClass}</span>
+                  <span className="text-[10px] bg-teal-50 border border-teal-100 text-teal-700 px-2.5 py-1 rounded-full font-semibold">Subject: {selectedSubject}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPerformancePreviewMode(false)}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 border border-slate-200 hover:bg-slate-100/90 text-slate-755 transition font-bold rounded-lg cursor-pointer text-xs bg-slate-50"
+                  >
+                    <EyeOff size={13} /> Exit Preview
+                  </button>
+                </div>
+              </div>
+
+              {/* Main components in fullscreen */}
+              <div className="w-full space-y-6 text-left">
+                {/* Real-time KPI Statistics Ribbons */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Subject Class Average</span>
+                      <strong className="text-xl font-black text-slate-900 tracking-tight font-mono">
+                        {classPerformanceDetails.avgScore}%
+                      </strong>
+                    </div>
+                    <div className="w-9 h-9 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center font-sans text-sm">📊</div>
+                  </div>
+
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Subject Pass Rate</span>
+                      <strong className="text-xl font-black text-slate-900 tracking-tight font-mono">
+                        {classPerformanceDetails.passRate}%
+                      </strong>
+                    </div>
+                    <div className="w-9 h-9 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center font-sans text-sm animate-pulse">🎯</div>
+                  </div>
+
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Maximum / Minimum</span>
+                      <strong className="text-xs font-black text-slate-900 tracking-tight font-mono block">
+                        MAX {classPerformanceDetails.highestScore}% / MIN {classPerformanceDetails.lowestScore}%
+                      </strong>
+                    </div>
+                    <div className="w-9 h-9 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center font-sans text-sm">⭐</div>
+                  </div>
+
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Graded Registry Pool</span>
+                      <strong className="text-xl font-black text-slate-900 tracking-tight font-mono">
+                        {classPerformanceDetails.gradedCount} Students
+                      </strong>
+                    </div>
+                    <div className="w-9 h-9 bg-slate-100 text-slate-600 rounded-lg flex items-center justify-center font-sans text-sm">👥</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* Chart Area */}
+                  <div className="md:col-span-2 bg-slate-50 border border-slate-200 rounded-xl p-6 space-y-4">
+                    <h3 className="font-bold text-slate-705 text-xs flex items-center gap-1.5 uppercase font-sans tracking-wide">
+                      📊 Class Mastery Performance Distribution
+                    </h3>
+                    <div className="h-72 font-sans text-[10px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={gradeLevelsStats}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="name" />
+                          <YAxis />
+                          <Tooltip wrapperStyle={{ fontSize: '10px' }} />
+                          <Bar dataKey="value" fill="#4f46e5" name="Total Students" radius={[3, 3, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* GES Guidelines Map */}
+                  <div className="bg-slate-100 border border-slate-200 rounded-xl p-5 space-y-4">
+                    <h4 className="font-bold text-slate-700 flex items-center gap-1 uppercase text-xs tracking-wide">
+                      <Sparkles className="text-amber-550" size={14} /> GES Framework Guidelines
+                    </h4>
+                    <div className="space-y-2.5 text-[11px] leading-relaxed">
+                      <div className="flex items-start gap-2">
+                        <span className="bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded font-mono text-[10px]">L1</span>
+                        <div>
+                          <strong>Highly Proficient (80% - 100%)</strong>
+                          <p className="text-[10px] text-slate-500 leading-normal">Student exceeds current expectations on learning units.</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="bg-blue-100 text-blue-800 font-bold px-1.5 py-0.5 rounded font-mono text-[10px]">L2</span>
+                        <div>
+                          <strong>Proficient (68% - 79%)</strong>
+                          <p className="text-[10px] text-slate-500 leading-normal">Student understands curriculum concepts well.</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded font-mono text-[10px]">L3</span>
+                        <div>
+                          <strong>Approaching Proficiency (54% - 67%)</strong>
+                          <p className="text-[10px] text-slate-500 leading-normal">Basic mastery benchmarks achieved.</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="bg-indigo-100 text-indigo-800 font-bold px-1.5 py-0.5 rounded font-mono text-[10px]">L4</span>
+                        <div>
+                          <strong>Developing (40% - 53%)</strong>
+                          <p className="text-[10px] text-slate-500 leading-normal">Fragile conceptual grasp. Guidance required.</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="bg-rose-100 text-rose-800 font-bold px-1.5 py-0.5 rounded font-mono text-[10px]">L5</span>
+                        <div>
+                          <strong>Emerging (0% - 39%)</strong>
+                          <p className="text-[10px] text-slate-500 leading-normal">Critical gaps in educational outcomes.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         </div>
       )}
 
       {/* SUBMODE C: CLASS BROADSHEET */}
       {subMode === 'Broadsheet' && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden no-print">
-          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50">
-            <h3 className="font-bold text-slate-700 text-sm">
-              📋 Horizontal Class Broad Sheet Summary
-            </h3>
-            <p className="text-[10px] text-slate-400 mt-0.5">Overview of cumulative scores across active subjects for {selectedClass} | term: {selectedTerm}</p>
+          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="font-bold text-slate-700 text-sm">
+                📋 Horizontal Class Broad Sheet Summary
+              </h3>
+              <p className="text-[10px] text-slate-400 mt-0.5">Overview of cumulative scores across active subjects for {selectedClass} | term: {selectedTerm}</p>
+            </div>
+            
+            <button
+              type="button"
+              onClick={() => setBroadsheetPreviewMode(true)}
+              className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto no-print"
+            >
+              <Eye size={12} /> Toggle Preview Mode
+            </button>
           </div>
 
           <div className="overflow-x-auto">
@@ -1030,6 +1528,23 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
       {subMode === 'PerformanceAnalytics' && (
         <div className="space-y-6 no-print">
           
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/50">
+            <div>
+              <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                📈 Subject Performance Analytics
+              </h3>
+              <p className="text-[10px] text-slate-400 mt-0.5">Statistical metrics, cognitive distribution curves, and intervention alert controls for {selectedClass}</p>
+            </div>
+            
+            <button
+              type="button"
+              onClick={() => setPerformancePreviewMode(true)}
+              className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto"
+            >
+              <Eye size={12} /> Toggle Preview Mode
+            </button>
+          </div>
+
           {/* Real-time KPI Statistics Ribbons */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
@@ -1272,8 +1787,9 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
       )}
 
       {/* COMPREHENSIVE FLOATING PRINT & EXPORT PORTAL */}
-      {showPdfGuide && (
-        <>
+      <AnimatePresence>
+        {showPdfGuide && (
+          <>
           {/* Always Render Print/PDF Target templates in a stable offscreen environment for jsPDF canvas engine */}
           <div className="fixed left-[-9999px] top-[-9999px] pointer-events-none z-[-100] no-print select-none opacity-0 bg-white" aria-hidden="true">
             {/* Target A: Portrait Report Card Template */}
@@ -1311,10 +1827,19 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     {DbController.getSchoolInfo().schoolNumber && <span>SCHOOL NO: {DbController.getSchoolInfo().schoolNumber}</span>}
                   </div>
                 </div>
-                <div className="w-16 h-16 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 text-[7px] text-slate-400 font-mono text-center leading-normal">
-                  <div className="font-bold scale-90">PASSPORT</div>
-                  <div className="scale-75">STAMP</div>
-                </div>
+                {compiledReport?.student.photoUrl ? (
+                  <img 
+                    src={compiledReport.student.photoUrl} 
+                    alt={`${compiledReport.student.firstName} ${compiledReport.student.lastName}`} 
+                    className="w-16 h-16 rounded border border-slate-300 object-cover flex-shrink-0 font-sans" 
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 text-[7px] text-slate-400 font-mono text-center leading-normal">
+                    <div className="font-bold scale-90">PASSPORT</div>
+                    <div className="scale-75">STAMP</div>
+                  </div>
+                )}
               </div>
 
               {/* Student Personal Data block */}
@@ -1499,7 +2024,13 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
           </div>
 
           {/* Floating UI Controller Window */}
-          <div className={`fixed bottom-6 right-6 z-40 no-print flex flex-col bg-white rounded-2xl border border-slate-300 shadow-2xl transition-all duration-300 ${pdfFloatingMinimized ? 'w-80 h-14' : showPreviewPane ? 'w-full max-w-5xl h-[80vh] md:h-[620px]' : 'w-96 md:w-[440px] h-auto max-h-[85vh]'} overflow-hidden`}>
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9, y: 50, x: 0 }}
+            animate={{ opacity: 1, scale: 1, y: 0, x: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 50, x: 0 }}
+            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+            className={`fixed bottom-6 right-6 z-40 no-print flex flex-col bg-white rounded-[24px] border border-slate-150 shadow-2xl transition-all duration-300 ${pdfFloatingMinimized ? 'w-80 h-14' : showPreviewPane ? 'w-full max-w-5xl h-[80vh] md:h-[620px]' : 'w-96 md:w-[440px] h-auto max-h-[85vh]'} overflow-hidden`}
+          >
             
             {/* Header / Window Manager controls */}
             <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between cursor-move select-none flex-shrink-0">
@@ -1746,14 +2277,14 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 pt-3 border-t border-slate-100 mt-4 font-sans">
+                  <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6 font-sans bg-white">
                     <button
                       type="button"
                       onClick={() => {
                         setShowPdfGuide(false);
                         setPdfFloatingMinimized(false);
                       }}
-                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold cursor-pointer transition active:scale-95"
+                      className="px-5 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-500 font-semibold rounded-xl transition cursor-pointer text-[12px] flex-shrink-0"
                     >
                       Close Window
                     </button>
@@ -1762,7 +2293,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                       onClick={() => {
                         handlePrint();
                       }}
-                      className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-black shadow-md cursor-pointer transition text-center flex items-center justify-center gap-1.5 active:translate-y-0.5"
+                      className="flex-1 px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px] text-center flex items-center justify-center gap-1.5 active:translate-y-0.5"
                     >
                       <Printer size={13} /> Trigger Print Engine
                     </button>
@@ -1771,9 +2302,43 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
 
               </div>
             )}
-          </div>
+          </motion.div>
         </>
       )}
+    </AnimatePresence>
+
+    {/* SECTION DATA CONTROLS */}
+    <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-3 no-print mt-6">
+      <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+        <ShieldAlert className="text-indigo-500" size={14} /> Section Assessment Controls
+      </h4>
+      <p className="text-[10px] text-slate-500 leading-relaxed">
+        Manage local score parameters, clear sheet entries of active gradesheets, and erase historical academic indices database entries associated with this module.
+      </p>
+      <div className="flex flex-wrap gap-2.5 pt-1">
+        <button
+          type="button"
+          onClick={handleClearInputs}
+          className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-850 hover:bg-slate-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+        >
+          <Eraser size={13} /> Clear All Inputs (Zero Out sheet)
+        </button>
+        <button
+          type="button"
+          onClick={handleDeleteActiveSelection}
+          className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 hover:text-amber-850 hover:bg-amber-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+        >
+          <RotateCcw size={13} /> Delete Selected Student Grade
+        </button>
+        <button
+          type="button"
+          onClick={handleDeleteAllAssessments}
+          className="inline-flex items-center gap-1.5 px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 hover:text-rose-850 hover:bg-rose-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs sm:ml-auto"
+        >
+          <Trash2 size={13} /> Delete All Section Data
+        </button>
+      </div>
+    </div>
 
     </div>
   );

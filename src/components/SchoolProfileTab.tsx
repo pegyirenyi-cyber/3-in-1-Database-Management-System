@@ -1,9 +1,10 @@
 import { useState, ChangeEvent } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { SchoolInfo } from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
-import { Printer, Save, CheckCircle, Info, Landmark, ShieldCheck, FileDown } from 'lucide-react';
+import { Printer, Save, CheckCircle, Info, Landmark, ShieldCheck, FileDown, Trash2, RotateCcw, Eraser } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 
 export function DefaultCrest({ className = "h-12 w-12" }: { className?: string }) {
@@ -76,6 +77,67 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
     } catch (e) {
       console.warn("Direct printing restricted inside sandbox iframe:", e);
       setPrintBlocked(true);
+    }
+  };
+
+  const handleClearForm = () => {
+    const cleared: SchoolInfo = {
+      id: formData.id || 'school_default',
+      name: '',
+      motto: '',
+      logoUrl: '',
+      schoolNumber: '',
+      emisCode: '',
+      gpsAddress: '',
+      schoolType: 'Public',
+      headteacherName: '',
+      telephone: '',
+      email: '',
+      qualifications: '',
+      highestAcademicQualifications: '',
+      district: '',
+      circuit: ''
+    };
+    setFormData(cleared);
+    onUpdate(cleared);
+    if (isAutoSave) {
+      DbController.saveSchoolInfo(cleared);
+    }
+  };
+
+  const handleDeleteActive = () => {
+    // Reset/delete the active selection (here we clear the active uploaded logo and motto inputs)
+    const activeDeleted = { ...formData, logoUrl: '', motto: '' };
+    setFormData(activeDeleted);
+    onUpdate(activeDeleted);
+    if (isAutoSave) {
+      DbController.saveSchoolInfo(activeDeleted);
+    }
+  };
+
+  const handleDeleteAll = () => {
+    if (window.confirm("Are you sure you want to completely erase and delete all School Profile data? This action cannot be undone.")) {
+      const blank: SchoolInfo = {
+        id: 'school_default',
+        name: '',
+        motto: '',
+        logoUrl: '',
+        schoolNumber: '',
+        emisCode: '',
+        gpsAddress: '',
+        schoolType: 'Public',
+        headteacherName: '',
+        telephone: '',
+        email: '',
+        qualifications: '',
+        highestAcademicQualifications: '',
+        district: '',
+        circuit: ''
+      };
+      setFormData(blank);
+      onUpdate(blank);
+      DbController.saveSchoolInfo(blank);
+      onManualSave();
     }
   };
 
@@ -338,6 +400,39 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
             </div>
           </div>
 
+          {/* SECTION DATA CONTROLS */}
+          <div className="mt-8 pt-6 border-t border-slate-100 space-y-3">
+            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <ShieldCheck className="text-indigo-500" size={14} /> Section Profile Controls
+            </h4>
+            <p className="text-[10px] text-slate-500 leading-relaxed">
+              Manage input states, select parameters, and institutional logs for this module.
+            </p>
+            <div className="flex flex-wrap gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={handleClearForm}
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-850 hover:bg-slate-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+              >
+                <Eraser size={13} /> Clear All Inputs
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteActive}
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 hover:text-amber-850 hover:bg-amber-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+              >
+                <RotateCcw size={13} /> Delete Active Assets
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteAll}
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 hover:text-rose-850 hover:bg-rose-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs sm:ml-auto"
+              >
+                <Trash2 size={13} /> Delete All Section Data
+              </button>
+            </div>
+          </div>
+
         </div>
 
         {/* PROFILE PREVIEW & CERTIFICATE PANEL */}
@@ -484,17 +579,22 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
       )}
 
       {/* COMPREHENSIVE PDF GENERATION / PRINTING MANUAL OVERLAY WITH LIVE INTERACTIVE VISUAL PRINT PREVIEW */}
-      {showPdfGuide && (
-        <div 
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowPdfGuide(false);
-          }}
-          className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50 no-print overflow-y-auto cursor-pointer"
-        >
+      <AnimatePresence>
+        {showPdfGuide && (
           <div 
-            onClick={(e) => e.stopPropagation()}
-            className="bg-slate-100 rounded-2xl border border-slate-200 shadow-2xl max-w-5xl w-full flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200 overflow-hidden my-8 max-h-[90vh] cursor-default"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowPdfGuide(false);
+            }}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print overflow-y-auto cursor-pointer"
           >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-slate-100 rounded-[24px] border border-slate-200/50 shadow-2xl max-w-5xl w-full flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200/80 overflow-hidden my-8 max-h-[90vh] cursor-default"
+            >
             
             {/* Left: Document Live Preview */}
             <div className="flex-1 p-6 overflow-y-auto bg-slate-700 flex flex-col justify-between items-center space-y-4">
@@ -612,11 +712,11 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 pt-4 border-t border-slate-100 mt-6 font-sans">
+              <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6 font-sans">
                 <button
                   type="button"
                   onClick={() => setShowPdfGuide(false)}
-                  className="flex-shrink-0 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer transition"
+                  className="px-5 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-500 font-semibold rounded-xl transition cursor-pointer text-[12px] flex-shrink-0"
                 >
                   Close Preview
                 </button>
@@ -625,16 +725,17 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
                   onClick={() => {
                     handlePrint();
                   }}
-                  className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-md cursor-pointer transition text-center flex items-center justify-center gap-1.5 active:translate-y-0.5"
+                  className="flex-1 px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px] text-center flex items-center justify-center gap-1.5 active:translate-y-0.5"
                 >
                   <Printer size={14} /> Trigger Print Engine
                 </button>
               </div>
             </div>
 
-          </div>
+          </motion.div>
         </div>
       )}
+    </AnimatePresence>
 
     </div>
   );

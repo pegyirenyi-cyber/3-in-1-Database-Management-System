@@ -3,6 +3,7 @@ import {
   SchoolInfo, Student, Teacher, UserAccount, UserRole, ThemeType 
 } from './types';
 import { DbController } from './db';
+import { onAuthStateChanged } from 'firebase/auth';
 import { THEME_CONFIGS, ThemeStyles } from './components/ThemeWrapper';
 import DeveloperStatus from './components/DeveloperStatus';
 import SchoolProfileTab from './components/SchoolProfileTab';
@@ -15,12 +16,13 @@ import SchoolFeesTab from './components/SchoolFeesTab';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Landmark, Users, UserCheck, CalendarCheck, FileSpreadsheet, Settings, 
-  LogOut, ShieldAlert, Lock, Mail, User, BookOpen, GraduationCap, Sparkles, Coins 
+  LogOut, ShieldAlert, Lock, Mail, User, BookOpen, GraduationCap, Sparkles, Coins, RotateCcw 
 } from 'lucide-react';
 
 export default function App() {
   // Global Session Identity State
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(DbController.getCurrentUser());
+  const [isFirebaseChecking, setIsFirebaseChecking] = useState(DbController.isFirebaseEnabled());
   
   // Database datasets loaded from DbController
   const [schoolInfo, setSchoolInfo] = useState<SchoolInfo>(DbController.getSchoolInfo());
@@ -45,9 +47,56 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [googleNewUser, setGoogleNewUser] = useState<UserAccount | null>(null);
   const [googleSelectedRole, setGoogleSelectedRole] = useState<UserRole>('Headteacher');
+  const [wipeSuccessMessage, setWipeSuccessMessage] = useState<string | null>(null);
 
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [printNotification, setPrintNotification] = useState<string | null>(null);
+
+  // Connection status & offline sync queue monitors
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  useEffect(() => {
+    const updateOnlineStatus = () => {
+      setIsOnline(navigator.onLine);
+      if (navigator.onLine) {
+        handleManualSync();
+      }
+    };
+    const updateSyncCount = () => {
+      setPendingSyncCount(DbController.getOfflineQueueSize());
+    };
+
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+    window.addEventListener('sms_sync_status_changed', updateSyncCount);
+
+    // Bootstrap local sync count checks
+    setPendingSyncCount(DbController.getOfflineQueueSize());
+
+    return () => {
+      window.removeEventListener('online', updateOnlineStatus);
+      window.removeEventListener('offline', updateOnlineStatus);
+      window.removeEventListener('sms_sync_status_changed', updateSyncCount);
+    };
+  }, []);
+
+  const handleManualSync = async () => {
+    if (!navigator.onLine) return;
+    setIsSyncing(true);
+    try {
+      const result = await DbController.syncOfflineQueue();
+      if (result.syncedCount > 0) {
+        refreshAllLogs();
+      }
+    } catch (err) {
+      console.warn("Manual background sync error during retry:", err);
+    } finally {
+      setIsSyncing(false);
+      setPendingSyncCount(DbController.getOfflineQueueSize());
+    }
+  };
 
   // Global keyboard shortcut (Ctrl+P) specifically for report cards & record sheets
   useEffect(() => {
@@ -94,14 +143,73 @@ export default function App() {
     setIsAutoSave(config.autoSave !== false);
   }, []);
 
-  // Background-sync Firestore ledger data on boot if already authenticated
+  // Listen to Firebase auth changes to coordinate secure syncs
   useEffect(() => {
-    if (currentUser && DbController.isFirebaseEnabled()) {
-      DbController.syncAllDataFromFirebase().then(() => {
-        refreshAllLogs();
-      });
+    if (!DbController.isFirebaseEnabled()) {
+      setIsFirebaseChecking(false);
+      return;
     }
-  }, [currentUser]);
+
+    const auth = DbController.getAuthInstance();
+    if (!auth) {
+      setIsFirebaseChecking(false);
+      return;
+    }
+
+    // Subscribe to Firebase Auth state
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      try {
+        if (firebaseUser) {
+          console.log("Firebase Auth found active session for", firebaseUser.email);
+          let localProfile = DbController.getCurrentUser();
+          
+          if (!localProfile || localProfile.uid !== firebaseUser.uid) {
+            const remoteProfile = await DbController.getFirebaseUserProfile(firebaseUser.uid);
+            if (remoteProfile) {
+              setCurrentUser(remoteProfile);
+              localStorage.setItem('sms_user', JSON.stringify(remoteProfile));
+            } else {
+              // Create default fallback profile
+              const fallback: UserAccount = {
+                uid: firebaseUser.uid,
+                email: firebaseUser.email || '',
+                name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+                role: 'Headteacher',
+                createdAt: new Date().toISOString()
+              };
+              await DbController.saveGoogleProfile(fallback);
+              setCurrentUser(fallback);
+            }
+          }
+          
+          // Now that auth is fully initialized and authenticated, do a secure background sync
+          console.log("Syncing database with authenticated Firebase Auth credentials...");
+          await DbController.syncAllDataFromFirebase();
+          refreshAllLogs();
+        } else {
+          console.log("Firebase Auth: No active session.");
+        }
+      } catch (err) {
+        console.error("Error in Firebase Auth observer:", err);
+      } finally {
+        setIsFirebaseChecking(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Background-sync Firestore ledger data if user state changes after auth ready
+  useEffect(() => {
+    if (currentUser && DbController.isFirebaseEnabled() && !isFirebaseChecking) {
+      const auth = DbController.getAuthInstance();
+      if (auth?.currentUser) {
+        DbController.syncAllDataFromFirebase().then(() => {
+          refreshAllLogs();
+        });
+      }
+    }
+  }, [currentUser, isFirebaseChecking]);
 
   const refreshAllLogs = () => {
     setSchoolInfo(DbController.getSchoolInfo());
@@ -110,6 +218,37 @@ export default function App() {
     const config = DbController.getSystemSettings();
     setActiveTheme(config.theme || 'Sophisticated Dark');
     setIsAutoSave(config.autoSave !== false);
+  };
+
+  const handleResetAndClear = () => {
+    // Clear all fields State
+    setLoginEmail('');
+    setLoginPassword('');
+    setLoginRole('Headteacher');
+    setIsRegisterMode(false);
+    setRegName('');
+    setRegEmail('');
+    setRegPassword('');
+    setRegRole('Headteacher');
+    setAuthError(null);
+    setGoogleNewUser(null);
+    
+    // Clear the active session and trigger storage wipe
+    DbController.clearAllData();
+    setCurrentUser(null);
+    
+    // Set datasets to blank / initial fallback states
+    setStudents([]);
+    setTeachers([]);
+    
+    // Refresh school metadata and trigger visual updates in UI components
+    setSchoolInfo(DbController.getSchoolInfo());
+    
+    // Set validation message
+    setWipeSuccessMessage("Successfully reset all fields and wiped the database for a clean new login.");
+    setTimeout(() => {
+      setWipeSuccessMessage(null);
+    }, 6000);
   };
 
   const handleLoginSubmit = async (e: FormEvent) => {
@@ -230,8 +369,8 @@ export default function App() {
             <div className="w-12 h-12 bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 rounded-2xl flex items-center justify-center mx-auto mb-2">
               <GraduationCap size={28} />
             </div>
-            <h1 className="text-lg font-display font-black tracking-tight uppercase text-amber-400">GEETECH COGNITIVE CENTER</h1>
-            <p className="text-xs text-slate-400 font-mono">2-in-1 School Database & Assessment Center</p>
+            <h1 className="text-lg font-display font-black tracking-tight uppercase text-amber-400">GEETECH MULTIMEDIA</h1>
+            <p className="text-xs text-slate-400 font-mono">3-in-1 School Database & Assessment Center</p>
           </div>
 
           {authError && (
@@ -240,6 +379,15 @@ export default function App() {
                 <ShieldAlert size={14} /> Authentication Notice
               </div>
               <div>{authError}</div>
+            </div>
+          )}
+
+          {wipeSuccessMessage && (
+            <div className="p-3.5 bg-emerald-950/40 border border-emerald-900/40 rounded-xl text-emerald-400 text-xs leading-relaxed font-sans space-y-1">
+              <div className="font-bold flex items-center gap-1.5 text-[11px] uppercase tracking-wide">
+                <Sparkles size={14} className="text-emerald-400 animate-pulse" /> Reset Status
+              </div>
+              <div>{wipeSuccessMessage}</div>
             </div>
           )}
 
@@ -507,9 +655,11 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          <div className="pt-4 border-t border-slate-800 text-center font-mono text-[10px] text-slate-500 space-y-1">
-            <p>EGYIRENYI PAUL | GEETECH MULTIMEDIA</p>
-            <p>pegiyrenyi@gmail.com | 0544052717</p>
+          <div className="pt-4 border-t border-slate-800 text-center font-mono text-[10px] text-slate-500">
+            <div>
+              <p>EGYIRENYI PAUL | GEETECH MULTIMEDIA</p>
+              <p>pegiyrenyi@gmail.com | 0544052717</p>
+            </div>
           </div>
         </div>
       </div>
@@ -564,12 +714,37 @@ export default function App() {
           </div>
 
           {/* Identity & Navigation Profile Control */}
-          <div className="flex items-center gap-4 text-xs">
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            {/* Real-time Connection & Sync Monitor */}
+            <div className="flex items-center gap-2.5 bg-white/10 hover:bg-white/15 transition py-1.5 px-3 rounded-lg border border-white/10 text-white font-sans text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className={`inline-block w-2.5 h-2.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                <span className="font-semibold">{isOnline ? 'Cloud Sync Online' : 'Offline Mode Active'}</span>
+              </div>
+              
+              {pendingSyncCount > 0 && (
+                <div className="flex items-center gap-2 border-l border-white/20 pl-2.5">
+                  <span className="font-mono font-bold bg-amber-400 text-slate-950 text-[10px] px-2 py-0.5 rounded-full animate-bounce">
+                    {pendingSyncCount} pending
+                  </span>
+                  {isOnline && (
+                    <button
+                      onClick={handleManualSync}
+                      disabled={isSyncing}
+                      className="bg-indigo-600 hover:bg-indigo-500 active:translate-y-0.5 text-white text-[9px] font-black px-2 py-0.5 rounded transition uppercase tracking-wider cursor-pointer disabled:opacity-50"
+                    >
+                      {isSyncing ? 'Syncing...' : 'Sync Now'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="text-right">
               <span className="text-slate-200 block text-[10px] uppercase font-mono tracking-wider font-semibold">Logged-in User</span>
               <span className="font-bold text-slate-100 flex items-center gap-1.5">
                 <User size={13} className="text-amber-300" />
-                {currentUser.name} ({currentUser.role})
+                {currentUser?.name} ({currentUser?.role})
               </span>
             </div>
             

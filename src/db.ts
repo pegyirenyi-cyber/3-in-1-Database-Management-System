@@ -122,20 +122,20 @@ testConnection();
 // Default system configurations
 const DEFAULT_SCHOOL_INFO: SchoolInfo = {
   id: 'school_default',
-  name: 'GEETECH INTERNATIONAL MODEL SCHOOL',
-  motto: 'Knowledge is Power, Discipline is Success',
+  name: '',
+  motto: '',
   logoUrl: '',
-  schoolNumber: 'GTIMS-2026',
-  emisCode: 'EMIS-3210459',
-  gpsAddress: 'AK-045-2317, Kumasi, Ghana',
-  schoolType: 'Private',
-  headteacherName: 'MR. EGYIRENYI PAUL',
-  telephone: '0544052717',
-  email: 'pegyirenyi@gmail.com',
-  qualifications: 'B.Ed. in Information Technology, M.A. in Educational Leadership',
-  highestAcademicQualifications: 'Master of Arts (Educational Leadership)',
-  district: 'Kumasi Metropolitan District',
-  circuit: 'Asokonyi Circuit'
+  schoolNumber: '',
+  emisCode: '',
+  gpsAddress: '',
+  schoolType: 'Public',
+  headteacherName: '',
+  telephone: '',
+  email: '',
+  qualifications: '',
+  highestAcademicQualifications: '',
+  district: '',
+  circuit: ''
 };
 
 // Local storage key constants
@@ -166,17 +166,146 @@ function setStorageItem<T>(key: string, value: T): void {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+export interface OfflineQueueItem {
+  id: string;
+  collection: string;
+  docId: string;
+  type: 'set' | 'delete';
+  data?: any;
+  timestamp: number;
+}
+
 // -----------------------------------------------------------------------------
 // CORE DB CONTROLLER (Handles seamless firebase vs local storage persistence)
 // -----------------------------------------------------------------------------
 export class DbController {
-  
+  private static _isSyncing = false;
+
   static isFirebaseEnabled(): boolean {
     return isFirebaseActive;
   }
 
   static getAuthInstance(): any {
     return firebaseAuth;
+  }
+
+  // Helper to handle safe write operations with offline queuing
+  static async performFirestoreWrite(
+    colName: string,
+    docId: string,
+    type: 'set' | 'delete',
+    data?: any
+  ): Promise<void> {
+    if (!isFirebaseActive || !firestoreDb) return;
+
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+    
+    if (!isOnline) {
+      this.enqueueOfflineOperation(colName, docId, type, data);
+      return;
+    }
+
+    try {
+      if (type === 'set') {
+        const docRef = doc(firestoreDb, colName, docId);
+        await setDoc(docRef, data);
+      } else if (type === 'delete') {
+        const docRef = doc(firestoreDb, colName, docId);
+        await deleteDoc(docRef);
+      }
+      console.log(`[Offline Sync] Successfully synced ${type} on ${colName}/${docId} with Firestore.`);
+    } catch (error) {
+      console.warn(`[Offline Sync] Firestore write failed for ${colName}/${docId}, queueing offline:`, error);
+      this.enqueueOfflineOperation(colName, docId, type, data);
+    }
+  }
+
+  // Enqueue a fallback write operation
+  static enqueueOfflineOperation(
+    colName: string,
+    docId: string,
+    type: 'set' | 'delete',
+    data?: any
+  ): void {
+    const queue = getStorageItem<OfflineQueueItem[]>('sms_offline_queue', []);
+    
+    // To minimize redundancy: overwrite or merge operations on the exact same document
+    const existingIdx = queue.findIndex(item => item.collection === colName && item.docId === docId);
+    
+    const newItem: OfflineQueueItem = {
+      id: 'op_' + Math.random().toString(36).substring(2, 9),
+      collection: colName,
+      docId,
+      type,
+      data,
+      timestamp: Date.now()
+    };
+
+    if (existingIdx >= 0) {
+      queue[existingIdx] = newItem;
+    } else {
+      queue.push(newItem);
+    }
+    
+    setStorageItem('sms_offline_queue', queue);
+    console.log(`[Offline Sync] Enqueued ${type} operation for offline document ${colName}/${docId}. Queue size: ${queue.length}`);
+    
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('sms_sync_status_changed'));
+    }
+  }
+
+  static getOfflineQueueSize(): number {
+    return getStorageItem<OfflineQueueItem[]>('sms_offline_queue', []).length;
+  }
+
+  // Auto-synchronize pending local writes with Firestore once online
+  static async syncOfflineQueue(): Promise<{ success: boolean; syncedCount: number }> {
+    if (!isFirebaseActive || !firestoreDb) return { success: false, syncedCount: 0 };
+    if (this._isSyncing) return { success: false, syncedCount: 0 };
+    
+    const queue = getStorageItem<OfflineQueueItem[]>('sms_offline_queue', []);
+    if (queue.length === 0) return { success: true, syncedCount: 0 };
+
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+    if (!isOnline) {
+      return { success: false, syncedCount: 0 };
+    }
+
+    this._isSyncing = true;
+    console.log(`[Offline Sync] Active. Replaying ${queue.length} pending writes on Firestore...`);
+    
+    const remainingQueue: OfflineQueueItem[] = [];
+    let syncedCount = 0;
+
+    for (const item of queue) {
+      try {
+        if (item.type === 'set') {
+          const docRef = doc(firestoreDb, item.collection, item.docId);
+          await setDoc(docRef, item.data);
+        } else if (item.type === 'delete') {
+          const docRef = doc(firestoreDb, item.collection, item.docId);
+          await deleteDoc(docRef);
+        }
+        syncedCount++;
+        console.log(`[Offline Sync] Replay success: ${item.type} on ${item.collection}/${item.docId}`);
+      } catch (e) {
+        console.error(`[Offline Sync] Replay failed for item ${item.id}:`, e);
+        remainingQueue.push(item);
+      }
+    }
+
+    setStorageItem('sms_offline_queue', remainingQueue);
+    this._isSyncing = false;
+    
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('sms_sync_status_changed'));
+    }
+
+    return {
+      success: remainingQueue.length === 0,
+      syncedCount
+    };
   }
 
   // Account / Role-based Authentication state
@@ -379,9 +508,27 @@ export class DbController {
     return profile;
   }
 
+  // Retrieve user profile data by UID directly
+  static async getFirebaseUserProfile(uid: string): Promise<UserAccount | null> {
+    if (!isFirebaseActive || !firestoreDb) return null;
+    try {
+      const userDoc = await getDoc(doc(firestoreDb, 'users', uid));
+      if (userDoc.exists()) {
+        return userDoc.data() as UserAccount;
+      }
+    } catch (e) {
+      console.error("Error in getFirebaseUserProfile:", e);
+    }
+    return null;
+  }
+
   // Full cross-device background sync of all Firestore assets
   static async syncAllDataFromFirebase(): Promise<void> {
     if (!isFirebaseActive || !firestoreDb) return;
+    if (firebaseAuth && !firebaseAuth.currentUser) {
+      console.warn("Database sync from Firestore skipped: No currently authenticated user.");
+      return;
+    }
     try {
       console.log("Beginning full database sync from Firestore...");
       
@@ -434,15 +581,7 @@ export class DbController {
 
   static saveSchoolInfo(info: SchoolInfo): void {
     setStorageItem(STORAGE_KEYS.SCHOOL, info);
-    if (isFirebaseActive) {
-      try {
-        setDoc(doc(firestoreDb, 'schools', info.id), info).catch(error => {
-          handleFirestoreError(error, OperationType.WRITE, `schools/${info.id}`);
-        });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.WRITE, `schools/${info.id}`);
-      }
-    }
+    this.performFirestoreWrite('schools', info.id, 'set', info);
   }
 
   // -------------------------
@@ -461,16 +600,7 @@ export class DbController {
       students.push(student);
     }
     setStorageItem(STORAGE_KEYS.STUDENTS, students);
-
-    if (isFirebaseActive) {
-      try {
-        setDoc(doc(firestoreDb, 'students', student.id), student).catch(error => {
-          handleFirestoreError(error, OperationType.WRITE, `students/${student.id}`);
-        });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.WRITE, `students/${student.id}`);
-      }
-    }
+    this.performFirestoreWrite('students', student.id, 'set', student);
   }
 
   static deleteStudent(studentId: string): void {
@@ -487,15 +617,7 @@ export class DbController {
     const filteredAttendance = attendanceList.filter(a => a.studentId !== studentId);
     setStorageItem(STORAGE_KEYS.ATTENDANCE, filteredAttendance);
 
-    if (isFirebaseActive) {
-      try {
-        deleteDoc(doc(firestoreDb, 'students', studentId)).catch(error => {
-          handleFirestoreError(error, OperationType.DELETE, `students/${studentId}`);
-        });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.DELETE, `students/${studentId}`);
-      }
-    }
+    this.performFirestoreWrite('students', studentId, 'delete');
   }
 
   // -------------------------
@@ -514,32 +636,14 @@ export class DbController {
       teachers.push(teacher);
     }
     setStorageItem(STORAGE_KEYS.TEACHERS, teachers);
-
-    if (isFirebaseActive) {
-      try {
-        setDoc(doc(firestoreDb, 'teachers', teacher.id), teacher).catch(error => {
-          handleFirestoreError(error, OperationType.WRITE, `teachers/${teacher.id}`);
-        });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.WRITE, `teachers/${teacher.id}`);
-      }
-    }
+    this.performFirestoreWrite('teachers', teacher.id, 'set', teacher);
   }
 
   static deleteTeacher(teacherId: string): void {
     const teachers = this.getTeachers();
     const filtered = teachers.filter(t => t.id !== teacherId);
     setStorageItem(STORAGE_KEYS.TEACHERS, filtered);
-
-    if (isFirebaseActive) {
-      try {
-        deleteDoc(doc(firestoreDb, 'teachers', teacherId)).catch(error => {
-          handleFirestoreError(error, OperationType.DELETE, `teachers/${teacherId}`);
-        });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.DELETE, `teachers/${teacherId}`);
-      }
-    }
+    this.performFirestoreWrite('teachers', teacherId, 'delete');
   }
 
   // -------------------------
@@ -578,16 +682,7 @@ export class DbController {
       } else {
         list.push(rec);
       }
-
-      if (isFirebaseActive) {
-        try {
-          setDoc(doc(firestoreDb, 'attendance', rec.id), rec).catch(error => {
-            handleFirestoreError(error, OperationType.WRITE, `attendance/${rec.id}`);
-          });
-        } catch (e) {
-          handleFirestoreError(e, OperationType.WRITE, `attendance/${rec.id}`);
-        }
-      }
+      this.performFirestoreWrite('attendance', rec.id, 'set', rec);
     });
     setStorageItem(STORAGE_KEYS.ATTENDANCE, list);
   }
@@ -770,16 +865,7 @@ export class DbController {
       } else {
         allAssessments.push(item);
       }
-
-      if (isFirebaseActive) {
-        try {
-          setDoc(doc(firestoreDb, 'assessments', item.id), item).catch(error => {
-            handleFirestoreError(error, OperationType.WRITE, `assessments/${item.id}`);
-          });
-        } catch (e) {
-          handleFirestoreError(e, OperationType.WRITE, `assessments/${item.id}`);
-        }
-      }
+      this.performFirestoreWrite('assessments', item.id, 'set', item);
     });
 
     setStorageItem(STORAGE_KEYS.ASSESSMENTS, allAssessments);
@@ -830,32 +916,14 @@ export class DbController {
       bills.push(bill);
     }
     setStorageItem(STORAGE_KEYS.FEES, bills);
-
-    if (isFirebaseActive && firestoreDb) {
-      try {
-        setDoc(doc(firestoreDb, 'fees', bill.id), bill).catch(error => {
-          handleFirestoreError(error, OperationType.WRITE, `fees/${bill.id}`);
-        });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.WRITE, `fees/${bill.id}`);
-      }
-    }
+    this.performFirestoreWrite('fees', bill.id, 'set', bill);
   }
 
   static deleteStudentFeeBill(billId: string): void {
     const bills = this.getStudentFeeBills();
     const filtered = bills.filter(b => b.id !== billId);
     setStorageItem(STORAGE_KEYS.FEES, filtered);
-
-    if (isFirebaseActive && firestoreDb) {
-      try {
-        deleteDoc(doc(firestoreDb, 'fees', billId)).catch(error => {
-          handleFirestoreError(error, OperationType.DELETE, `fees/${billId}`);
-        });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.DELETE, `fees/${billId}`);
-      }
-    }
+    this.performFirestoreWrite('fees', billId, 'delete');
   }
 
   static clearAllStudentFeeBills(): void {
@@ -976,12 +1044,31 @@ export class DbController {
   static clearAllData(): void {
     localStorage.removeItem(STORAGE_KEYS.USER);
     localStorage.removeItem(STORAGE_KEYS.USERS_LIST);
-    localStorage.removeItem(STORAGE_KEYS.SCHOOL);
     localStorage.removeItem(STORAGE_KEYS.STUDENTS);
     localStorage.removeItem(STORAGE_KEYS.TEACHERS);
     localStorage.removeItem(STORAGE_KEYS.ATTENDANCE);
     localStorage.removeItem(STORAGE_KEYS.ASSESSMENTS);
     localStorage.removeItem(STORAGE_KEYS.SETTINGS);
     localStorage.removeItem(STORAGE_KEYS.FEES);
+
+    // Write a fully blank SchoolInfo template so that any new login starts with completely blank input data
+    const blankSchool: SchoolInfo = {
+      id: 'school_default',
+      name: '',
+      motto: '',
+      logoUrl: '',
+      schoolNumber: '',
+      emisCode: '',
+      gpsAddress: '',
+      schoolType: 'Public',
+      headteacherName: '',
+      telephone: '',
+      email: '',
+      qualifications: '',
+      highestAcademicQualifications: '',
+      district: '',
+      circuit: ''
+    };
+    localStorage.setItem(STORAGE_KEYS.SCHOOL, JSON.stringify(blankSchool));
   }
 }

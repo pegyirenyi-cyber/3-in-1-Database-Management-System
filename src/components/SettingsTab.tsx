@@ -466,11 +466,14 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
               <p>
                 You are about to initiate a <strong>Complete System Reset</strong>. This operation will:
               </p>
-              <ul className="list-disc pl-4 space-y-1 text-slate-500 font-semibold">
-                <li>Purge all registered students rosters</li>
-                <li>Wipe all teacher profiles and qualifications data</li>
-                <li>Erase all active term assessments and grade registers</li>
-                <li>Reset the current institution info & login sessions</li>
+              <ul className="list-disc pl-4 space-y-1 text-slate-500 font-semibold font-sans">
+                <li>Wipe all Student Profiles entirely</li>
+                <li>Wipe all Teacher Profiles & records</li>
+                <li>Clear the entire Class Attendance Roster</li>
+                <li>Reset all Academic Assessments & grade sheets</li>
+                <li>Reset the School Fees Ledger completely</li>
+                <li>Purge active login sessions & clear school settings</li>
+                <li>Initialize blank input data fields for any new user login</li>
               </ul>
               <p className="text-rose-600 font-bold bg-rose-50 p-2.5 rounded-lg border border-rose-100">
                 This action is irreversible. We highly recommend clicking "Save All Data" to back up first!

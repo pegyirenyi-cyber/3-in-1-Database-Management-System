@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, ChangeEvent, FormEvent } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Student, 
   ClassType, 
@@ -32,7 +33,9 @@ import {
   Info, 
   Filter, 
   BookOpen, 
-  AlertTriangle 
+  AlertTriangle,
+  Eraser,
+  RotateCcw 
 } from 'lucide-react';
 
 interface Props {
@@ -74,6 +77,38 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  const handleClearInputs = () => {
+    setPaymentAmount('');
+    setPaymentRemarks('');
+    setPaymentComponent('School Fees');
+    setPaymentMethod('Cash');
+    setPaymentDate(new Date().toISOString().split('T')[0]);
+    showToast("Resetted active payment dialogue inputs to blank.", "success");
+  };
+
+  const handleDeleteActiveSelection = () => {
+    if (activeStudentId) {
+      if (window.confirm("Do you want to delete and reset fee accounts billing data for the currently active student?")) {
+        const nextBills = feeBills.filter(b => b.studentId !== activeStudentId);
+        setFeeBills(nextBills);
+        localStorage.setItem('school_fees_bills', JSON.stringify(nextBills));
+        setActiveStudentId(null);
+        showToast("Active student fee log successfully reset.", "success");
+      }
+    } else {
+      showToast("Please select a student from the fee ledger directory first.", "error");
+    }
+  };
+
+  const handleDeleteAllFees = () => {
+    if (window.confirm("CRITICAL WARNING: Are you sure you want to completely delete all historical Student Fee Bills and payments transactions ledger? This action is permanent and cannot be undone.")) {
+      localStorage.setItem('school_fees_bills', JSON.stringify([]));
+      setFeeBills([]);
+      onManualSave();
+      showToast("Successfully purged all recorded fee logs and ledger transactions.", "success");
+    }
   };
 
   // Synchronize state with LocalStorage / Cloud
@@ -843,151 +878,184 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
       </div>
 
       {/* MODAL overlay: Receive Installment Form */}
-      {showPaymentModal && activeStudent && activeBill && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
-          <div className="bg-white max-w-md w-full rounded-xl shadow-2xl border border-slate-200 overflow-hidden transform transition-all">
-            
-            <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest font-sans flex items-center gap-1.5">
-                  <CreditCard className="h-4 w-4" /> Receive Cash Installment
-                </h3>
-                <p className="text-[10px] text-slate-400">Recording fee collection for {activeBill.studentName}</p>
-              </div>
-              <button 
-                onClick={() => setShowPaymentModal(false)}
-                className="p-1 hover:bg-slate-200 rounded transition"
-              >
-                <X className="h-4 w-4 text-slate-500" />
-              </button>
-            </div>
-
-            <form onSubmit={handleAddPayment} className="p-6 space-y-4 text-xs text-left">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Component allocation</label>
-                <select
-                  value={paymentComponent}
-                  onChange={(e) => setPaymentComponent(e.target.value as FeePayment['component'])}
-                  className="w-full border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="School Fees">School Fees (Standard tuition)</option>
-                  <option value="Utility Bill">Utility Bill</option>
-                  <option value="Sports Fees">Sports Fees</option>
-                  <option value="PTA dues">PTA Dues</option>
-                  <option value="Other Fee">Other Fee (Excursions/Misc)</option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
+      <AnimatePresence>
+        {showPaymentModal && activeStudent && activeBill && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowPaymentModal(false);
+            }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm overflow-y-auto cursor-pointer no-print"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white max-w-[465px] w-full rounded-[24px] shadow-2xl border border-slate-100 overflow-hidden cursor-default md:my-8"
+            >
+              
+              <div className="p-6 pb-4 bg-white border-b border-slate-100/80 flex items-center justify-between">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Payment Amount (GHS)</label>
-                  <div className="relative">
-                    <span className="absolute left-2.5 top-2.5 font-bold text-slate-400 font-mono">GHS</span>
+                  <h3 className="text-[13px] font-bold text-slate-800 uppercase tracking-widest font-sans flex items-center gap-1.5 leading-none">
+                    <CreditCard className="h-4 w-4 text-emerald-650" /> Receive Cash Installment
+                  </h3>
+                  <p className="text-[10px] text-slate-400 mt-1">Recording fee collection for {activeBill.studentName}</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => setShowPaymentModal(false)}
+                  className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 transition cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleAddPayment} className="p-6 md:p-8 space-y-5 text-xs text-left bg-white">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Component allocation</label>
+                  <select
+                    value={paymentComponent}
+                    onChange={(e) => setPaymentComponent(e.target.value as FeePayment['component'])}
+                    className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-[13px] text-slate-700 bg-slate-50/15 hover:bg-slate-50/30 transition duration-150 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+                  >
+                    <option value="School Fees">School Fees (Standard tuition)</option>
+                    <option value="Utility Bill">Utility Bill</option>
+                    <option value="Sports Fees">Sports Fees</option>
+                    <option value="PTA dues">PTA Dues</option>
+                    <option value="Other Fee">Other Fee (Excursions/Misc)</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Amount (GHS)</label>
+                    <div className="relative">
+                      <span className="absolute left-3.5 top-3.5 font-bold text-slate-400 font-mono text-[10px] leading-none">GHS</span>
+                      <input
+                        type="number"
+                        required
+                        min="1"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={paymentAmount}
+                        onChange={(e) => setPaymentAmount(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl pl-12 pr-4 py-2.5 font-sans text-[13px] focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none text-slate-700 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Transaction date</label>
                     <input
-                      type="number"
+                      type="date"
                       required
-                      min="1"
-                      step="0.01"
-                      placeholder="0.00"
-                      value={paymentAmount}
-                      onChange={(e) => setPaymentAmount(e.target.value)}
-                      className="w-full border border-slate-200 rounded-lg pl-10 pr-2 py-2 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500 font-bold text-slate-800"
+                      value={paymentDate}
+                      onChange={(e) => setPaymentDate(e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-sans text-[13px] focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none text-slate-700"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Transaction date</label>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Method</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {(['Cash', 'Mobile Money', 'Bank Transfer', 'Cheque'] as const).map(met => (
+                      <button
+                        key={met}
+                        type="button"
+                        onClick={() => setPaymentMethod(met)}
+                        className={`py-2 px-1 border rounded-xl font-medium text-[11px] text-center transition ${
+                          paymentMethod === met 
+                            ? 'border-blue-500 bg-blue-50/40 text-blue-600 font-semibold' 
+                            : 'border-slate-200/80 hover:bg-slate-50 text-slate-500 font-normal bg-white'
+                        }`}
+                      >
+                        {met}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Remarks / Details / Memo</label>
                   <input
-                    type="date"
-                    required
-                    value={paymentDate}
-                    onChange={(e) => setPaymentDate(e.target.value)}
-                    className="w-full border border-slate-200 rounded-lg p-2 font-mono focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-slate-700"
+                    type="text"
+                    placeholder="e.g. Paid in cash by father, transaction reference"
+                    value={paymentRemarks}
+                    onChange={(e) => setPaymentRemarks(e.target.value)}
+                    className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-[13px] text-slate-700 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none placeholder:text-slate-300"
                   />
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Payment Method</label>
-                <div className="grid grid-cols-4 gap-2">
-                  {(['Cash', 'Mobile Money', 'Bank Transfer', 'Cheque'] as const).map(met => (
-                    <button
-                      key={met}
-                      type="button"
-                      onClick={() => setPaymentMethod(met)}
-                      className={`p-2 border rounded-lg font-medium text-[10px] text-center transition ${
-                        paymentMethod === met 
-                          ? 'border-blue-600 bg-blue-50 text-blue-700' 
-                          : 'border-slate-200 hover:bg-slate-50 text-slate-600'
-                      }`}
-                    >
-                      {met}
-                    </button>
-                  ))}
+                <div className="pt-6 border-t border-slate-100 flex justify-end gap-3 bg-white">
+                  <button
+                    type="button"
+                    onClick={() => setShowPaymentModal(false)}
+                    className="px-5 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-500 font-semibold rounded-xl transition cursor-pointer text-[12px]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px]"
+                  >
+                    Record Installment
+                  </button>
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Remarks / Details / Memo</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Paid in cash by father, transaction reference"
-                  value={paymentRemarks}
-                  onChange={(e) => setPaymentRemarks(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
-              <div className="pt-4 border-t border-slate-100 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowPaymentModal(false)}
-                  className="px-4 py-2 border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-lg"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg shadow-sm"
-                >
-                  Record Installment
-                </button>
-              </div>
-
-            </form>
+              </form>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
       {/* DYNAMIC GENERAL PRINT AREA (HIDDEN) FOR RECEIPT SPECIFIC */}
-      {activeReceiptPayment && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white max-w-2xl w-full rounded-2xl shadow-2xl border border-slate-300 overflow-hidden flex flex-col max-h-[90vh]">
-            
-            <div className="p-4 bg-slate-100 border-b border-slate-200/80 flex items-center justify-between shrink-0">
-              <span className="text-xs font-bold text-slate-600 uppercase tracking-widest">GTIMS OFFICIAL RECEIPT</span>
-              <div className="flex gap-1.5">
-                <button
-                  onClick={() => handlePrintStandard('fee-receipt-print-area')}
-                  className="text-[11px] inline-flex items-center gap-1 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 py-1 px-2.5 rounded font-medium transition"
-                >
-                  <Printer className="h-3.5 w-3.5" /> Print Receipt
-                </button>
-                <button
-                  onClick={() => handleExportFeesPDF('fee-receipt-print-area', `receipt_${activeReceiptPayment.payment.receiptNo}`)}
-                  className="text-[11px] inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white py-1 px-2.5 rounded font-medium transition"
-                >
-                  <FileDown className="h-3.5 w-3.5" /> Save PDF
-                </button>
-                <button 
-                  onClick={() => setActiveReceiptPayment(null)}
-                  className="p-1 hover:bg-slate-200 rounded transition text-slate-500"
-                >
-                  <X className="h-4 w-4" />
-                </button>
+      <AnimatePresence>
+        {activeReceiptPayment && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setActiveReceiptPayment(null);
+            }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto cursor-pointer no-print"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white max-w-2xl w-full rounded-[24px] shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh] cursor-default md:my-8"
+            >
+              
+              <div className="p-6 pb-4 bg-white border-b border-slate-100/85 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-[13px] font-bold text-slate-800 uppercase tracking-widest font-sans leading-none">
+                    GTIMS OFFICIAL RECEIPT
+                  </h3>
+                  <p className="text-[10px] text-slate-400 mt-1">Review ledger payment transaction metadata</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handlePrintStandard('fee-receipt-print-area')}
+                    className="px-3.5 py-2 hover:bg-slate-50 border border-slate-200 text-slate-500 font-semibold rounded-xl text-xs transition cursor-pointer bg-white"
+                  >
+                    <Printer className="h-3.5 w-3.5 inline mr-1" /> Print
+                  </button>
+                  <button
+                    onClick={() => handleExportFeesPDF('fee-receipt-print-area', `receipt_${activeReceiptPayment.payment.receiptNo}`)}
+                    className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer"
+                  >
+                    <FileDown className="h-3.5 w-3.5 inline mr-1" /> Save PDF
+                  </button>
+                  <button 
+                    onClick={() => setActiveReceiptPayment(null)}
+                    className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 transition cursor-pointer ml-1 animate-none bg-transparent"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
-            </div>
 
             <div className="flex-1 overflow-y-auto p-8" id="fee-receipt-print-area">
               <div className="border-[3px] border-double border-slate-800 p-6 space-y-6 bg-white text-slate-900 text-left">
@@ -1115,38 +1183,57 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
 
               </div>
             </div>
-          </div>
+          </motion.div>
         </div>
       )}
+    </AnimatePresence>
 
       {/* DYNAMIC GENERAL PRINT AREA (HIDDEN) FOR FULL STUDENT LEDGER */}
-      {activeLedgerStudent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white max-w-2xl w-full rounded-2xl shadow-2xl border border-slate-300 overflow-hidden flex flex-col max-h-[90vh]">
-            
-            <div className="p-4 bg-slate-100 border-b border-slate-200/80 flex items-center justify-between shrink-0">
-              <span className="text-xs font-bold text-slate-600 uppercase tracking-widest">GTIMS LEDGER REPORT</span>
-              <div className="flex gap-1.5">
-                <button
-                  onClick={() => handlePrintStandard('fee-ledger-print-area')}
-                  className="text-[11px] inline-flex items-center gap-1 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 py-1 px-2.5 rounded font-medium transition"
-                >
-                  <Printer className="h-3.5 w-3.5" /> Print Details
-                </button>
-                <button
-                  onClick={() => handleExportFeesPDF('fee-ledger-print-area', `ledger_${activeLedgerStudent.studentId}`)}
-                  className="text-[11px] inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white py-1 px-2.5 rounded font-medium transition"
-                >
-                  <FileDown className="h-3.5 w-3.5" /> Save PDF
-                </button>
-                <button 
-                  onClick={() => setActiveLedgerStudent(null)}
-                  className="p-1 hover:bg-slate-200 rounded transition text-slate-500"
-                >
-                  <X className="h-4 w-4" />
-                </button>
+      <AnimatePresence>
+        {activeLedgerStudent && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setActiveLedgerStudent(null);
+            }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto cursor-pointer no-print"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white max-w-2xl w-full rounded-[24px] shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh] cursor-default md:my-8"
+            >
+              
+              <div className="p-6 pb-4 bg-white border-b border-slate-100/85 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-[13px] font-bold text-slate-800 uppercase tracking-widest font-sans leading-none">
+                    GTIMS LEDGER REPORT
+                  </h3>
+                  <p className="text-[10px] text-slate-400 mt-1">Review student fee liabilities and payment streams</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handlePrintStandard('fee-ledger-print-area')}
+                    className="px-3.5 py-2 hover:bg-slate-50 border border-slate-200 text-slate-500 font-semibold rounded-xl text-xs transition cursor-pointer bg-white"
+                  >
+                    <Printer className="h-3.5 w-3.5 inline mr-1" /> Print Details
+                  </button>
+                  <button
+                    onClick={() => handleExportFeesPDF('fee-ledger-print-area', `ledger_${activeLedgerStudent.studentId}`)}
+                    className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer"
+                  >
+                    <FileDown className="h-3.5 w-3.5 inline mr-1" /> Save PDF
+                  </button>
+                  <button 
+                    onClick={() => setActiveLedgerStudent(null)}
+                    className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 transition cursor-pointer ml-1 bg-transparent animate-none"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
-            </div>
 
             <div className="flex-1 overflow-y-auto p-8" id="fee-ledger-print-area">
               <div className="border-[3px] border-double border-slate-800 p-6 space-y-6 bg-white text-slate-900 text-left">
@@ -1312,9 +1399,43 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
 
               </div>
             </div>
-          </div>
+          </motion.div>
         </div>
       )}
+    </AnimatePresence>
+
+    {/* SECTION DATA CONTROLS */}
+    <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-3 no-print mt-6">
+      <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+        <AlertTriangle className="text-indigo-500" size={14} /> Section School Fees Controls
+      </h4>
+      <p className="text-[10px] text-slate-500 leading-relaxed">
+        Manage active payment states, wipe entry fields inside overlays, and purge historical transaction and debit rows associated with this module.
+      </p>
+      <div className="flex flex-wrap gap-2.5 pt-1">
+        <button
+          type="button"
+          onClick={handleClearInputs}
+          className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-850 hover:bg-slate-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+        >
+          <Eraser size={13} /> Clear All Inputs
+        </button>
+        <button
+          type="button"
+          onClick={handleDeleteActiveSelection}
+          className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 hover:text-amber-850 hover:bg-amber-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+        >
+          <RotateCcw size={13} /> Delete Selected Student Fees Ledger
+        </button>
+        <button
+          type="button"
+          onClick={handleDeleteAllFees}
+          className="inline-flex items-center gap-1.5 px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 hover:text-rose-850 hover:bg-rose-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs sm:ml-auto"
+        >
+          <Trash2 size={13} /> Delete All Section Data
+        </button>
+      </div>
+    </div>
 
     </div>
   );
