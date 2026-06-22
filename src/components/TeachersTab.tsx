@@ -1,10 +1,11 @@
-import { useState, useRef, ChangeEvent, FormEvent } from 'react';
+import React, { useState, useRef, ChangeEvent, FormEvent, useMemo } from 'react';
 import { Teacher, TeacherRank, TEACHER_RANKS } from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
-  Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, UserCheck, User, Briefcase, Award, GraduationCap, Calendar, FileDown, ShieldAlert, RotateCcw, Eraser
+  Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, UserCheck, User, Briefcase, Award, GraduationCap, Calendar, FileDown, ShieldAlert, RotateCcw, Eraser, Eye, FileSpreadsheet,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { motion, AnimatePresence } from 'motion/react';
@@ -41,6 +42,15 @@ const INITIAL_FORM: Partial<Teacher> = {
 export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, onManualSave }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
   
+  // Pagination states
+  const [teacherPage, setTeacherPage] = useState(1);
+  const [teacherPageSize, setTeacherPageSize] = useState(12);
+
+  // Reset page when search or filters change
+  React.useEffect(() => {
+    setTeacherPage(1);
+  }, [searchTerm]);
+  
   // Registration Dialog and Form controllers
   const [isEditing, setIsEditing] = useState(false);
   const [formState, setFormState] = useState<Partial<Teacher>>({ ...INITIAL_FORM });
@@ -49,12 +59,383 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Filter teachers dynamically
-  const filteredTeachers = teachers.filter(tea => {
-    const fullName = `${tea.firstName} ${tea.middleName || ''} ${tea.lastName}`.toLowerCase();
-    const matchesSearch = fullName.includes(searchTerm.toLowerCase()) || tea.staffId.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesSearch;
-  });
+  // Bulk import states
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [parsedTeachers, setParsedTeachers] = useState<{ teacher: Partial<Teacher>; errors: string[] }[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Parse CSV utility which handles quotes and double quotes escapes properly
+  const parseCSV = (text: string): string[][] => {
+    const result: string[][] = [];
+    let row: string[] = [];
+    let cell = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const nextChar = text[i + 1];
+
+      if (inQuotes) {
+        if (char === '"') {
+          if (nextChar === '"') {
+            cell += '"';
+            i++; // skip next char
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          cell += char;
+        }
+      } else {
+        if (char === '"') {
+          inQuotes = true;
+        } else if (char === ',') {
+          row.push(cell.trim());
+          cell = '';
+        } else if (char === '\n' || char === '\r') {
+          row.push(cell.trim());
+          cell = '';
+          if (row.length > 0 && (row.length > 1 || row[0] !== '')) {
+            result.push(row);
+          }
+          row = [];
+          if (char === '\r' && nextChar === '\n') {
+            i++;
+          }
+        } else {
+          cell += char;
+        }
+      }
+    }
+
+    if (row.length > 0 || cell !== '') {
+      row.push(cell.trim());
+      if (row.length > 1 || row[0] !== '') {
+        result.push(row);
+      }
+    }
+
+    return result;
+  };
+
+  // Maps raw CSV cells to structured Teacher records with inline warnings & default fallbacks
+  const mapCSVRowsToTeachers = (rows: string[][]): { teacher: Partial<Teacher>; errors: string[] }[] => {
+    if (rows.length < 2) return [];
+
+    const rawHeaders = rows[0].map(h => h.trim().toLowerCase());
+    const dataRows = rows.slice(1);
+
+    // Dynamic, flexible index matching
+    const findIndex = (aliases: string[]) => {
+      return rawHeaders.findIndex(header => 
+        aliases.some(alias => header === alias || header.replace(/[\s_-]/g, '') === alias.replace(/[\s_-]/g, ''))
+      );
+    };
+
+    const idIdx = findIndex(['id', 'teacherid', 'teacher id']);
+    const firstNameIdx = findIndex(['firstname', 'first name', 'fname']);
+    const middleNameIdx = findIndex(['middlename', 'middle name', 'mname']);
+    const lastNameIdx = findIndex(['lastname', 'last name', 'lname']);
+    const genderIdx = findIndex(['gender', 'sex']);
+    const dobIdx = findIndex(['dateofbirth', 'date of birth', 'dob', 'birthdate']);
+    const placeOfBirthIdx = findIndex(['placeofbirth', 'place of birth']);
+    const subjectsIdx = findIndex(['subjects', 'subject', 'subjectstaught', 'subjects taught', 'taught', 'class taught', 'classroom']);
+    const profQualIdx = findIndex(['professionalqualifications', 'professional qualifications', 'professional qualification', 'prof qual']);
+    const acadQualIdx = findIndex(['highestacademicqualifications', 'highest academic qualifications', 'academic qualification', 'academic qualifications', 'acad qual']);
+    const rankIdx = findIndex(['rank', 'professionalrank', 'professional rank']);
+    const firstApptIdx = findIndex(['dateoffirstappointment', 'date of first appointment', 'first appointment', 'appt date', 'first appt']);
+    const postingIdx = findIndex(['dateofposting', 'date of posting', 'posting date', 'posting']);
+    const staffIdIdx = findIndex(['staffid', 'staff id', 'staffidnumber', 'staff id number']);
+    const ntcIdx = findIndex(['ntcnumber', 'ntc number', 'ntc']);
+    const ssnitIdx = findIndex(['ssnitnumber', 'ssnit number', 'ssnit']);
+    const districtIdx = findIndex(['district', 'academic district']);
+    const circuitIdx = findIndex(['circuit', 'educational circuit']);
+
+    return dataRows.map((row) => {
+      const getValue = (idx: number) => (idx >= 0 && idx < row.length ? row[idx].trim() : '');
+      const errors: string[] = [];
+
+      // Required fields checks
+      const firstName = getValue(firstNameIdx);
+      if (!firstName) {
+        errors.push("Missing First Name *");
+      }
+
+      const lastName = getValue(lastNameIdx);
+      if (!lastName) {
+        errors.push("Missing Last Name *");
+      }
+
+      const staffId = getValue(staffIdIdx);
+      // Staff ID is optional like NTC number
+
+      // Gender normalization
+      let gender: 'Male' | 'Female' = 'Male';
+      const rawGender = getValue(genderIdx);
+      if (rawGender) {
+        const gLower = rawGender.toLowerCase();
+        if (gLower === 'male' || gLower === 'm') {
+          gender = 'Male';
+        } else if (gLower === 'female' || gLower === 'f') {
+          gender = 'Female';
+        } else {
+          errors.push(`Invalid Gender value: "${rawGender}". Must specify "Male" or "Female"`);
+        }
+      }
+
+      // Birthdate formatting checks if present
+      const dateOfBirth = getValue(dobIdx);
+      if (dateOfBirth) {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(dateOfBirth)) {
+          errors.push(`Invalid Date of Birth format: "${dateOfBirth}". Use absolute YYYY-MM-DD`);
+        }
+      }
+
+      // First appointment date formatting checks if present
+      const firstAppt = getValue(firstApptIdx);
+      if (firstAppt) {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(firstAppt)) {
+          errors.push(`Invalid First Appointment Date: "${firstAppt}". Use YYYY-MM-DD`);
+        }
+      }
+
+      // Posting date formatting checks if present
+      const postingDate = getValue(postingIdx);
+      if (postingDate) {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(postingDate)) {
+          errors.push(`Invalid Posting Date: "${postingDate}". Use YYYY-MM-DD`);
+        }
+      }
+
+      // Professional Rank check & alignments
+      let rank: TeacherRank = 'Not applicable';
+      const rawRank = getValue(rankIdx);
+      if (rawRank) {
+        const foundRank = TEACHER_RANKS.find(r => 
+          r.toLowerCase() === rawRank.toLowerCase() || 
+          r.replace(/\s+/g, '').toLowerCase() === rawRank.replace(/\s+/g, '').toLowerCase()
+        );
+        if (foundRank) {
+          rank = foundRank;
+        } else {
+          // If not matching but has content, raise an error pointing to options
+          errors.push(`Invalid Professional Rank: "${rawRank}". Expected one of: ${TEACHER_RANKS.join(', ')}`);
+        }
+      }
+
+      const rawId = getValue(idIdx);
+      const id = rawId || 'T' + Math.floor(1000 + Math.random() * 9000);
+
+      const teacher: Partial<Teacher> = {
+        id,
+        firstName,
+        middleName: getValue(middleNameIdx),
+        lastName,
+        gender,
+        dateOfBirth: dateOfBirth || '',
+        placeOfBirth: getValue(placeOfBirthIdx),
+        subjectsTaught: getValue(subjectsIdx),
+        professionalQualifications: getValue(profQualIdx),
+        highestAcademicQualifications: getValue(acadQualIdx),
+        rank,
+        dateOfFirstAppointment: firstAppt || '',
+        dateOfPostingToCurrentStation: postingDate || '',
+        staffId,
+        ntcNumber: getValue(ntcIdx),
+        ssnitNumber: getValue(ssnitIdx),
+        district: getValue(districtIdx),
+        circuit: getValue(circuitIdx),
+        photoUrl: '', // Default blank on bulk uploading
+        createdAt: new Date().toISOString()
+      };
+
+      return { teacher, errors };
+    });
+  };
+
+  const processFile = (file: File) => {
+    setImportFile(file);
+    setImportError(null);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      try {
+        const rows = parseCSV(text);
+        if (rows.length < 2) {
+          setImportError("CSV contains insufficient rows. Please include a header row followed by data.");
+          setParsedTeachers([]);
+          return;
+        }
+        const mapped = mapCSVRowsToTeachers(rows);
+        setParsedTeachers(mapped);
+      } catch (err) {
+        console.error(err);
+        setImportError("Encountered filesystem read or encoding error parsing the CSV.");
+        setParsedTeachers([]);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      if (file.name.endsWith('.csv')) {
+        processFile(file);
+      } else {
+        setImportError("The dropped file is not a supported CSV spreadsheet. Please upload a .csv file.");
+      }
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.name.endsWith('.csv')) {
+        processFile(file);
+      } else {
+        setImportError("The selected file must be a structured CSV spreadsheet format (.csv).");
+      }
+    }
+  };
+
+  const handleDownloadTemplate = () => {
+    const headers = [
+      'First Name', 'Middle Name', 'Last Name', 'Gender', 'Date of Birth',
+      'Place of Birth', 'Subjects Taught', 'Professional Qualifications',
+      'Highest Academic Qualifications', 'Rank', 'Date of First Appointment',
+      'Date of Posting', 'Staff ID', 'NTC Number', 'SSNIT Number',
+      'District', 'Circuit'
+    ];
+    const examples = [
+      ['Mary', 'Ama', 'Annan', 'Female', '1988-05-15', 'Accra', 'English Language', 'Licensed Teacher (NTC Certified)', 'Bachelor of Education (B.Ed)', 'Senior Superintendent I', '2010-09-01', '2018-01-15', 'GES-T10294', 'NTC-90291', 'SSNIT-2019A', 'Kumasi Metropolitan', 'Asokonyi Circuit'],
+      ['Emmanuel', '', 'Kofi', 'Male', '1990-11-23', 'Cape Coast', 'Mathematics / Science', 'Professional Teacher (Diploma/Degree in Education)', 'Master of Education / Arts / Science (M.Ed / M.A / M.Sc)', 'Principal Superintendent', '2012-10-10', '2020-03-01', 'GES-T39021', 'NTC-81923', 'SSNIT-89201', 'Cape Coast District', 'Central Circuit']
+    ];
+
+    const csvContent = [
+      headers.join(','),
+      ...examples.map(ex => ex.map(val => `"${val.replace(/"/g, '""')}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "teacher_bulk_import_template.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExecuteImport = () => {
+    const validRows = parsedTeachers.filter(p => p.errors.length === 0);
+    if (validRows.length === 0) {
+      alert("No valid rows available to import. Correct validation issues and try again.");
+      return;
+    }
+
+    validRows.forEach(row => {
+      DbController.saveTeacher(row.teacher as Teacher);
+    });
+
+    onRefresh();
+    setShowImportModal(false);
+    setImportFile(null);
+    setParsedTeachers([]);
+    alert(`Successfully populated ${validRows.length} new teacher records to roster database.`);
+
+    if (isAutoSave) {
+      // Auto save triggered
+    } else {
+      onManualSave();
+    }
+  };
+
+  // Filter teachers dynamically with high-performance memoization
+  const filteredTeachers = useMemo(() => {
+    return teachers.filter(tea => {
+      const fullName = `${tea.firstName} ${tea.middleName || ''} ${tea.lastName}`.toLowerCase();
+      const matchesSearch = fullName.includes(searchTerm.toLowerCase()) || tea.staffId.toLowerCase().includes(searchTerm.toLowerCase());
+      return matchesSearch;
+    });
+  }, [teachers, searchTerm]);
+
+  // Paginated teachers slice for desktop UI performance with high-performance memoization
+  const totalTeachersCount = filteredTeachers.length;
+  const totalTeacherPages = useMemo(() => Math.ceil(totalTeachersCount / teacherPageSize), [totalTeachersCount, teacherPageSize]);
+  const activeTeacherPage = Math.min(Math.max(1, teacherPage), totalTeacherPages || 1);
+  
+  const paginatedTeachers = useMemo(() => {
+    return filteredTeachers.slice((activeTeacherPage - 1) * teacherPageSize, activeTeacherPage * teacherPageSize);
+  }, [filteredTeachers, activeTeacherPage, teacherPageSize]);
+
+  const handleExportCSV = () => {
+    const headers = [
+      'Teacher ID', 'First Name', 'Middle Name', 'Last Name', 'Gender', 'Date of Birth',
+      'Place of Birth', 'Subjects/Class Taught', 'Professional Qualifications',
+      'Highest Academic Qualifications', 'Rank', 'Date of First Appointment',
+      'Date of Posting to Current Station', 'Staff ID', 'NTC Number', 'SSNIT Number',
+      'District', 'Circuit', 'Created At'
+    ];
+    
+    const csvRows = [headers.join(',')];
+    
+    for (const t of filteredTeachers) {
+      const values = [
+        t.id,
+        t.firstName,
+        t.middleName || '',
+        t.lastName,
+        t.gender,
+        t.dateOfBirth,
+        t.placeOfBirth,
+        t.subjectsTaught,
+        t.professionalQualifications,
+        t.highestAcademicQualifications,
+        t.rank,
+        t.dateOfFirstAppointment,
+        t.dateOfPostingToCurrentStation,
+        t.staffId,
+        t.ntcNumber,
+        t.ssnitNumber,
+        t.district,
+        t.circuit,
+        t.createdAt
+      ].map(val => {
+        const escaped = ('' + (val || '')).replace(/"/g, '""');
+        return `"${escaped}"`;
+      });
+      csvRows.push(values.join(','));
+    }
+    
+    const blob = new Blob([csvRows.join("\n")], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `teacher_database_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const handleOpenAdd = () => {
     setFormState({ ...INITIAL_FORM, id: 'T' + Math.floor(1000 + Math.random() * 9000) });
@@ -114,7 +495,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
   const handleDeleteAllTeachers = () => {
     if (window.confirm("CRITICAL WARNING: Are you sure you want to delete ALL teacher records? This action is irreversible and cannot be undone.")) {
-      localStorage.setItem('school_teachers', JSON.stringify([]));
+      DbController.clearAllTeachers();
       onRefresh();
       alert("Successfully purged all teacher records from the database state.");
     }
@@ -147,7 +528,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
   const handleSaveSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!formState.firstName || !formState.lastName || !formState.staffId || !formState.rank) {
+    if (!formState.firstName || !formState.lastName || !formState.rank) {
       alert("Please populate all required fields (*)");
       return;
     }
@@ -216,10 +597,24 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
         <div className="flex items-center gap-2 w-full md:w-auto justify-end">
           <button
-            onClick={() => setShowPdfGuide(true)}
+            onClick={handleExportCSV}
+            className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+            title="Export filtered/all records to a CSV spreadsheet"
+          >
+            <FileSpreadsheet size={15} /> Export to CSV
+          </button>
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 border border-blue-600 text-white hover:bg-blue-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+            title="Import teacher records from a formatted CSV file"
+          >
+            <Upload size={15} /> Bulk Import CSV
+          </button>
+          <button
+            onClick={() => setShowPdfGuide(!showPdfGuide)}
             className="flex items-center gap-1.5 px-3 py-2 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer"
           >
-            <FileDown size={15} /> Save PDF
+            <Eye size={15} /> Toggle Preview Mode
           </button>
           <button
             onClick={handleOpenAdd}
@@ -232,7 +627,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
       {/* Grid container of teacher profiles */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 no-print">
-        {filteredTeachers.length === 0 ? (
+        {paginatedTeachers.length === 0 ? (
           <div className="col-span-full bg-slate-50 border-2 border-dashed border-slate-200 p-12 text-center rounded-xl">
             <Briefcase size={36} className="text-slate-300 mx-auto mb-2" />
             <h4 className="text-sm font-semibold text-slate-700">No Teacher Profiles Registered</h4>
@@ -245,7 +640,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
             </button>
           </div>
         ) : (
-          filteredTeachers.map(tea => (
+          paginatedTeachers.map(tea => (
             <div 
               key={tea.id}
               className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs hover:shadow-md transition duration-200 flex flex-col justify-between"
@@ -316,6 +711,100 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
           ))
         )}
       </div>
+
+      {/* Teacher pagination controls */}
+      {filteredTeachers.length > 0 && (
+        <div id="teacher-pagination-bar" className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 p-4 mt-2 bg-white border border-slate-200 rounded-xl no-print shadow-2xs">
+          <div className="text-xs text-slate-500 font-sans">
+            Showing <span className="font-semibold text-slate-700">{(activeTeacherPage - 1) * teacherPageSize + 1}</span> to{' '}
+            <span className="font-semibold text-slate-700">{Math.min(activeTeacherPage * teacherPageSize, totalTeachersCount)}</span> of{' '}
+            <span className="font-semibold text-slate-700">{totalTeachersCount}</span> staff records
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-1.5 text-xs text-slate-500">
+              <span>Show</span>
+              <select
+                value={teacherPageSize}
+                onChange={(e) => {
+                  setTeacherPageSize(Number(e.target.value));
+                  setTeacherPage(1);
+                }}
+                className="bg-white border border-slate-200 rounded px-1.5 py-1 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-700 cursor-pointer"
+              >
+                {[6, 12, 24, 48, 100].map(sz => (
+                  <option key={sz} value={sz}>{sz}</option>
+                ))}
+              </select>
+              <span>records</span>
+            </div>
+            
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setTeacherPage(1)}
+                disabled={activeTeacherPage === 1}
+                className="p-1 px-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent transition text-xs font-semibold cursor-pointer disabled:cursor-not-allowed"
+                title="First Page"
+              >
+                First
+              </button>
+              <button
+                type="button"
+                onClick={() => setTeacherPage(p => Math.max(1, p - 1))}
+                disabled={activeTeacherPage === 1}
+                className="p-1 px-2.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent transition text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <ChevronLeft size={14} />
+                <span>Prev</span>
+              </button>
+              
+              {/* Numeric Page indicators */}
+              {(() => {
+                const pageRange = [];
+                const maxButtons = 5;
+                let startPage = Math.max(1, activeTeacherPage - 2);
+                let endPage = Math.min(totalTeacherPages, startPage + maxButtons - 1);
+                if (endPage - startPage < maxButtons - 1) {
+                  startPage = Math.max(1, endPage - maxButtons + 1);
+                }
+                for (let i = startPage; i <= endPage; i++) {
+                  pageRange.push(i);
+                }
+                return pageRange.map(p => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setTeacherPage(p)}
+                    className={`w-7 h-7 flex items-center justify-center text-xs font-bold rounded-lg border transition cursor-pointer ${p === activeTeacherPage ? `${theme.primaryBg || 'bg-slate-900'} text-white border-transparent` : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                  >
+                    {p}
+                  </button>
+                ));
+              })()}
+              
+              <button
+                type="button"
+                onClick={() => setTeacherPage(p => Math.min(totalTeacherPages, p + 1))}
+                disabled={activeTeacherPage === totalTeacherPages}
+                className="p-1 px-2.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent transition text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <span>Next</span>
+                <ChevronRight size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setTeacherPage(totalTeacherPages)}
+                disabled={activeTeacherPage === totalTeacherPages}
+                className="p-1 px-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent transition text-xs font-semibold cursor-pointer disabled:cursor-not-allowed"
+                title="Last Page"
+              >
+                Last
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* PRINT-ONLY STAFF DIRECTORY REGISTER SHEET */}
       <div className="hidden print:block font-sans max-w-6xl mx-auto p-4 bg-white text-black">
@@ -543,14 +1032,13 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div>
-                    <label className="block text-slate-600 font-medium mb-1">Staff ID Number *</label>
+                    <label className="block text-slate-600 font-medium mb-1">Staff ID Number (Recommended)</label>
                     <input
                       type="text"
                       value={formState.staffId}
                       onChange={(e) => setFormState(prev => ({ ...prev, staffId: e.target.value }))}
                       className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none"
-                      placeholder="e.g. GES-T89045"
-                      required
+                      placeholder="e.g. GES-T89045 (Recommended)"
                     />
                   </div>
 
@@ -833,10 +1321,10 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
               <div className="space-y-4">
                 <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
                   <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0">
-                    <FileDown size={22} />
+                    <Eye size={22} />
                   </div>
                   <div>
-                    <h4 className="text-sm font-black text-slate-950">Save PDF & Print Controller</h4>
+                    <h4 className="text-sm font-black text-slate-950">Toggle Preview Mode & Print Controller</h4>
                     <p className="text-[10px] text-slate-400">Review staff directory print parameters</p>
                   </div>
                 </div>
@@ -997,6 +1485,265 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                     id="confirm-teacher-deletion"
                   >
                     Yes, Purge Permanently
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* TEACHERS CSV BULK IMPORT MODAL */}
+      <AnimatePresence>
+        {showImportModal && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setShowImportModal(false);
+                setImportFile(null);
+                setParsedTeachers([]);
+                setImportError(null);
+              }
+            }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto no-print cursor-pointer"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl border border-slate-200 max-w-4xl w-full shadow-2xl max-h-[90vh] overflow-hidden flex flex-col cursor-default font-sans text-xs my-4"
+            >
+              {/* Header */}
+              <div className="p-6 pb-4 bg-white border-b border-slate-100 flex justify-between items-center">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5 leading-none">
+                    <FileSpreadsheet className="text-indigo-600" size={18} />
+                    Bulk Upload & Import Teacher Records
+                  </h3>
+                  <p className="text-[10px] text-slate-400 mt-1">Upload multiple teacher profiles at once using a formatted CSV spreadsheet</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowImportModal(false);
+                    setImportFile(null);
+                    setParsedTeachers([]);
+                    setImportError(null);
+                  }}
+                  className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 transition cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-5">
+                {/* Instruction Banner */}
+                <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-indigo-50 text-[10px] text-indigo-700 font-bold">i</span>
+                      Formatting Instruction Guide:
+                    </h4>
+                    <p className="text-[10px] text-slate-500 leading-normal max-w-2xl">
+                      Make sure your spreadsheet includes headers such as: <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">First Name</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Last Name</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Staff ID</code> (unique), <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Gender</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Professional Rank</code>, and <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Subjects Taught</code>.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDownloadTemplate}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-250 hover:bg-slate-100 rounded-lg text-[11px] font-bold text-slate-700 transition cursor-pointer self-start md:self-auto flex-shrink-0"
+                  >
+                    <FileDown size={14} className="text-slate-500" />
+                    Download CSV Template
+                  </button>
+                </div>
+
+                {/* Upload & Drag State */}
+                {!importFile ? (
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={() => importFileInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition flex flex-col items-center justify-center space-y-3 ${
+                      dragActive 
+                        ? 'border-indigo-505 bg-indigo-50/50' 
+                        : 'border-slate-300 hover:border-slate-400 bg-white hover:bg-slate-50/20'
+                    }`}
+                  >
+                    <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shadow-xs">
+                      <Upload size={22} className={dragActive ? 'animate-bounce text-indigo-600' : ''} />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-bold text-slate-700 text-xs">Drag and drop your staff roster CSV file here</p>
+                      <p className="text-[10px] text-slate-400">or click to browse your desktop storage library</p>
+                    </div>
+                    <input
+                      type="file"
+                      ref={importFileInputRef}
+                      onChange={handleFileChange}
+                      accept=".csv"
+                      className="hidden"
+                    />
+                    <div className="pt-2 text-[9px] text-slate-400 max-w-md mx-auto">
+                      Only structured <strong className="text-slate-600">CSV spreadsheet format files (.csv)</strong> are accepted. Maximum size 3MB.
+                    </div>
+                  </div>
+                ) : (
+                  /* File Info & Parsing Metrics Area */
+                  <div className="space-y-4">
+                    <div className="bg-slate-50 border border-slate-150 p-3 rounded-xl flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+                          <FileSpreadsheet size={16} />
+                        </div>
+                        <div>
+                          <strong className="block text-xs font-bold text-slate-800">{importFile.name}</strong>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {(importFile.size / 1024).toFixed(1)} KB • {parsedTeachers.length} rows loaded
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImportFile(null);
+                          setParsedTeachers([]);
+                          setImportError(null);
+                        }}
+                        className="px-2.5 py-1 text-red-650 hover:bg-red-50 hover:text-red-700 rounded font-bold transition text-[10px] cursor-pointer"
+                      >
+                        Reset / Choose Another
+                      </button>
+                    </div>
+
+                    {/* Parser Error Alert */}
+                    {importError && (
+                      <div className="bg-red-50 border border-red-150 p-4 rounded-xl text-red-900 space-y-1 text-xs">
+                        <h5 className="font-bold flex items-center gap-1.5 text-red-800">
+                          ⚠️ Parsing Failure Alert:
+                        </h5>
+                        <p>{importError}</p>
+                      </div>
+                    )}
+
+                    {/* Roster Spreadsheet Preview Table */}
+                    {!importError && parsedTeachers.length > 0 && (
+                      <div className="space-y-2">
+                        {/* Summary metrics header */}
+                        <div className="flex items-center justify-between text-[11px] font-sans pb-1">
+                          <span className="text-slate-500">
+                            Spreadsheet breakdown preview summary:
+                          </span>
+                          <div className="flex gap-2.5">
+                            <span className="bg-indigo-50 text-indigo-750 font-bold px-2 py-0.5 rounded-full border border-indigo-100">
+                              Total: {parsedTeachers.length} rows
+                            </span>
+                            <span className="bg-emerald-50 text-emerald-750 font-bold px-2 py-0.5 rounded-full border border-emerald-100">
+                              Ready: {parsedTeachers.filter(p => p.errors.length === 0).length} valid
+                            </span>
+                            {parsedTeachers.filter(p => p.errors.length > 0).length > 0 && (
+                              <span className="bg-rose-50 text-rose-750 font-bold px-2 py-0.5 rounded-full border border-rose-100">
+                                Issues: {parsedTeachers.filter(p => p.errors.length > 0).length} flagged
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Scrolling scrollbar grid preview container */}
+                        <div className="border border-slate-200 rounded-xl overflow-hidden max-h-72 overflow-y-auto overflow-x-auto shadow-xs">
+                          <table className="w-full text-left border-collapse text-[11px] min-w-[900px]">
+                            <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                              <tr>
+                                <th className="py-2.5 px-3 text-[10px] font-bold text-slate-400 tracking-wider font-mono uppercase">Row</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Full Name</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Gender</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700 font-mono">Staff ID</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Professional Rank</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Assignment</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Credentials</th>
+                                <th className="py-2.5 px-3 text-right font-semibold text-slate-700 pr-4">Status / Feedbacks</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 bg-white">
+                              {parsedTeachers.map((rowVal, idx) => {
+                                const { teacher, errors } = rowVal;
+                                const hasErrors = errors.length > 0;
+                                return (
+                                  <tr key={idx} className={hasErrors ? 'bg-rose-50/20' : 'hover:bg-slate-50/30'}>
+                                    <td className="py-2 px-3 font-mono font-bold text-slate-400">{idx + 2}</td>
+                                    <td className="py-2 px-3 font-semibold text-slate-800">
+                                      {teacher.firstName || <span className="text-red-500 italic">[Empty]</span>} {teacher.middleName ? teacher.middleName + ' ' : ''}{teacher.lastName || <span className="text-red-500 italic">[Empty]</span>}
+                                    </td>
+                                    <td className="py-2 px-3 text-slate-600">{teacher.gender}</td>
+                                    <td className="py-2 px-3 font-mono font-semibold text-stone-700">{teacher.staffId || <span className="text-red-500 italic">[Empty]</span>}</td>
+                                    <td className="py-2 px-3">
+                                      <span className="font-semibold text-amber-800 bg-amber-50 rounded px-1.5 py-0.5 border border-amber-100">{teacher.rank}</span>
+                                    </td>
+                                    <td className="py-2 px-3 font-medium text-slate-700">{teacher.subjectsTaught || 'Not specified'}</td>
+                                    <td className="py-2 px-3 text-slate-500 truncate max-w-[150px]">
+                                      {teacher.highestAcademicQualifications || 'N/A'}{teacher.professionalQualifications && ` | ${teacher.professionalQualifications}`}
+                                    </td>
+                                    <td className="py-2 px-3 text-right pr-4">
+                                      {hasErrors ? (
+                                        <div className="inline-flex flex-col items-end gap-0.5">
+                                          {errors.map((err, eIdx) => (
+                                            <span key={eIdx} className="text-[9px] font-semibold text-red-600 bg-red-100/50 px-1.5 py-0.5 rounded">
+                                              ⚠️ {err}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100/50 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                                          <Check size={10} /> Ready
+                                        </span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Verification Notice warning/success footer */}
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150 flex items-center justify-between text-[10px] text-slate-400">
+                          <span>
+                            * Complete validation check: Rows with issues (⚠️) are skipped on execution. Correct your sheet and revalidate if necessary.
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 bg-slate-50 border-t border-slate-150 flex items-center justify-between">
+                <div className="text-[10px] text-slate-400 italic">
+                  * Dynamic auto ID codes will generate format `TXXXX` if ID column isn't provided.
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowImportModal(false);
+                      setImportFile(null);
+                      setParsedTeachers([]);
+                      setImportError(null);
+                    }}
+                    className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-semibold rounded-xl cursor-pointer transition text-xs shadow-2xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExecuteImport}
+                    disabled={!importFile || parsedTeachers.length === 0 || parsedTeachers.filter(p => p.errors.length === 0).length === 0}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none text-white font-bold rounded-xl cursor-pointer transition text-xs shadow-md shadow-indigo-600/10 inline-flex items-center gap-1.5"
+                  >
+                    <Check size={14} /> Execute Import ({parsedTeachers.filter(p => p.errors.length === 0).length} valid rosters)
                   </button>
                 </div>
               </div>

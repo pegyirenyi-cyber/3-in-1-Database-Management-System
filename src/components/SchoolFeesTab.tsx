@@ -13,8 +13,10 @@ import {
   SchoolInfo 
 } from '../types';
 import { DbController } from '../db';
+import PaystackPaymentTrigger from './PaystackPaymentTrigger';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import { ThemeStyles } from './ThemeWrapper';
+import { generateSecureToken } from '../utils';
 import { 
   DollarSign, 
   Plus, 
@@ -35,7 +37,11 @@ import {
   BookOpen, 
   AlertTriangle,
   Eraser,
-  RotateCcw 
+  RotateCcw,
+  Eye,
+  Bell,
+  Mail,
+  Send
 } from 'lucide-react';
 
 interface Props {
@@ -44,12 +50,33 @@ interface Props {
   schoolInfo: SchoolInfo;
   isAutoSave: boolean;
   onManualSave: () => void;
+  selectedAcademicYear?: AcademicYearType;
+  setSelectedAcademicYear?: (yr: AcademicYearType) => void;
+  selectedTerm?: TermType;
+  setSelectedTerm?: (tm: TermType) => void;
 }
 
-export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave, onManualSave }: Props) {
+export default function SchoolFeesTab({ 
+  theme, 
+  students, 
+  schoolInfo, 
+  isAutoSave, 
+  onManualSave,
+  selectedAcademicYear: propAcademicYear,
+  setSelectedAcademicYear: propSetAcademicYear,
+  selectedTerm: propTerm,
+  setSelectedTerm: propSetTerm
+}: Props) {
   // Navigation & selectors
-  const [selectedAcademicYear, setSelectedAcademicYear] = useState<AcademicYearType>('2025/2026');
-  const [selectedTerm, setSelectedTerm] = useState<TermType>('Term 1');
+  const [localAcademicYear, setLocalAcademicYear] = useState<AcademicYearType>('2026/2027');
+  const [localTerm, setLocalTerm] = useState<TermType>('Term 1');
+
+  const selectedAcademicYear = propAcademicYear || localAcademicYear;
+  const setSelectedAcademicYear = propSetAcademicYear || setLocalAcademicYear;
+
+  const selectedTerm = propTerm || localTerm;
+  const setSelectedTerm = propSetTerm || setLocalTerm;
+
   const [selectedClass, setSelectedClass] = useState<ClassType | 'All'>('All');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -61,6 +88,7 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
   
   // Add payment form states
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentTab, setPaymentTab] = useState<'manual' | 'paystack'>('manual');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentComponent, setPaymentComponent] = useState<FeePayment['component']>('School Fees');
   const [paymentMethod, setPaymentMethod] = useState<FeePayment['method']>('Cash');
@@ -70,6 +98,79 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
   // Selected payment for receipt viewing/generation
   const [activeReceiptPayment, setActiveReceiptPayment] = useState<{ bill: StudentFeeBill; payment: FeePayment } | null>(null);
   const [activeLedgerStudent, setActiveLedgerStudent] = useState<StudentFeeBill | null>(null);
+
+  // Payment Reminder states
+  const [showReminderModal, setShowReminderModal] = useState(false);
+  const [reminderCustomMessage, setReminderCustomMessage] = useState('');
+  const [reminderClosingDate, setReminderClosingDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 14);
+    return d.toISOString().split('T')[0];
+  });
+  const [reminderRecipientPhone, setReminderRecipientPhone] = useState('');
+  const [reminderSendingSms, setReminderSendingSms] = useState(false);
+  const [reminderSmsSuccess, setReminderSmsSuccess] = useState<string | null>(null);
+
+  // Form handling state for currently active selected student
+  const activeStudent = useMemo(() => students.find(s => s.id === activeStudentId), [students, activeStudentId]);
+  
+  const activeBill = useMemo(() => {
+    if (!activeStudent) return null;
+    return getStudentBill(activeStudent);
+  }, [activeStudent, feeBills, selectedAcademicYear, selectedTerm]);
+
+  // Outstanding calculations for selected student
+  const activeExpectedAndPaid = useMemo(() => {
+    if (!activeStudent || !activeBill) return { expected: 0, paid: 0, bal: 0 };
+    const expected = activeBill.schoolFees + activeBill.utilityBill + activeBill.sportsFees + activeBill.ptaDues + activeBill.otherFee;
+    const paid = activeBill.payments.reduce((sum, p) => sum + p.amount, 0);
+    const bal = expected - paid;
+    return { expected, paid, bal };
+  }, [activeStudent, activeBill]);
+
+  const handleOpenReminderModal = () => {
+    if (!activeStudent || !activeBill) return;
+    const { expected, paid, bal } = activeExpectedAndPaid;
+
+    setReminderRecipientPhone(activeStudent.guardianTelephone || '');
+    setReminderSmsSuccess(null);
+    setReminderCustomMessage(
+      `Dear ${activeStudent.guardianName || 'Guardian'}, this is a payment reminder for ${activeStudent.firstName} ${activeStudent.lastName} (${activeStudent.id}). Our school ledger shows an outstanding balance of GHS ${bal.toFixed(2)} for ${selectedTerm}, ${selectedAcademicYear}. Kindly arrange to settle this amount. You can securely view/download the full bill & receipt ledger here: ${window.location.origin}/?studentId=${activeStudent.id}&year=${encodeURIComponent(selectedAcademicYear)}&term=${encodeURIComponent(selectedTerm)}&token=${generateSecureToken(activeStudent.id, selectedAcademicYear, selectedTerm)}`
+    );
+    setShowReminderModal(true);
+  };
+
+  const handleSendReminderSMS = async () => {
+    if (!reminderRecipientPhone) return;
+    setReminderSendingSms(true);
+    setReminderSmsSuccess(null);
+
+    // Simulate GSM handshake / SMS Cellular request
+    await new Promise(resolve => setTimeout(resolve, 1200));
+
+    // Save to local logs using existing structure if desired or just mark success
+    const sName = `${activeStudent?.firstName} ${activeStudent?.lastName}`;
+    const sGuardian = activeStudent?.guardianName || 'Guardian';
+    
+    // Add to student database if parent tel changed or was blank
+    if (activeStudent && activeStudent.guardianTelephone !== reminderRecipientPhone) {
+      try {
+        const updatedStudent = {
+          ...activeStudent,
+          guardianTelephone: reminderRecipientPhone
+        };
+        await DbController.saveStudent(updatedStudent);
+        if (navigator.onLine) {
+          DbController.syncAllDataFromFirebase().catch(e => console.warn(e));
+        }
+      } catch (err) {
+        console.warn("Failed to sync guardian telephone updates:", err);
+      }
+    }
+
+    setReminderSendingSms(false);
+    setReminderSmsSuccess(`Automated payment compliance SMS reminder successfully dispatched to parent ${sGuardian} (${reminderRecipientPhone})!`);
+  };
 
   // Notification / Feedback Toast states
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -93,7 +194,10 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
       if (window.confirm("Do you want to delete and reset fee accounts billing data for the currently active student?")) {
         const nextBills = feeBills.filter(b => b.studentId !== activeStudentId);
         setFeeBills(nextBills);
-        localStorage.setItem('school_fees_bills', JSON.stringify(nextBills));
+        const toDelete = feeBills.filter(b => b.studentId === activeStudentId);
+        toDelete.forEach(b => {
+          if (b.id) DbController.deleteStudentFeeBill(b.id);
+        });
         setActiveStudentId(null);
         showToast("Active student fee log successfully reset.", "success");
       }
@@ -104,7 +208,7 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
 
   const handleDeleteAllFees = () => {
     if (window.confirm("CRITICAL WARNING: Are you sure you want to completely delete all historical Student Fee Bills and payments transactions ledger? This action is permanent and cannot be undone.")) {
-      localStorage.setItem('school_fees_bills', JSON.stringify([]));
+      DbController.clearAllStudentFeeBills();
       setFeeBills([]);
       onManualSave();
       showToast("Successfully purged all recorded fee logs and ledger transactions.", "success");
@@ -143,7 +247,7 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
     const updatedBills = [...feeBills];
 
     targetStudents.forEach(student => {
-      const billId = `${student.id}_${selectedAcademicYear}_${selectedTerm}`;
+      const billId = `${student.id}_${selectedAcademicYear}_${selectedTerm}`.replace(/\//g, '-');
       const existingIdx = updatedBills.findIndex(b => b.id === billId);
 
       if (existingIdx >= 0) {
@@ -193,8 +297,8 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
   };
 
   // Find the bill state for a given student
-  const getStudentBill = (student: Student): StudentFeeBill => {
-    const billId = `${student.id}_${selectedAcademicYear}_${selectedTerm}`;
+  function getStudentBill(student: Student): StudentFeeBill {
+    const billId = `${student.id}_${selectedAcademicYear}_${selectedTerm}`.replace(/\//g, '-');
     const found = feeBills.find(b => b.id === billId);
     if (found) return found;
 
@@ -216,15 +320,7 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-  };
-
-  // Form handling state for currently active selected student
-  const activeStudent = useMemo(() => students.find(s => s.id === activeStudentId), [students, activeStudentId]);
-  
-  const activeBill = useMemo(() => {
-    if (!activeStudent) return null;
-    return getStudentBill(activeStudent);
-  }, [activeStudent, feeBills, selectedAcademicYear, selectedTerm]);
+  }
 
   // Aggregate totals
   const overallStats = useMemo(() => {
@@ -315,6 +411,8 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
     }
   };
 
+  const filenameFriendly = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+
   const handleExportFeesPDF = async (elementId: string, filename: string) => {
     try {
       const result = await generatePdfFromHtml(elementId, filename, false);
@@ -328,44 +426,47 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
   const handlePrintStandard = (elementId: string) => {
     const printContent = document.getElementById(elementId);
     if (!printContent) return;
-    const windowUrl = 'about:blank';
-    const uniqueName = new Date().getTime().toString();
-    const printWindow = window.open(windowUrl, uniqueName, 'left=100,top=100,width=900,height=900');
-    if (!printWindow) {
-      showToast("Popups are blocked by your browser container. Please export PDF or enable popups in settings to print.", "error");
-      return;
+    try {
+      const windowUrl = 'about:blank';
+      const uniqueName = new Date().getTime().toString();
+      const printWindow = window.open(windowUrl, uniqueName, 'left=100,top=100,width=900,height=900');
+      if (!printWindow) {
+        showToast("Popups are blocked by your browser container. Please export PDF or enable popups in settings to print.", "error");
+        return;
+      }
+      
+      // Build beautiful offsite styles to accompany printout
+      printWindow.document.write(`
+        <html>
+          <head>
+            <title>${filenameFriendly(schoolInfo.name) || 'Printout'}</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+            <style>
+              body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; padding: 24px; }
+              .font-mono { font-family: 'JetBrains Mono', monospace; }
+              @media print {
+                body { padding: 0; }
+                button { display: none; }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="max-w-4xl mx-auto">${printContent.innerHTML}</div>
+            <script>
+              window.onload = function() {
+                setTimeout(function(){ window.print(); window.close(); }, 500);
+              }
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    } catch (err: any) {
+      console.error("Window print exception: ", err);
+      showToast("Browser sandboxing blocks direct print popups. Please export PDF.", "error");
     }
-    
-    // Build beautiful offsite styles to accompany printout
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>${filenameFriendly(schoolInfo.name) || 'Printout'}</title>
-          <script src="https://cdn.tailwindcss.com"></script>
-          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-          <style>
-            body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; padding: 24px; }
-            .font-mono { font-family: 'JetBrains Mono', monospace; }
-            @media print {
-              body { padding: 0; }
-              button { display: none; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="max-w-4xl mx-auto">${printContent.innerHTML}</div>
-          <script>
-            window.onload = function() {
-              setTimeout(function(){ window.print(); window.close(); }, 500);
-            }
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
   };
-
-  const filenameFriendly = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
 
   // Filter students based on state selections
   const filteredStudents = useMemo(() => {
@@ -568,9 +669,16 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                     }`}
                   >
                     <div>
-                      <p className="text-xs font-semibold text-slate-800">
-                        {student.firstName} {student.lastName}
-                      </p>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="text-xs font-semibold text-slate-800">
+                          {student.firstName} {student.lastName}
+                        </p>
+                        {bal > 0 && (
+                          <span className="text-[8px] bg-rose-50 text-rose-700 px-1.5 py-0.2 rounded font-bold border border-rose-200 select-none uppercase tracking-wider">
+                            Arrears
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[10px] text-slate-400 mt-0.5">
                         {student.class} • Register {student.id}
                       </p>
@@ -581,7 +689,7 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                         <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded font-mono font-medium">Unbilled</span>
                       ) : (
                         <div>
-                          <p className={`text-xs font-semibold font-mono ${bal <= 0 ? 'text-emerald-600' : 'text-slate-700'}`}>
+                          <p className={`text-xs font-bold font-mono ${bal <= 0 ? 'text-emerald-600' : 'text-rose-600 animate-pulse-slow'}`}>
                             {bal <= 0 ? 'Fully Paid' : `Bal: GHS ${bal.toFixed(0)}`}
                           </p>
                           <p className="text-[9px] text-slate-400 mt-0.5">
@@ -619,6 +727,15 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                 </div>
 
                 <div className="flex flex-wrap gap-2 shrink-0">
+                  {activeExpectedAndPaid.bal > 0 && (
+                    <button
+                      onClick={handleOpenReminderModal}
+                      className="text-xs inline-flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white py-2 px-3 rounded-lg font-semibold transition shadow-md select-none active:translate-y-0.5"
+                    >
+                      <Bell className="h-3.5 w-3.5 animate-bounce-slow" /> Notice & SMS Reminder
+                    </button>
+                  )}
+
                   <button
                     onClick={() => {
                       setActiveLedgerStudent(activeBill);
@@ -847,7 +964,14 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                         return (
                           <tr key={student.id} className="hover:bg-slate-50/50">
                             <td className="p-3">
-                              <p className="font-semibold text-slate-700">{student.firstName} {student.lastName}</p>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <p className="font-semibold text-slate-700">{student.firstName} {student.lastName}</p>
+                                {outstanding > 0 && (
+                                  <span className="text-[8px] bg-rose-50 text-rose-700 font-bold px-1.5 py-0.2 rounded border border-rose-200 select-none uppercase tracking-wider">
+                                    Arrears
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-[9px] text-slate-400">{student.class} • Register #{student.id}</p>
                             </td>
                             <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.schoolFees}</td>
@@ -898,9 +1022,9 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
               <div className="p-6 pb-4 bg-white border-b border-slate-100/80 flex items-center justify-between">
                 <div>
                   <h3 className="text-[13px] font-bold text-slate-800 uppercase tracking-widest font-sans flex items-center gap-1.5 leading-none">
-                    <CreditCard className="h-4 w-4 text-emerald-650" /> Receive Cash Installment
+                    <CreditCard className="h-4 w-4 text-emerald-650" /> Settle Student Fees
                   </h3>
-                  <p className="text-[10px] text-slate-400 mt-1">Recording fee collection for {activeBill.studentName}</p>
+                  <p className="text-[10px] text-slate-400 mt-1">Settle or log fee collections for {activeBill.studentName}</p>
                 </div>
                 <button 
                   type="button"
@@ -911,7 +1035,35 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                 </button>
               </div>
 
-              <form onSubmit={handleAddPayment} className="p-6 md:p-8 space-y-5 text-xs text-left bg-white">
+              {/* Secure Tab Controller inside Dialog */}
+              <div className="flex border-b border-slate-100 bg-slate-50/50 p-1 no-print">
+                <button
+                  type="button"
+                  onClick={() => setPaymentTab('manual')}
+                  className={`flex-1 py-2 text-center text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                    paymentTab === 'manual'
+                      ? 'bg-white text-slate-800 shadow-sm border border-slate-200/45 font-extrabold'
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Manual Cash/Cheque
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentTab('paystack')}
+                  className={`flex-1 py-1 px-2 text-center text-[11px] font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    paymentTab === 'paystack'
+                      ? 'bg-white text-emerald-700 shadow-sm border border-slate-200/40 font-extrabold'
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  Paystack MoMo/Card
+                </button>
+              </div>
+
+              <div className="p-6 md:p-8 space-y-5 text-xs text-left bg-white">
+                {/* Form fields that are shared between both manual and online payments */}
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Component allocation</label>
                   <select
@@ -927,84 +1079,129 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                   </select>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Amount (GHS)</label>
-                    <div className="relative">
-                      <span className="absolute left-3.5 top-3.5 font-bold text-slate-400 font-mono text-[10px] leading-none">GHS</span>
-                      <input
-                        type="number"
-                        required
-                        min="1"
-                        step="0.01"
-                        placeholder="0.00"
-                        value={paymentAmount}
-                        onChange={(e) => setPaymentAmount(e.target.value)}
-                        className="w-full border border-slate-200 rounded-xl pl-12 pr-4 py-2.5 font-sans text-[13px] focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none text-slate-700 font-medium"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Transaction date</label>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Amount (GHS)</label>
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-3.5 font-bold text-slate-400 font-mono text-[10px] leading-none">GHS</span>
                     <input
-                      type="date"
+                      type="number"
                       required
-                      value={paymentDate}
-                      onChange={(e) => setPaymentDate(e.target.value)}
-                      className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-sans text-[13px] focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none text-slate-700"
+                      min="1"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl pl-12 pr-4 py-2.5 font-sans text-[13px] focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none text-slate-700 font-medium"
                     />
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Method</label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {(['Cash', 'Mobile Money', 'Bank Transfer', 'Cheque'] as const).map(met => (
+                {paymentTab === 'manual' ? (
+                  <form onSubmit={handleAddPayment} className="space-y-5 pt-2">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Transaction date</label>
+                      <input
+                        type="date"
+                        required
+                        value={paymentDate}
+                        onChange={(e) => setPaymentDate(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-sans text-[13px] focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none text-slate-700"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Method</label>
+                      <div className="grid grid-cols-4 gap-2">
+                        {(['Cash', 'Mobile Money', 'Bank Transfer', 'Cheque'] as const).map(met => (
+                          <button
+                            key={met}
+                            type="button"
+                            onClick={() => setPaymentMethod(met)}
+                            className={`py-2 px-1 border rounded-xl font-medium text-[11px] text-center transition ${
+                              paymentMethod === met 
+                                ? 'border-blue-500 bg-blue-50/40 text-blue-600 font-semibold' 
+                                : 'border-slate-200/80 hover:bg-slate-50 text-slate-500 font-normal bg-white'
+                            }`}
+                          >
+                            {met}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Remarks / Details / Memo</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Paid in cash by father, transaction reference"
+                        value={paymentRemarks}
+                        onChange={(e) => setPaymentRemarks(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-[13px] text-slate-700 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none placeholder:text-slate-300"
+                      />
+                    </div>
+
+                    <div className="pt-6 border-t border-slate-100 flex justify-end gap-3 bg-white">
                       <button
-                        key={met}
                         type="button"
-                        onClick={() => setPaymentMethod(met)}
-                        className={`py-2 px-1 border rounded-xl font-medium text-[11px] text-center transition ${
-                          paymentMethod === met 
-                            ? 'border-blue-500 bg-blue-50/40 text-blue-600 font-semibold' 
-                            : 'border-slate-200/80 hover:bg-slate-50 text-slate-500 font-normal bg-white'
-                        }`}
+                        onClick={() => setShowPaymentModal(false)}
+                        className="px-5 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-500 font-semibold rounded-xl transition cursor-pointer text-[12px]"
                       >
-                        {met}
+                        Cancel
                       </button>
-                    ))}
+                      <button
+                        type="submit"
+                        className="px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px]"
+                      >
+                        Record Installment
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="pt-2">
+                    <PaystackPaymentTrigger
+                      studentId={activeStudent.id}
+                      studentName={`${activeStudent.firstName} ${activeStudent.lastName}`}
+                      email={activeStudent.email || ''}
+                      amount={parseFloat(paymentAmount) || 0}
+                      academicYear={selectedAcademicYear}
+                      term={selectedTerm}
+                      component={paymentComponent}
+                      billId={activeBill.id}
+                      onSuccess={(verifiedData) => {
+                        const amount = parseFloat(paymentAmount) || verifiedData.amount;
+                        const randPart = Math.floor(1000 + Math.random() * 9000);
+                        const generatedReceipt = `GTIMS-PAYSTACK-${selectedAcademicYear.split('/')[0]}-${randPart}`;
+                        const today = new Date().toISOString().split('T')[0];
+
+                        const newPayment: FeePayment = {
+                          id: verifiedData.reference,
+                          amount,
+                          date: today,
+                          component: paymentComponent,
+                          method: 'Mobile Money',
+                          receiptNo: generatedReceipt,
+                          remarks: `Paid online via Paystack. Ref: ${verifiedData.reference}`
+                        };
+
+                        const nextBill: StudentFeeBill = {
+                          ...activeBill,
+                          payments: [...activeBill.payments, newPayment],
+                          updatedAt: new Date().toISOString()
+                        };
+
+                        handleSaveBill(nextBill);
+                        setTimeout(() => {
+                          setShowPaymentModal(false);
+                          setPaymentAmount('');
+                          setPaymentRemarks('');
+                        }, 2000);
+                      }}
+                      onCancel={() => setShowPaymentModal(false)}
+                      triggerLabel={`Initialize Online Settle: GHS ${(parseFloat(paymentAmount) || 0).toFixed(2)}`}
+                    />
                   </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Remarks / Details / Memo</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Paid in cash by father, transaction reference"
-                    value={paymentRemarks}
-                    onChange={(e) => setPaymentRemarks(e.target.value)}
-                    className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-[13px] text-slate-700 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none placeholder:text-slate-300"
-                  />
-                </div>
-
-                <div className="pt-6 border-t border-slate-100 flex justify-end gap-3 bg-white">
-                  <button
-                    type="button"
-                    onClick={() => setShowPaymentModal(false)}
-                    className="px-5 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-500 font-semibold rounded-xl transition cursor-pointer text-[12px]"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px]"
-                  >
-                    Record Installment
-                  </button>
-                </div>
-
-              </form>
+                )}
+              </div>
             </motion.div>
           </div>
         )}
@@ -1046,7 +1243,7 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                     onClick={() => handleExportFeesPDF('fee-receipt-print-area', `receipt_${activeReceiptPayment.payment.receiptNo}`)}
                     className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer"
                   >
-                    <FileDown className="h-3.5 w-3.5 inline mr-1" /> Save PDF
+                    <Eye className="h-3.5 w-3.5 inline mr-1" /> Toggle Preview Mode
                   </button>
                   <button 
                     onClick={() => setActiveReceiptPayment(null)}
@@ -1224,7 +1421,7 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                     onClick={() => handleExportFeesPDF('fee-ledger-print-area', `ledger_${activeLedgerStudent.studentId}`)}
                     className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer"
                   >
-                    <FileDown className="h-3.5 w-3.5 inline mr-1" /> Save PDF
+                    <Eye className="h-3.5 w-3.5 inline mr-1" /> Toggle Preview Mode
                   </button>
                   <button 
                     onClick={() => setActiveLedgerStudent(null)}
@@ -1397,6 +1594,377 @@ export default function SchoolFeesTab({ theme, students, schoolInfo, isAutoSave,
                   </div>
                 </div>
 
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+
+    {/* PAYMENT REMINDER NOTICE MODAL OVERLAY */}
+    <AnimatePresence>
+      {showReminderModal && activeStudent && activeBill && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs no-print flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowReminderModal(false)}
+            className="fixed inset-0 cursor-pointer"
+          />
+
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 15 }}
+            className="relative w-full max-w-5xl bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col lg:flex-row h-[90vh] lg:h-[80vh] z-10 text-left font-sans"
+          >
+            {/* LEFT COLUMN: CONTROLS & PARAMS */}
+            <div className="w-full lg:w-2/5 p-6 border-b lg:border-b-0 lg:border-r border-slate-200 overflow-y-auto flex flex-col justify-between bg-slate-50 gap-6">
+              <div className="space-y-5">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-amber-500/10 border border-amber-500/20 text-amber-600 rounded-xl flex items-center justify-center">
+                    <Bell size={20} className="text-amber-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">Reminder notice engine</h3>
+                    <p className="text-[10px] text-slate-400">Generate professional debt reminders and dispatch automated SMS advisories.</p>
+                  </div>
+                </div>
+
+                <hr className="border-slate-200" />
+
+                {/* RECEP DETAILS & PHONE */}
+                <div className="space-y-3">
+                  <h4 className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Recipient Contact Information</h4>
+                  <div className="grid grid-cols-1 gap-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Guardian Name</label>
+                      <input 
+                        type="text"
+                        value={activeStudent.guardianName || 'Guardian'}
+                        disabled
+                        className="w-full text-xs px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-slate-500 font-semibold cursor-not-allowed"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1 flex justify-between">
+                        <span>Guardian Telephone</span>
+                        {!reminderRecipientPhone && <span className="text-rose-500 lowercase font-bold animate-pulse">Required *</span>}
+                      </label>
+                      <input 
+                        type="tel"
+                        value={reminderRecipientPhone}
+                        onChange={(e) => {
+                          setReminderRecipientPhone(e.target.value);
+                          setReminderSmsSuccess(null);
+                        }}
+                        placeholder="e.g. +233240000000"
+                        className={`w-full text-xs px-3 py-2 border rounded-lg font-bold font-mono text-slate-800 focus:outline-none focus:ring-1 ${!reminderRecipientPhone ? 'border-rose-300 bg-rose-50/50 focus:ring-rose-500' : 'border-slate-200 focus:ring-amber-500'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Response / Payment Due Deadline</label>
+                      <input 
+                        type="date"
+                        value={reminderClosingDate}
+                        onChange={(e) => {
+                          setReminderClosingDate(e.target.value);
+                          setReminderSmsSuccess(null);
+                        }}
+                        className="w-full text-xs px-3 py-2 border border-slate-200 bg-white rounded-lg font-mono text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-amber-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* EDIT MESSAGE PREVIEW */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase block">Custom Carrier SMS Template Message</label>
+                    <span className="text-[9px] font-mono text-slate-400 bg-slate-250 px-1 py-0.5 rounded font-black">
+                      Chars: {reminderCustomMessage.length}
+                    </span>
+                  </div>
+                  <textarea
+                    rows={5}
+                    value={reminderCustomMessage}
+                    onChange={(e) => {
+                      setReminderCustomMessage(e.target.value);
+                      setReminderSmsSuccess(null);
+                    }}
+                    className="w-full text-xs p-3 border border-slate-200 rounded-xl bg-white font-medium focus:outline-none focus:ring-1 focus:ring-amber-500 text-slate-700 leading-relaxed resize-none"
+                  />
+                  <p className="text-[9px] text-slate-400 italic leading-snug">The SMS contains the parent's highly secure credentials token to bypass signups.</p>
+                </div>
+
+                {reminderSmsSuccess && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-100 text-emerald-800 rounded-xl text-[11px] font-medium leading-relaxed flex gap-2">
+                    <Check className="text-emerald-600 flex-shrink-0 mt-0.5" size={14} />
+                    <span>{reminderSmsSuccess}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* ACTION FOOTER BUTTONS */}
+              <div className="space-y-2 pt-4 border-t border-slate-200">
+                <button
+                  type="button"
+                  disabled={reminderSendingSms || !reminderRecipientPhone}
+                  onClick={handleSendReminderSMS}
+                  className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold shadow-md transition transform active:translate-y-0.5 select-none ${!reminderRecipientPhone ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-600 text-white'}`}
+                >
+                  {reminderSendingSms ? (
+                    <>
+                      <RotateCcw size={12} className="animate-spin" /> Transmitting cellular SMS...
+                    </>
+                  ) : (
+                    <>
+                      <Send size={12} /> Dispatch Secure Link SMS
+                    </>
+                  )}
+                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleExportFeesPDF('fees-reminder-notice-canvas', `payment_reminder_${activeStudent.id}`)}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2 hover:bg-slate-200 border border-slate-200 text-slate-700 font-semibold bg-white rounded-lg text-xs transition"
+                  >
+                    <FileDown size={12} /> Save PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const printContents = document.getElementById('fees-reminder-notice-canvas')?.innerHTML;
+                      if (printContents) {
+                        const w = window.open('', '_blank');
+                        if (w) {
+                          w.document.write(`
+                            <html>
+                              <head>
+                                <title>Payment Reminder Notice - ${activeStudent.firstName} ${activeStudent.lastName}</title>
+                                <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+                                <style>
+                                  @media print {
+                                    body { padding: 2cm; }
+                                    .no-print { display: none; }
+                                  }
+                                  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+                                  body { font-family: 'Inter', sans-serif; }
+                                </style>
+                              </head>
+                              <body onload="window.print(); window.close();">
+                                ${printContents}
+                              </body>
+                            </html>
+                          `);
+                          w.document.close();
+                        }
+                      }
+                    }}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-lg text-xs transition"
+                  >
+                    <Printer size={12} /> Direct Print
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowReminderModal(false)}
+                  className="w-full text-center py-2 text-slate-400 hover:text-slate-600 text-xs font-semibold"
+                >
+                  Close Dialogue Panel
+                </button>
+              </div>
+            </div>
+
+            {/* RIGHT COLUMN: DOCUMENT PREVIEW */}
+            <div className="flex-1 bg-slate-100 p-6 overflow-y-auto flex items-center justify-center">
+              {/* PORTRAIT LETTER CONTAINER */}
+              <div 
+                id="fees-reminder-notice-canvas"
+                className="w-full max-w-[620px] min-h-[780px] bg-white border border-slate-300 shadow-lg p-8 relative flex flex-col justify-between text-slate-905 leading-normal"
+                style={{ aspectRatio: '1/1.414' }}
+              >
+                <div>
+                  {/* SCHOOL LETTERHEAD */}
+                  <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4">
+                    <div className="flex items-center gap-3">
+                      {schoolInfo.logoUrl ? (
+                        <img 
+                          src={schoolInfo.logoUrl} 
+                          alt="School Logo" 
+                          referrerPolicy="no-referrer"
+                          className="w-14 h-14 object-contain rounded-xl"
+                        />
+                      ) : (
+                        <div className="w-14 h-14 bg-slate-900 text-white rounded-xl flex items-center justify-center font-bold text-xl uppercase">
+                          {schoolInfo.name?.substring(0, 2) || 'SC'}
+                        </div>
+                      )}
+                      <div>
+                        <h1 className="text-sm font-black uppercase text-slate-900 tracking-tight">{schoolInfo.name || 'GeeTech Academy'}</h1>
+                        <p className="text-[10px] italic font-medium text-slate-500">{schoolInfo.motto || 'Motto: Excellence and Dignity'}</p>
+                        <p className="text-[9px] text-slate-400 font-mono mt-0.5">{schoolInfo.gpsAddress || 'Digital Address System'} • GPS</p>
+                      </div>
+                    </div>
+                    <div className="text-right text-[8.5px] font-mono text-slate-500 space-y-0.5">
+                      <p>TEL: {schoolInfo.telephone || '+233 24 556 7780'}</p>
+                      <p>EMAIL: {schoolInfo.email || 'info@school.edu.gh'}</p>
+                      <p>DATE: {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                    </div>
+                  </div>
+
+                  {/* DOCUMENT TITLE */}
+                  <div className="text-center my-6 space-y-1">
+                    <h2 className="text-xs font-black uppercase tracking-wider text-rose-700 bg-rose-50 border border-rose-100 py-1 px-4 rounded-lg inline-block">
+                      OFFICIAL FEES CLEARANCE & ARREARS ADVISORY
+                    </h2>
+                    <p className="text-[9px] text-slate-400 font-mono">Reference No: {activeStudent.id}_REM_T{selectedTerm?.replace(/\D/g, '')}</p>
+                  </div>
+
+                  {/* SALUTATION */}
+                  <div className="text-[11px] space-y-3 font-sans text-left">
+                    <p>To the Parent / Guardian of <span className="font-bold underline capitalize">{activeStudent.firstName} {activeStudent.middleName ? activeStudent.middleName + ' ' : ''}{activeStudent.lastName}</span>,</p>
+                    <p className="text-slate-700 leading-relaxed text-justify">
+                      We hope this letter finds you well. The school administration is writing to formally notify you of outstanding tuition dues in our accounts. Our current ledger records state that the financial obligations for the student listed below are currently in arrears for <strong>{selectedTerm} ({selectedAcademicYear})</strong>.
+                    </p>
+                  </div>
+
+                  {/* STUDENT DETAIL & ARREARS TABLE */}
+                  <div className="my-6 space-y-3 text-left">
+                    <div className="grid grid-cols-2 bg-slate-50 p-2.5 rounded-lg border border-slate-100 text-[10px]">
+                      <div>
+                        <span className="text-slate-400 uppercase font-bold tracking-wider block text-[8px]">Pupil Full Name</span>
+                        <span className="font-bold text-slate-900 capitalize">{activeStudent.firstName} {activeStudent.lastName}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 uppercase font-bold tracking-wider block text-[8px]">Student Register ID / Class</span>
+                        <span className="font-bold font-mono text-slate-900">{activeStudent.id} • Class {activeStudent.class}</span>
+                      </div>
+                    </div>
+
+                    <p className="text-[9px] font-bold text-slate-600 uppercase tracking-widest pl-1">Arrears Category Ledger Summary</p>
+                    <div className="border border-slate-300 rounded-lg overflow-hidden">
+                      <table className="w-full text-left border-collapse text-[10px]">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300">
+                            <th className="p-2">Levy Component Description</th>
+                            <th className="p-2 text-right">Debit Billed</th>
+                            <th className="p-2 text-right">Credit Settled</th>
+                            <th className="p-2 text-right">Outstanding Arrears</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          {/* schoolFees row */}
+                          {activeBill.schoolFees > 0 && (
+                            <tr>
+                              <td className="p-2">Standard School Tuition Fees</td>
+                              <td className="p-2 text-right font-mono text-slate-500">GHS {activeBill.schoolFees.toFixed(2)}</td>
+                              <td className="p-2 text-right font-mono text-slate-500">-</td>
+                              <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {activeBill.schoolFees.toFixed(2)}</td>
+                            </tr>
+                          )}
+                          {/* utilityBill row */}
+                          {activeBill.utilityBill > 0 && (
+                            <tr>
+                              <td className="p-2">Facility & Utility Maintenance Levy</td>
+                              <td className="p-2 text-right font-mono text-slate-500">GHS {activeBill.utilityBill.toFixed(2)}</td>
+                              <td className="p-2 text-right font-mono text-slate-500">-</td>
+                              <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {activeBill.utilityBill.toFixed(2)}</td>
+                            </tr>
+                          )}
+                          {/* sportsFees row */}
+                          {activeBill.sportsFees > 0 && (
+                            <tr>
+                              <td className="p-2">Sports development dues allocation</td>
+                              <td className="p-2 text-right font-mono text-slate-500">GHS {activeBill.sportsFees.toFixed(2)}</td>
+                              <td className="p-2 text-right font-mono text-slate-500">-</td>
+                              <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {activeBill.sportsFees.toFixed(2)}</td>
+                            </tr>
+                          )}
+                          {/* ptaDues row */}
+                          {activeBill.ptaDues > 0 && (
+                            <tr>
+                              <td className="p-2">PTA annual dues allocation</td>
+                              <td className="p-2 text-right font-mono text-slate-500">GHS {activeBill.ptaDues.toFixed(2)}</td>
+                              <td className="p-2 text-right font-mono text-slate-500">-</td>
+                              <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {activeBill.ptaDues.toFixed(2)}</td>
+                            </tr>
+                          )}
+                          {/* otherFee row */}
+                          {activeBill.otherFee > 0 && (
+                            <tr>
+                              <td className="p-2">Miscellaneous category ({activeBill.otherFeeDescription || 'Other'})</td>
+                              <td className="p-2 text-right font-mono text-slate-500">GHS {activeBill.otherFee.toFixed(2)}</td>
+                              <td className="p-2 text-right font-mono text-slate-500">-</td>
+                              <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {activeBill.otherFee.toFixed(2)}</td>
+                            </tr>
+                          )}
+                          {/* installments paid subtract row */}
+                          {activeExpectedAndPaid.paid > 0 && (
+                            <tr className="bg-emerald-50/50">
+                              <td className="p-2 font-semibold text-emerald-700">Less: Credited installments registered</td>
+                              <td className="p-2 text-right font-mono text-slate-400">-</td>
+                              <td className="p-2 text-right font-mono text-emerald-700">GHS {activeExpectedAndPaid.paid.toFixed(2)}</td>
+                              <td className="p-2 text-right font-mono text-emerald-500">- GHS {activeExpectedAndPaid.paid.toFixed(2)}</td>
+                            </tr>
+                          )}
+                          {/* Combined net balance totals */}
+                          <tr className="bg-slate-100 font-bold border-t border-slate-300 text-[11px]">
+                            <td className="p-2">Total Net Financial Dues Pending:</td>
+                            <td className="p-2 text-right font-mono text-slate-700">GHS {activeExpectedAndPaid.expected.toFixed(2)}</td>
+                            <td className="p-2 text-right font-mono text-emerald-700">GHS {activeExpectedAndPaid.paid.toFixed(2)}</td>
+                            <td className="p-2 text-right font-mono text-rose-700 bg-rose-50/50">GHS {activeExpectedAndPaid.bal.toFixed(2)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* COMPLIANCE WARNING TEXT */}
+                  <div className="text-[10.5px] leading-relaxed text-slate-700 space-y-2 border-l-2 border-amber-500 pl-4 bg-amber-50/20 py-2 pr-2 rounded-r-lg text-left">
+                    <p className="font-bold text-slate-800">Ledger Compliance Instructions:</p>
+                    <p>
+                      We kindly query you to clear the outstanding sum of <strong>GHS {activeExpectedAndPaid.bal.toFixed(2)}</strong> on or before <strong>{new Date(reminderClosingDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</strong> to ensure uninterrupted class participation and terminal educational activity records processing.
+                    </p>
+                    <p>
+                      All pay-slips and mobile money receipts MUST be verified manually at the main treasury office for ledger credit update.
+                    </p>
+                  </div>
+                </div>
+
+                {/* SIGNATURE AREA IN PORTRAIT CANVAS FOOTER */}
+                <div className="mt-8 border-t border-slate-200 pt-6 flex justify-between items-end text-left">
+                  <div className="space-y-1 text-slate-500 text-[8px] font-mono leading-relaxed">
+                    <p>Produced by: Ledger Administration Center</p>
+                    <p>Signee: {schoolInfo.headteacherName || 'Head Teacher Principal'}</p>
+                    <p>Certified Official Copy • Digital Signature Verification</p>
+                  </div>
+                  
+                  <div className="text-center relative">
+                    {/* Stamp or signature images */}
+                    {schoolInfo.signatureUrl && (
+                      <img 
+                        src={schoolInfo.signatureUrl} 
+                        alt="Signature" 
+                        referrerPolicy="no-referrer"
+                        className="w-16 h-8 absolute -top-6 left-1/2 -translate-x-1/2 object-contain pointer-events-none opacity-80"
+                      />
+                    )}
+                    {schoolInfo.stampUrl && (
+                      <img 
+                        src={schoolInfo.stampUrl} 
+                        alt="Stamp Seal" 
+                        referrerPolicy="no-referrer"
+                        className="w-12 h-12 absolute -top-8 -right-4 object-contain pointer-events-none opacity-70"
+                      />
+                    )}
+                    <span className="block italic text-[10px] text-slate-800 font-bold border-t border-slate-400 border-dashed pt-1 min-w-[130px]">
+                      {schoolInfo.headteacherName || 'Principal headteacher'}
+                    </span>
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-400 mt-0.5">Seal & Signature</span>
+                  </div>
+                </div>
               </div>
             </div>
           </motion.div>

@@ -1,11 +1,32 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AttendanceRecord, ClassType, CLASSES, AttendanceStatus } from '../types';
+import { AttendanceRecord, ClassType, CLASSES, AttendanceStatus, StaffAttendanceRecord, StaffAttendanceStatus } from '../types';
 import { DbController } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
-import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser } from 'lucide-react';
+import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser, Eye, Clock, LogIn, LogOut, MessageSquare, Briefcase } from 'lucide-react';
 import { DefaultCrest } from './SchoolProfileTab';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
+import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
+
+interface TeacherMonthlyStats {
+  teacherId: string;
+  teacherName: string;
+  totalDays: number;
+  presentDays: number;
+  leaveDays: number;
+  absentDays: number;
+  ratio: number;
+  avgArrivalTime: string;
+}
+
+const getMonthName = (m: string): string => {
+  const months: Record<string, string> = {
+    '01': 'January', '02': 'February', '03': 'March', '04': 'April',
+    '05': 'May', '06': 'June', '07': 'July', '08': 'August',
+    '09': 'September', '10': 'October', '11': 'November', '12': 'December'
+  };
+  return months[m] || 'Month ' + m;
+};
 
 interface Props {
   theme: ThemeStyles;
@@ -32,15 +53,64 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
     return '2026-06-12';
   });
   const [selectedClass, setSelectedClass] = useState<ClassType>('Class 1');
+  const [attendanceView, setAttendanceView] = useState<'student' | 'staff'>('student');
   const [attendanceSheet, setAttendanceSheet] = useState<AttendanceRecord[]>([]);
+  const [staffAttendanceSheet, setStaffAttendanceSheet] = useState<StaffAttendanceRecord[]>([]);
   const [saveStatus, setSaveStatus] = useState<string>('');
+  const [showMonthlyReportMode, setShowMonthlyReportMode] = useState<boolean>(false);
+  const [reportMonth, setReportMonth] = useState<string>('06');
+  const [reportYear, setReportYear] = useState<string>('2026');
 
-  // Fetch student roll roster whenever class or date changes
+  // Sync reportMonth and reportYear when selectedDate changes
   useEffect(() => {
-    const sheet = DbController.getAttendance(selectedDate, selectedClass);
-    setAttendanceSheet(sheet);
-    setSaveStatus('');
-  }, [selectedDate, selectedClass]);
+    if (selectedDate) {
+      const parts = selectedDate.split('-');
+      if (parts[0]) setReportYear(parts[0]);
+      if (parts[1]) setReportMonth(parts[1]);
+    }
+  }, [selectedDate]);
+
+  const handleExportStaffCsv = (stats: TeacherMonthlyStats[]) => {
+    const headers = ["Serial No", "Staff ID", "Full Name", "Total Tracked Days", "Days Present", "Days On Leave", "Days Absent", "Presence Rate (%)", "Average Arrival Time"];
+    
+    const rows = stats.map((item, index) => [
+      index + 1,
+      item.teacherId,
+      `"${item.teacherName.replace(/"/g, '""')}"`,
+      item.totalDays,
+      item.presentDays,
+      item.leaveDays,
+      item.absentDays,
+      `${item.ratio}%`,
+      item.avgArrivalTime
+    ]);
+    
+    const csvString = [headers.join(","), ...rows.map(e => e.join(","))].join("\r\n");
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    const monthName = getMonthName(reportMonth);
+    link.setAttribute("download", `Staff_Attendance_Report_${monthName}_${reportYear}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Fetch student or staff roll roster whenever selections change
+  useEffect(() => {
+    if (attendanceView === 'staff') {
+      const sheet = DbController.getStaffAttendance(selectedDate);
+      setStaffAttendanceSheet(sheet);
+      setSaveStatus('');
+    } else {
+      const sheet = DbController.getAttendance(selectedDate, selectedClass);
+      setAttendanceSheet(sheet);
+      setSaveStatus('');
+    }
+  }, [selectedDate, selectedClass, attendanceView]);
 
   const handleStatusChange = (studentId: string, newStatus: AttendanceStatus) => {
     const updated = attendanceSheet.map(item => {
@@ -80,42 +150,223 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
     }
   };
 
-  // Perform calculations for "Present", "Holiday", and "Absent"
-  const presentCount = attendanceSheet.filter(item => item.status === 'Present').length;
-  const holidayCount = attendanceSheet.filter(item => item.status === 'Holiday').length;
-  const absentCount = attendanceSheet.filter(item => item.status === 'Absent').length;
+  // STAFF ATTENDANCE HANDLERS
+  const handleStaffStatusChange = (teacherId: string, newStatus: StaffAttendanceStatus) => {
+    const updated = staffAttendanceSheet.map(item => {
+      if (item.teacherId === teacherId) {
+        let arrival = item.arrivalTime;
+        let departure = item.departureTime;
+        if (newStatus === 'Present') {
+          arrival = arrival || '07:45';
+          departure = departure || '16:00';
+        } else if (newStatus === 'Absent' || newStatus === 'On Leave') {
+          arrival = '';
+          departure = '';
+        }
+        return { ...item, status: newStatus, arrivalTime: arrival, departureTime: departure };
+      }
+      return item;
+    });
+    setStaffAttendanceSheet(updated);
+
+    if (isAutoSave) {
+      DbController.saveStaffAttendanceBatch(updated);
+      setSaveStatus('Auto-saved successfully!');
+      setTimeout(() => setSaveStatus(''), 2000);
+    } else {
+      setSaveStatus('Modified - Click Save Session');
+    }
+  };
+
+  const handleStaffTimeChange = (teacherId: string, field: 'arrivalTime' | 'departureTime', timeVal: string) => {
+    const updated = staffAttendanceSheet.map(item => {
+      if (item.teacherId === teacherId) {
+        return { ...item, [field]: timeVal };
+      }
+      return item;
+    });
+    setStaffAttendanceSheet(updated);
+
+    if (isAutoSave) {
+      DbController.saveStaffAttendanceBatch(updated);
+      setSaveStatus('Auto-saved successfully!');
+      setTimeout(() => setSaveStatus(''), 2000);
+    } else {
+      setSaveStatus('Modified - Click Save Session');
+    }
+  };
+
+  const handleStaffRemarksChange = (teacherId: string, remarksVal: string) => {
+    const updated = staffAttendanceSheet.map(item => {
+      if (item.teacherId === teacherId) {
+        return { ...item, remarks: remarksVal };
+      }
+      return item;
+    });
+    setStaffAttendanceSheet(updated);
+
+    if (isAutoSave) {
+      DbController.saveStaffAttendanceBatch(updated);
+      setSaveStatus('Auto-saved successfully!');
+      setTimeout(() => setSaveStatus(''), 2000);
+    } else {
+      setSaveStatus('Modified - Click Save Session');
+    }
+  };
+
+  const handleSaveAllStaff = () => {
+    DbController.saveStaffAttendanceBatch(staffAttendanceSheet);
+    onManualSave();
+    setSaveStatus('Staff session saved successfully!');
+    setTimeout(() => setSaveStatus(''), 3000);
+  };
+
+  const markAllStaffStatus = (status: StaffAttendanceStatus) => {
+    const updated = staffAttendanceSheet.map(item => {
+      let arrival = item.arrivalTime;
+      let departure = item.departureTime;
+      if (status === 'Present') {
+        arrival = arrival || '07:45';
+        departure = departure || '16:00';
+      } else {
+        arrival = '';
+        departure = '';
+      }
+      return { ...item, status, arrivalTime: arrival, departureTime: departure };
+    });
+    setStaffAttendanceSheet(updated);
+
+    if (isAutoSave) {
+      DbController.saveStaffAttendanceBatch(updated);
+      setSaveStatus('Auto-saved all as ' + status);
+      setTimeout(() => setSaveStatus(''), 2000);
+    } else {
+      setSaveStatus('All status set - Click Save');
+    }
+  };
+
+  // Perform calculations for "Present", "Holiday", and "Absent" with high-performance memoization
+  const { presentCount, holidayCount, absentCount } = useMemo(() => {
+    let p = 0, h = 0, a = 0;
+    for (let i = 0; i < attendanceSheet.length; i++) {
+      const status = attendanceSheet[i].status;
+      if (status === 'Present') p++;
+      else if (status === 'Holiday') h++;
+      else if (status === 'Absent') a++;
+    }
+    return { presentCount: p, holidayCount: h, absentCount: a };
+  }, [attendanceSheet]);
   const totalRosterCount = attendanceSheet.length;
 
-  const handleClearInputs = () => {
-    const cleared = attendanceSheet.map(item => ({ ...item, status: 'Absent' as AttendanceStatus }));
-    setAttendanceSheet(cleared);
-    if (isAutoSave) {
-      DbController.saveAttendanceBatch(cleared);
+  const presentPct = useMemo(() => totalRosterCount > 0 ? Math.round((presentCount / totalRosterCount) * 100) : 0, [presentCount, totalRosterCount]);
+  const absentPct = useMemo(() => totalRosterCount > 0 ? Math.round((absentCount / totalRosterCount) * 100) : 0, [absentCount, totalRosterCount]);
+  const holidayPct = useMemo(() => totalRosterCount > 0 ? Math.round((holidayCount / totalRosterCount) * 100) : 0, [holidayCount, totalRosterCount]);
+
+  // Perform calculations for "Present", "On Leave", and "Absent" (Staff) with high-performance memoization
+  const staffTotalCount = staffAttendanceSheet.length;
+  const { staffPresentCount, staffLeaveCount, staffAbsentCount } = useMemo(() => {
+    let p = 0, l = 0, a = 0;
+    for (let i = 0; i < staffAttendanceSheet.length; i++) {
+      const status = staffAttendanceSheet[i].status;
+      if (status === 'Present') p++;
+      else if (status === 'On Leave') l++;
+      else if (status === 'Absent') a++;
     }
-    alert("Resetted all current attendance sheet states to Absent.");
+    return { staffPresentCount: p, staffLeaveCount: l, staffAbsentCount: a };
+  }, [staffAttendanceSheet]);
+
+  const staffPresentPct = useMemo(() => staffTotalCount > 0 ? Math.round((staffPresentCount / staffTotalCount) * 100) : 0, [staffPresentCount, staffTotalCount]);
+  const staffAbsentPct = useMemo(() => staffTotalCount > 0 ? Math.round((staffAbsentCount / staffTotalCount) * 100) : 0, [staffAbsentCount, staffTotalCount]);
+  const staffLeavePct = useMemo(() => staffTotalCount > 0 ? Math.round((staffLeaveCount / staffTotalCount) * 100) : 0, [staffLeaveCount, staffTotalCount]);
+
+  const handleClearInputs = () => {
+    if (attendanceView === 'staff') {
+      const cleared = staffAttendanceSheet.map(item => ({ ...item, status: 'Unmarked' as StaffAttendanceStatus, arrivalTime: '', departureTime: '', remarks: '' }));
+      setStaffAttendanceSheet(cleared);
+      if (isAutoSave) {
+        DbController.saveStaffAttendanceBatch(cleared);
+      }
+      alert("Reset all current staff attendance records to Unmarked.");
+    } else {
+      const cleared = attendanceSheet.map(item => ({ ...item, status: 'Unmarked' as AttendanceStatus }));
+      setAttendanceSheet(cleared);
+      if (isAutoSave) {
+        DbController.saveAttendanceBatch(cleared);
+      }
+      alert("Reset all current student attendance records to Unmarked.");
+    }
   };
 
   const handleDeleteActiveSelection = () => {
-    if (window.confirm(`Are you sure you want to delete/clear all recorded attendance for class "${selectedClass}" on ${selectedDate}?`)) {
-      const cleared = attendanceSheet.map(item => ({ ...item, status: 'Absent' as AttendanceStatus }));
-      setAttendanceSheet(cleared);
-      DbController.saveAttendanceBatch(cleared);
-      alert(`Deleted active attendance inputs for ${selectedClass} on ${selectedDate}.`);
+    if (attendanceView === 'staff') {
+      if (window.confirm(`Are you sure you want to delete/clear all recorded staff attendance records on ${selectedDate}?`)) {
+        const cleared = staffAttendanceSheet.map(item => ({ ...item, status: 'Unmarked' as StaffAttendanceStatus, arrivalTime: '', departureTime: '', remarks: '' }));
+        setStaffAttendanceSheet(cleared);
+        DbController.saveStaffAttendanceBatch(cleared);
+        alert(`Deleted active staff attendance inputs on ${selectedDate}.`);
+      }
+    } else {
+      if (window.confirm(`Are you sure you want to delete/clear all recorded attendance for class "${selectedClass}" on ${selectedDate}?`)) {
+        const cleared = attendanceSheet.map(item => ({ ...item, status: 'Unmarked' as AttendanceStatus }));
+        setAttendanceSheet(cleared);
+        DbController.saveAttendanceBatch(cleared);
+        alert(`Deleted active student attendance inputs for ${selectedClass} on ${selectedDate}.`);
+      }
     }
   };
 
   const handleDeleteAllAttendance = () => {
-    if (window.confirm("Are you sure you want to completely erase and delete all historical attendance records from the system database? This cannot be undone.")) {
-      localStorage.setItem('school_attendance', JSON.stringify([]));
-      setAttendanceSheet([]);
-      onManualSave();
-      alert("Successfully purged all attendance records from database.");
+    if (attendanceView === 'staff') {
+      if (window.confirm("Are you sure you want to completely erase all historical staff attendance records? This cannot be undone.")) {
+        localStorage.setItem('sms_staff_attendance', JSON.stringify([]));
+        setStaffAttendanceSheet([]);
+        onManualSave();
+        alert("Successfully purged all staff attendance records.");
+      }
+    } else {
+      if (window.confirm("Are you sure you want to completely erase all historical student attendance records from the system database? This cannot be undone.")) {
+        localStorage.setItem('sms_attendance', JSON.stringify([]));
+        setAttendanceSheet([]);
+        onManualSave();
+        alert("Successfully purged all student attendance records.");
+      }
     }
   };
 
   return (
     <div className="space-y-6 fade-in text-xs">
       
+      {/* Dynamic Navigation Mode Selector Switch (no-print) */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 no-print border-b border-slate-200 pb-4">
+        <div>
+          <h2 className="text-base font-black text-slate-800 tracking-tight flex items-center gap-2">
+            <CalendarCheck className={theme.accentText} size={20} />
+            Attendance Marking & Registers
+          </h2>
+          <p className="text-[11px] text-slate-400 mt-0.5">Mark daily participation logs for students or academic faculty members</p>
+        </div>
+
+        {/* Dynamic button control */}
+        <div className="bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-3xs flex">
+          <button
+            onClick={() => setAttendanceView('student')}
+            className={`px-4 py-2 font-black transition rounded-lg cursor-pointer text-xs flex items-center gap-1.5 ${
+              attendanceView === 'student' ? `${theme.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-250'
+            }`}
+          >
+            <Users size={14} /> Student Attendance
+          </button>
+          <button
+            onClick={() => setAttendanceView('staff')}
+            className={`px-4 py-2 font-black transition rounded-lg cursor-pointer text-xs flex items-center gap-1.5 ${
+              attendanceView === 'staff' ? `${theme.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-250'
+            }`}
+          >
+            <Clock size={14} /> Staff Attendance
+          </button>
+        </div>
+      </div>
+
       {/* Configuration Header Control Panel */}
       <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 no-print">
         
@@ -133,51 +384,77 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
             </div>
           </div>
 
-          <div className="space-y-1">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Select Class</label>
-            <select
-              value={selectedClass}
-              onChange={(e) => setSelectedClass(e.target.value as ClassType)}
-              className="px-3 py-1.5 border border-slate-200 rounded-lg bg-slate-50 font-semibold text-xs focus:outline-none"
-            >
-              {CLASSES.map(cls => (
-                <option key={cls} value={cls}>{cls}</option>
-              ))}
-            </select>
-          </div>
+          {attendanceView === 'student' && (
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Select Class</label>
+              <select
+                value={selectedClass}
+                onChange={(e) => setSelectedClass(e.target.value as ClassType)}
+                className="px-3 py-1.5 border border-slate-200 rounded-lg bg-slate-50 font-semibold text-xs focus:outline-none"
+              >
+                {CLASSES.map(cls => (
+                  <option key={cls} value={cls}>{cls}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Global Setter controls and Print button */}
         <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="text-[11px] text-slate-500 font-medium">Bulk Mark Class:</div>
-            <button
-              onClick={() => markAllStatus('Present')}
-              className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded text-xs font-semibold cursor-pointer transition"
-            >
-              All Present
-            </button>
-            <button
-              onClick={() => markAllStatus('Holiday')}
-              className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-xs font-semibold cursor-pointer transition"
-            >
-              All Holiday
-            </button>
-            <button
-              onClick={() => markAllStatus('Absent')}
-              className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-800 border border-red-200 rounded text-xs font-semibold cursor-pointer transition"
-            >
-              All Absent
-            </button>
-          </div>
+          {attendanceView === 'student' ? (
+            <div className="flex items-center gap-2">
+              <div className="text-[11px] text-slate-500 font-medium">Bulk Mark Class:</div>
+              <button
+                onClick={() => markAllStatus('Present')}
+                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded text-xs font-semibold cursor-pointer transition"
+              >
+                All Present
+              </button>
+              <button
+                onClick={() => markAllStatus('Holiday')}
+                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-xs font-semibold cursor-pointer transition"
+              >
+                All Holiday
+              </button>
+              <button
+                onClick={() => markAllStatus('Absent')}
+                className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-800 border border-red-200 rounded text-xs font-semibold cursor-pointer transition"
+              >
+                All Absent
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <div className="text-[11px] text-slate-500 font-medium">Bulk Mark Staff:</div>
+              <button
+                onClick={() => markAllStaffStatus('Present')}
+                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded text-xs font-semibold cursor-pointer transition"
+              >
+                All Present
+              </button>
+              <button
+                onClick={() => markAllStaffStatus('On Leave')}
+                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-xs font-semibold cursor-pointer transition"
+              >
+                All On Leave
+              </button>
+              <button
+                onClick={() => markAllStaffStatus('Absent')}
+                className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-800 border border-red-200 rounded text-xs font-semibold cursor-pointer transition"
+              >
+                All Absent
+              </button>
+            </div>
+          )}
 
           <div className="hidden sm:block h-6 w-px bg-slate-200 mx-1" />
 
           <button
-            onClick={() => setShowPdfGuide(true)}
+            onClick={() => setShowPdfGuide(!showPdfGuide)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer"
           >
-            <FileDown size={14} /> Save PDF
+            <Eye size={14} /> Toggle Preview Mode
           </button>
         </div>
 
@@ -195,38 +472,64 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
               Session Summary
             </h3>
 
-            <div className="grid grid-cols-2 lg:grid-cols-1 gap-3">
-              
-              <div className="border border-slate-100 bg-slate-50/50 p-3 rounded-lg text-center lg:text-left">
-                <span className="text-[10px] text-slate-400 uppercase font-mono block">Enrolled on Roll</span>
-                <strong className="text-xl text-slate-800 font-display">{totalRosterCount}</strong>
-                <span className="text-[10px] block text-slate-400">active class students</span>
-              </div>
+            {attendanceView === 'student' ? (
+              <div className="grid grid-cols-2 lg:grid-cols-1 gap-3">
+                <div className="border border-slate-100 bg-slate-50/50 p-3 rounded-lg text-center lg:text-left">
+                  <span className="text-[10px] text-slate-400 uppercase font-mono block">Enrolled on Roll</span>
+                  <strong className="text-xl text-slate-800 font-display">{totalRosterCount}</strong>
+                  <span className="text-[10px] block text-slate-400">active class students</span>
+                </div>
 
-              <div className="border border-emerald-100 bg-emerald-50/20 p-3 rounded-lg text-center lg:text-left">
-                <span className="text-[10px] text-emerald-600 uppercase font-mono block">Present Count</span>
-                <strong className="text-xl text-emerald-700 font-display">{presentCount}</strong>
-                <span className="text-[10px] block text-emerald-500">attendance marked</span>
-              </div>
+                <div className="border border-emerald-100 bg-emerald-50/20 p-3 rounded-lg text-center lg:text-left">
+                  <span className="text-[10px] text-emerald-600 uppercase font-mono block">Present Count</span>
+                  <strong className="text-xl text-emerald-700 font-display">{presentCount}</strong>
+                  <span className="text-[10px] block text-emerald-500">attendance marked</span>
+                </div>
 
-              <div className="border border-amber-100 bg-amber-50/20 p-3 rounded-lg text-center lg:text-left">
-                <span className="text-[10px] text-amber-600 uppercase font-mono block">Holiday Leave</span>
-                <strong className="text-xl text-amber-700 font-display">{holidayCount}</strong>
-                <span className="text-[10px] block text-amber-500 font-sans font-medium">marked off</span>
-              </div>
+                <div className="border border-amber-100 bg-amber-50/20 p-3 rounded-lg text-center lg:text-left">
+                  <span className="text-[10px] text-amber-600 uppercase font-mono block">Holiday Leave</span>
+                  <strong className="text-xl text-amber-700 font-display">{holidayCount}</strong>
+                  <span className="text-[10px] block text-amber-500 font-sans font-medium">marked off</span>
+                </div>
 
-              <div className="border border-red-100 bg-red-50/20 p-3 rounded-lg text-center lg:text-left">
-                <span className="text-[10px] text-red-600 uppercase font-mono block">Absent Lockouts</span>
-                <strong className="text-xl text-red-700 font-display">{absentCount}</strong>
-                <span className="text-[10px] block text-red-500">truances flagged</span>
+                <div className="border border-red-100 bg-red-50/20 p-3 rounded-lg text-center lg:text-left">
+                  <span className="text-[10px] text-red-600 uppercase font-mono block">Absent Lockouts</span>
+                  <strong className="text-xl text-red-700 font-display">{absentCount}</strong>
+                  <span className="text-[10px] block text-red-500">truances flagged</span>
+                </div>
               </div>
+            ) : (
+              <div className="grid grid-cols-2 lg:grid-cols-1 gap-3">
+                <div className="border border-slate-100 bg-slate-50/50 p-3 rounded-lg text-center lg:text-left">
+                  <span className="text-[10px] text-slate-400 uppercase font-mono block">Total Faculty</span>
+                  <strong className="text-xl text-slate-800 font-display">{staffTotalCount}</strong>
+                  <span className="text-[10px] block text-slate-400">academic staff</span>
+                </div>
 
-            </div>
+                <div className="border border-emerald-100 bg-emerald-50/20 p-3 rounded-lg text-center lg:text-left">
+                  <span className="text-[10px] text-emerald-600 uppercase font-mono block">Present Count</span>
+                  <strong className="text-xl text-emerald-700 font-display">{staffPresentCount}</strong>
+                  <span className="text-[10px] block text-emerald-500">signed present today</span>
+                </div>
+
+                <div className="border border-amber-100 bg-amber-50/20 p-3 rounded-lg text-center lg:text-left">
+                  <span className="text-[10px] text-amber-600 uppercase font-mono block">Staff On Leave</span>
+                  <strong className="text-xl text-amber-700 font-display">{staffLeaveCount}</strong>
+                  <span className="text-[10px] block text-amber-500 font-sans font-medium">excused leave</span>
+                </div>
+
+                <div className="border border-red-100 bg-red-50/20 p-3 rounded-lg text-center lg:text-left">
+                  <span className="text-[10px] text-red-600 uppercase font-mono block">Staff Absent</span>
+                  <strong className="text-xl text-red-700 font-display">{staffAbsentCount}</strong>
+                  <span className="text-[10px] block text-red-500">unexcused absence</span>
+                </div>
+              </div>
+            )}
 
             {/* Manual preservation notice */}
             {!isAutoSave && (
               <button
-                onClick={handleSaveAll}
+                onClick={attendanceView === 'student' ? handleSaveAll : handleSaveAllStaff}
                 className={`w-full py-2.5 rounded-lg text-xs font-bold shadow-xs active:translate-y-0.5 transition cursor-pointer text-center ${theme.btnColors}`}
               >
                 Save Attendance Session
@@ -240,80 +543,526 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
             )}
           </div>
 
-          <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-[11px] text-slate-500 leading-relaxed font-sans">
-            <Users size={16} className="text-slate-400 mb-1" />
-            <span>Attendance totals automatically roll into student catalogs. Check academic rosters to verify presence ratios of day/boarder sections correctly.</span>
+          {/* Daily Live Attendance Ratio Percentage Card */}
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+            <h3 className="text-sm font-display font-medium text-slate-800 flex items-center gap-1.5 font-sans">
+              <CalendarCheck className="text-indigo-600" size={18} />
+              Attendance Ratio
+            </h3>
+
+            {(attendanceView === 'student' ? totalRosterCount : staffTotalCount) === 0 ? (
+              <div className="text-center py-4 text-slate-400 italic">
+                No active roster available
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Micro Stat side-by-side indicator layout */}
+                <div className="grid grid-cols-2 gap-3 text-center">
+                  <div className="bg-emerald-50/40 border border-emerald-100 p-2.5 rounded-lg flex flex-col items-center">
+                    <span className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">Present</span>
+                    <strong className="text-xl text-emerald-700 font-display mt-0.5">
+                      {attendanceView === 'student' ? presentPct : staffPresentPct}%
+                    </strong>
+                    <span className="text-[9px] text-emerald-500 font-mono mt-0.5 flex-wrap">
+                      {attendanceView === 'student' ? `${presentCount} of ${totalRosterCount}` : `${staffPresentCount} of ${staffTotalCount}`}
+                    </span>
+                  </div>
+
+                  <div className="bg-rose-50/40 border border-rose-100 p-2.5 rounded-lg flex flex-col items-center">
+                    <span className="text-[10px] text-rose-600 font-bold uppercase tracking-wider">Absent</span>
+                    <strong className="text-xl text-rose-700 font-display mt-0.5">
+                      {attendanceView === 'student' ? absentPct : staffAbsentPct}%
+                    </strong>
+                    <span className="text-[9px] text-rose-500 font-mono mt-0.5 flex-wrap">
+                      {attendanceView === 'student' ? `${absentCount} of ${totalRosterCount}` : `${staffAbsentCount} of ${staffTotalCount}`}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Progress Bar Track */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center text-[9px] text-slate-400 font-semibold tracking-wider uppercase">
+                    <span>Roster Spread</span>
+                    {attendanceView === 'student' ? (
+                      holidayCount > 0 && <span className="text-amber-600">Holiday: {holidayPct}%</span>
+                    ) : (
+                      staffLeaveCount > 0 && <span className="text-amber-600">On Leave: {staffLeavePct}%</span>
+                    )}
+                  </div>
+                  
+                  {/* Visual stacked percentage bar representation */}
+                  <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden flex">
+                    <div 
+                      style={{ width: `${attendanceView === 'student' ? presentPct : staffPresentPct}%` }}
+                      className="h-full bg-emerald-500 transition-all duration-500 ease-out"
+                      title="Present"
+                    />
+                    <div 
+                      style={{ width: `${attendanceView === 'student' ? holidayPct : staffLeavePct}%` }}
+                      className="h-full bg-amber-400 transition-all duration-500 ease-out"
+                      title={attendanceView === 'student' ? 'Holiday' : 'On Leave'}
+                    />
+                    <div 
+                      style={{ width: `${attendanceView === 'student' ? absentPct : staffAbsentPct}%` }}
+                      className="h-full bg-red-400 transition-all duration-500 ease-out"
+                      title="Absent"
+                    />
+                  </div>
+                </div>
+
+                {/* Insight footer message */}
+                <div className="bg-slate-50 border border-slate-150 rounded-lg p-2.5 text-[10px] text-slate-500 leading-normal flex items-start gap-1.5 font-sans">
+                  <span className="text-xs">💡</span>
+                  <span>
+                    Current day presence holds at <strong className="text-slate-800">{attendanceView === 'student' ? presentPct : staffPresentPct}%</strong>.
+                    {(attendanceView === 'student' ? presentPct : staffPresentPct) >= 90 ? (
+                      <span className="text-emerald-700/90 font-medium"> Excellent turnout rate!</span>
+                    ) : (attendanceView === 'student' ? presentPct : staffPresentPct) >= 75 ? (
+                      <span className="text-amber-700/90 font-medium"> Regular attendance.</span>
+                    ) : (
+                      <span className="text-rose-700/90 font-bold font-sans"> High absence rate detected.</span>
+                    )}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
+
+          <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-[11px] text-slate-500 leading-relaxed font-sans font-medium h-fit">
+            {attendanceView === 'student' ? (
+              <>
+                <Users size={16} className="text-slate-400 mb-1" />
+                <span>Attendance totals automatically roll into student catalogs. Check academic rosters to verify presence ratios of day/boarder sections correctly.</span>
+              </>
+            ) : (
+              <>
+                <Briefcase size={16} className="text-slate-400 mb-1" />
+                <span>Track daily arrival and departure. Ensure timestamps are completed correctly prior to administrative reports generation.</span>
+              </>
+            )}
+          </div>
+
+          {attendanceView === 'staff' && (
+            <div className="bg-gradient-to-br from-indigo-50 to-slate-50 p-5 rounded-xl border border-indigo-100 shadow-3xs space-y-4">
+              <div className="flex items-center gap-2">
+                <Briefcase className="text-indigo-600" size={18} />
+                <h3 className="text-xs font-black text-slate-800 uppercase tracking-widest">Monthly Reports</h3>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-normal font-medium">
+                Export and analyze compiled attendance performance, presence rate, leave quotas, and sign-in chronologies for all teachers.
+              </p>
+
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider">Month</label>
+                    <select
+                      value={reportMonth}
+                      onChange={(e) => setReportMonth(e.target.value)}
+                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[11px] font-bold focus:outline-none"
+                    >
+                      {['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'].map(m => (
+                        <option key={m} value={m}>{getMonthName(m)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider">Year</label>
+                    <select
+                      value={reportYear}
+                      onChange={(e) => setReportYear(e.target.value)}
+                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[11px] font-bold focus:outline-none"
+                    >
+                      {['2025', '2026', '2027', '2028', '2029', '2030'].map(y => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowMonthlyReportMode(!showMonthlyReportMode)}
+                  className={`w-full py-2.5 rounded-lg text-xs font-black flex items-center justify-center gap-1.5 transition active:translate-y-0.5 cursor-pointer shadow-3xs border ${
+                    showMonthlyReportMode
+                      ? 'bg-slate-800 border-slate-900 text-white hover:bg-slate-700'
+                      : `${theme.primaryBg} text-white border-transparent hover:brightness-110`
+                  }`}
+                >
+                  <ClipboardList size={14} />
+                  {showMonthlyReportMode ? 'Back to Daily Register' : 'Preview Monthly Performance'}
+                </button>
+              </div>
+            </div>
+          )}
 
         </div>
 
         {/* ROSTER DATA GRID WORKPAD */}
-        <div className="lg:col-span-3 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col justify-between">
+        {attendanceView === 'staff' && showMonthlyReportMode ? (
+          <div className="lg:col-span-3 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col justify-between animate-fade-in">
+            <div>
+              {/* Header inside Workpad */}
+              <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h4 className="font-extrabold text-slate-850 text-xs flex items-center gap-1.5 uppercase tracking-wider">
+                    <Briefcase className="text-indigo-600" size={15} />
+                    Monthly Staff Performance Report
+                  </h4>
+                  <p className="text-[10px] text-slate-400 mt-0.5">
+                    Consolidated attendance analytics for <strong className="text-slate-700 font-bold">{getMonthName(reportMonth)} {reportYear}</strong>
+                  </p>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const teachersList = DbController.getTeachers();
+                      const allStaffAttendance = DbController.getAllStaffAttendance();
+                      const stats = teachersList.map(teacher => {
+                        const trs = allStaffAttendance.filter(r => r.teacherId === teacher.id && r.date.startsWith(`${reportYear}-${reportMonth}`) && r.status !== 'Unmarked');
+                        const totalDays = trs.length;
+                        const presentDays = trs.filter(r => r.status === 'Present').length;
+                        const leaveDays = trs.filter(r => r.status === 'On Leave').length;
+                        const absentDays = trs.filter(r => r.status === 'Absent').length;
+                        const ratio = totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 0;
+                        
+                        const arrivalTimesInMinutes = trs
+                          .filter(r => r.status === 'Present' && r.arrivalTime)
+                          .map(r => {
+                            const [h, m] = r.arrivalTime!.split(':').map(Number);
+                            return h * 60 + m;
+                          });
+                          
+                        let avgArrivalTime = '-';
+                        if (arrivalTimesInMinutes.length > 0) {
+                          const avgMinutes = Math.round(arrivalTimesInMinutes.reduce((sum, val) => sum + val, 0) / arrivalTimesInMinutes.length);
+                          const avgHours = Math.floor(avgMinutes / 60);
+                          const avgMinsFraction = avgMinutes % 60;
+                          avgArrivalTime = `${avgHours.toString().padStart(2, '0')}:${avgMinsFraction.toString().padStart(2, '0')}`;
+                        }
+                        
+                        return {
+                          teacherId: teacher.id,
+                          teacherName: `${teacher.firstName} ${teacher.middleName ? teacher.middleName + ' ' : ''}${teacher.lastName}`,
+                          totalDays,
+                          presentDays,
+                          leaveDays,
+                          absentDays,
+                          ratio,
+                          avgArrivalTime
+                        };
+                      });
+                      handleExportStaffCsv(stats);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-indigo-700 font-bold tracking-wide transition text-xs rounded-lg cursor-pointer animate-fade-in"
+                  >
+                    <FileDown size={14} /> Export CSV
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const monthName = getMonthName(reportMonth);
+                        const result = await generatePdfFromHtml('staff-monthly-report-printable', `Staff_Attendance_Report_${monthName}_${reportYear}`, false);
+                        downloadBlobLocally(result.blob, result.filename);
+                      } catch (e) {
+                        console.error(e);
+                        alert("Could not generate PDF: " + (e instanceof Error ? e.message : String(e)));
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 font-bold tracking-wide transition text-xs rounded-lg cursor-pointer shadow-3xs"
+                  >
+                    <Printer size={14} /> Export PDF Report
+                  </button>
+                </div>
+              </div>
+
+              {/* Grid or Table listing of staff performance */}
+              <div className="p-4">
+                <div className="overflow-x-auto border border-slate-100 rounded-xl">
+                  <table className="w-full text-left text-xs border-collapse animate-fade-in">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                        <th className="p-3">Staff ID</th>
+                        <th className="p-3">Full Name</th>
+                        <th className="p-3 text-center">Tracked Days</th>
+                        <th className="p-3 text-center text-emerald-700 font-bold">Days Present</th>
+                        <th className="p-3 text-center text-amber-700 font-bold">Days On Leave</th>
+                        <th className="p-3 text-center text-rose-700 font-bold">Days Absent</th>
+                        <th className="p-3 text-center font-bold">Attendance %</th>
+                        <th className="p-3 text-center font-bold">Avg Arrival Time</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {(() => {
+                        const teachersList = DbController.getTeachers();
+                        const allSaved = DbController.getAllStaffAttendance();
+                        
+                        const stats = teachersList.map(teacher => {
+                          const trs = allSaved.filter(r => r.teacherId === teacher.id && r.date.startsWith(`${reportYear}-${reportMonth}`) && r.status !== 'Unmarked');
+                          const totalDays = trs.length;
+                          const presentDays = trs.filter(r => r.status === 'Present').length;
+                          const leaveDays = trs.filter(r => r.status === 'On Leave').length;
+                          const absentDays = trs.filter(r => r.status === 'Absent').length;
+                          const ratio = totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 0;
+                          
+                          const arrivalTimesInMinutes = trs
+                            .filter(r => r.status === 'Present' && r.arrivalTime)
+                            .map(r => {
+                              const [h, m] = r.arrivalTime!.split(':').map(Number);
+                              return h * 60 + m;
+                            });
+                            
+                          let avgArrivalTime = '-';
+                          if (arrivalTimesInMinutes.length > 0) {
+                            const avgMinutes = Math.round(arrivalTimesInMinutes.reduce((sum, val) => sum + val, 0) / arrivalTimesInMinutes.length);
+                            const avgHours = Math.floor(avgMinutes / 60);
+                            const avgMinsFraction = avgMinutes % 60;
+                            avgArrivalTime = `${avgHours.toString().padStart(2, '0')}:${avgMinsFraction.toString().padStart(2, '0')}`;
+                          }
+                          
+                          return {
+                            teacherId: teacher.id,
+                            teacherName: `${teacher.firstName} ${teacher.middleName ? teacher.middleName + ' ' : ''}${teacher.lastName}`,
+                            totalDays,
+                            presentDays,
+                            leaveDays,
+                            absentDays,
+                            ratio,
+                            avgArrivalTime
+                          };
+                        });
+
+                        if (stats.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={8} className="p-6 text-center text-slate-400 italic">No academic staff profiles found to summarize.</td>
+                            </tr>
+                          );
+                        }
+
+                        return stats.map(item => (
+                          <tr key={item.teacherId} className="hover:bg-slate-50/50 transition">
+                            <td className="p-3 font-mono font-semibold text-slate-500">{item.teacherId}</td>
+                            <td className="p-3 font-bold text-slate-850">{item.teacherName}</td>
+                            <td className="p-3 text-center font-mono font-semibold text-slate-600">{item.totalDays} days</td>
+                            <td className="p-3 text-center text-emerald-600 font-bold font-mono">{item.presentDays}</td>
+                            <td className="p-3 text-center text-amber-650 font-mono">{item.leaveDays}</td>
+                            <td className="p-3 text-center text-rose-600 font-mono">{item.absentDays}</td>
+                            <td className="p-3 text-center">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold font-mono ${
+                                item.ratio >= 90
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : item.ratio >= 75
+                                  ? 'bg-amber-50 text-amber-700'
+                                  : item.ratio > 0
+                                  ? 'bg-rose-50 text-rose-600'
+                                  : 'bg-slate-50 text-slate-400'
+                              }`}>
+                                {item.ratio}%
+                              </span>
+                            </td>
+                            <td className="p-3 text-center font-mono font-bold text-slate-705">
+                              {item.avgArrivalTime !== '-' ? (
+                                <span className="flex items-center justify-center gap-1 text-slate-755">
+                                  <Clock size={11} className="text-slate-400" />
+                                  {item.avgArrivalTime}
+                                </span>
+                              ) : (
+                                <span className="text-slate-300">-</span>
+                              )}
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            
+            {/* Footer insight help */}
+            <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 text-[11px] text-slate-505 font-medium">
+              💡 <span>Staff attendance criteria and checkmarks are saved automatically. Warnings should be issued for presence ratios under <strong>90%</strong>.</span>
+            </div>
+          </div>
+        ) : (
+          <div className="lg:col-span-3 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col justify-between">
           <div>
             <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
               <div>
-                <h4 className="font-semibold text-slate-700 text-xs">Digital Attendance Class Register</h4>
-                <p className="text-[10px] text-slate-400 mt-0.5">{selectedClass} level roster logs on {selectedDate}</p>
+                <h4 className="font-semibold text-slate-700 text-xs">
+                  {attendanceView === 'student' ? 'Digital Student Attendance Class Register' : 'Staff Daily Attendance Register Log'}
+                </h4>
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  {attendanceView === 'student' ? `${selectedClass} level roster logs on ${selectedDate}` : `School faculty rosters on ${selectedDate}`}
+                </p>
               </div>
-              <span className="text-[11px] text-slate-500 font-mono">Present: {presentCount} | Absent: {absentCount}</span>
+              <span className="text-[11px] text-slate-500 font-mono">
+                {attendanceView === 'student' ? `Present: ${presentCount} | Absent: ${absentCount}` : `Present: ${staffPresentCount} | Absent: ${staffAbsentCount}`}
+              </span>
             </div>
 
             <div className="divide-y divide-slate-100">
-              {attendanceSheet.length === 0 ? (
-                <div className="p-12 text-center text-slate-400 space-y-2">
-                  <CalendarCheck size={32} className="text-slate-300 mx-auto" />
-                  <p className="font-semibold text-slate-600">No Enrolled Students In {selectedClass}</p>
-                  <p className="max-w-sm mx-auto text-slate-400 text-[10px]">Enroll student profiles to {selectedClass} under the primary Databases module to enable attendance register checkmarks.</p>
-                </div>
-              ) : (
-                attendanceSheet.map((item, index) => (
-                  <div 
-                    key={item.studentId}
-                    className="p-3 px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50 transition duration-150"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="text-[10px] font-mono text-slate-300 font-bold w-4">
-                        {(index + 1).toString().padStart(2, '0')}
-                      </span>
-                      <div>
-                        <div className="font-semibold text-slate-800 text-xs">{item.studentName}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">ID: {item.studentId}</div>
-                      </div>
-                    </div>
-
-                    {/* Radio Select Checks */}
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleStatusChange(item.studentId, 'Present')}
-                        className={`px-3 py-1.5 rounded-lg border font-semibold tracking-wide cursor-pointer transition text-[11px] ${item.status === 'Present' ? 'bg-emerald-500 border-emerald-600 text-white shadow-xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-                      >
-                        Present
-                      </button>
-                      <button
-                        onClick={() => handleStatusChange(item.studentId, 'Holiday')}
-                        className={`px-3 py-1.5 rounded-lg border font-semibold tracking-wide cursor-pointer transition text-[11px] ${item.status === 'Holiday' ? 'bg-amber-500 border-amber-600 text-white shadow-xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-                      >
-                        Holiday
-                      </button>
-                      <button
-                        onClick={() => handleStatusChange(item.studentId, 'Absent')}
-                        className={`px-3 py-1.5 rounded-lg border font-semibold tracking-wide cursor-pointer transition text-[11px] ${item.status === 'Absent' ? 'bg-red-500 border-red-600 text-white shadow-xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-                      >
-                        Absent
-                      </button>
-                    </div>
-
+              {attendanceView === 'student' ? (
+                attendanceSheet.length === 0 ? (
+                  <div className="p-12 text-center text-slate-400 space-y-2">
+                    <CalendarCheck size={32} className="text-slate-300 mx-auto" />
+                    <p className="font-semibold text-slate-600">No Enrolled Students In {selectedClass}</p>
+                    <p className="max-w-sm mx-auto text-slate-400 text-[10px]">Enroll student profiles to {selectedClass} under the primary Databases module to enable attendance register checkmarks.</p>
                   </div>
-                ))
+                ) : (
+                  attendanceSheet.map((item, index) => (
+                    <div 
+                      key={item.studentId}
+                      className="p-3 px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50 transition duration-150"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] font-mono text-slate-300 font-bold w-4">
+                          {(index + 1).toString().padStart(2, '0')}
+                        </span>
+                        <div>
+                          <div className="font-semibold text-slate-800 text-xs">{item.studentName}</div>
+                          <div className="text-[10px] text-slate-500 font-mono flex flex-wrap gap-x-2">
+                            <span>ID: {item.studentId}</span>
+                            <span className="text-slate-300">•</span>
+                            <span className="font-semibold text-emerald-600">Present: {DbController.getStudentAttendanceStats(item.studentId).present} times</span>
+                            <span className="text-slate-300">•</span>
+                            <span className="font-semibold text-indigo-600">School Open: {DbController.getStudentAttendanceStats(item.studentId).schoolOpen} times</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Radio Select Checks */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleStatusChange(item.studentId, 'Present')}
+                          className={`px-3 py-1.5 rounded-lg border font-semibold tracking-wide cursor-pointer transition text-[11px] ${item.status === 'Present' ? 'bg-emerald-500 border-emerald-600 text-white shadow-xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          Present
+                        </button>
+                        <button
+                          onClick={() => handleStatusChange(item.studentId, 'Holiday')}
+                          className={`px-3 py-1.5 rounded-lg border font-semibold tracking-wide cursor-pointer transition text-[11px] ${item.status === 'Holiday' ? 'bg-amber-500 border-amber-600 text-white shadow-xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          Holiday
+                        </button>
+                        <button
+                          onClick={() => handleStatusChange(item.studentId, 'Absent')}
+                          className={`px-3 py-1.5 rounded-lg border font-semibold tracking-wide cursor-pointer transition text-[11px] ${item.status === 'Absent' ? 'bg-red-500 border-red-600 text-white shadow-xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          Absent
+                        </button>
+                      </div>
+
+                    </div>
+                  ))
+                )
+              ) : (
+                staffAttendanceSheet.length === 0 ? (
+                  <div className="p-12 text-center text-slate-400 space-y-2 animate-fade-in">
+                    <Users size={32} className="text-slate-300 mx-auto" />
+                    <p className="font-semibold text-slate-600">No Teachers Available</p>
+                    <p className="max-w-sm mx-auto text-slate-400 text-[10px]">Create teacher profiles under the Databases module or use the bulk importer to track daily arrivals & departures logs.</p>
+                  </div>
+                ) : (
+                  staffAttendanceSheet.map((item, index) => (
+                    <div 
+                      key={item.teacherId}
+                      className="p-4 px-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4 hover:bg-slate-50/50 transition duration-150 animate-fade-in"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] font-mono text-slate-300 font-bold w-4">
+                          {(index + 1).toString().padStart(2, '0')}
+                        </span>
+                        <div>
+                          <div className="font-semibold text-slate-800 text-xs">{item.teacherName}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            Staff ID: <span className="font-semibold text-slate-700">{item.teacherId}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Staff Attendance Columns */}
+                      <div className="flex flex-wrap items-center gap-3">
+                        {/* Status Select Buttons */}
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleStaffStatusChange(item.teacherId, 'Present')}
+                            className={`px-2.5 py-1.5 rounded-lg border font-bold cursor-pointer transition text-[10px] uppercase tracking-wider ${item.status === 'Present' ? 'bg-emerald-500 border-emerald-600 text-white shadow-3xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            Present
+                          </button>
+                          <button
+                            onClick={() => handleStaffStatusChange(item.teacherId, 'On Leave')}
+                            className={`px-2.5 py-1.5 rounded-lg border font-bold cursor-pointer transition text-[10px] uppercase tracking-wider ${item.status === 'On Leave' ? 'bg-amber-500 border-amber-600 text-white shadow-3xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            On Leave
+                          </button>
+                          <button
+                            onClick={() => handleStaffStatusChange(item.teacherId, 'Absent')}
+                            className={`px-2.5 py-1.5 rounded-lg border font-bold cursor-pointer transition text-[10px] uppercase tracking-wider ${item.status === 'Absent' ? 'bg-red-500 border-red-600 text-white shadow-3xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            Absent
+                          </button>
+                        </div>
+
+                        {/* Arrival/Departure inputs */}
+                        {item.status === 'Present' && (
+                          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-xl text-[10px]">
+                            <div className="flex items-center gap-1 text-slate-600">
+                              <LogIn size={11} className="text-slate-400" />
+                              <span className="font-bold">In:</span>
+                              <input
+                                type="time"
+                                value={item.arrivalTime || ''}
+                                onChange={(e) => handleStaffTimeChange(item.teacherId, 'arrivalTime', e.target.value)}
+                                className="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none w-16"
+                              />
+                            </div>
+                            <div className="w-px h-3.5 bg-slate-200" />
+                            <div className="flex items-center gap-1 text-slate-600">
+                              <LogOut size={11} className="text-slate-400" />
+                              <span className="font-bold">Out:</span>
+                              <input
+                                type="time"
+                                value={item.departureTime || ''}
+                                onChange={(e) => handleStaffTimeChange(item.teacherId, 'departureTime', e.target.value)}
+                                className="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none w-16"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Remarks input field */}
+                        <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-xl text-[10px] min-w-[140px] max-w-xs flex-1">
+                          <MessageSquare size={11} className="text-slate-400" />
+                          <input
+                            type="text"
+                            value={item.remarks || ''}
+                            onChange={(e) => handleStaffRemarksChange(item.teacherId, e.target.value)}
+                            placeholder="Add remarks..."
+                            className="bg-transparent border-none text-[11px] focus:outline-none text-slate-700 w-full font-medium"
+                          />
+                        </div>
+                      </div>
+
+                    </div>
+                  ))
+                )
               )}
             </div>
           </div>
 
           <div className="bg-slate-50/80 px-5 py-3 border-t border-slate-100 text-[10px] font-mono text-slate-400 text-center flex items-center justify-center gap-1">
-            <CheckSquare size={12} className="text-slate-400" />
-            <span>Registers must represent true daily attendance logs. Double check truancy lists before printing academic profiles.</span>
+            <CheckSquare size={12} className="text-slate-405" />
+            <span>Registers must represent true daily attendance logs. Double check and save your ledger prior to close.</span>
           </div>
         </div>
+        )}
 
       </div>
 
@@ -332,53 +1081,109 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
           <p className="text-xs font-mono mt-1">EMIS: {schoolInfo.emisCode} | REG NO: {schoolInfo.schoolNumber}</p>
         </div>
 
-        <div className="flex justify-between items-center bg-slate-50 p-3 rounded border border-slate-200 mb-6 text-xs font-mono">
-          <div><strong>CLASS NAME:</strong> {selectedClass}</div>
-          <div><strong>DATE OF REGISTER:</strong> {selectedDate}</div>
-          <div><strong>TOTAL ROLL:</strong> {totalRosterCount}</div>
-        </div>
+        {attendanceView === 'student' ? (
+          <>
+            <div className="flex justify-between items-center bg-slate-50 p-3 rounded border border-slate-200 mb-6 text-xs font-mono">
+              <div><strong>CLASS NAME:</strong> {selectedClass}</div>
+              <div><strong>DATE OF REGISTER:</strong> {selectedDate}</div>
+              <div><strong>TOTAL ROLL:</strong> {totalRosterCount}</div>
+            </div>
 
-        <h2 className="text-base font-bold uppercase text-center tracking-widest border-b border-slate-400 pb-2 mb-4">
-          Daily Class Attendance Register Log
-        </h2>
+            <h2 className="text-base font-bold uppercase text-center tracking-widest border-b border-slate-400 pb-2 mb-4">
+              Daily Class Attendance Register Log
+            </h2>
 
-        <table className="w-full text-left text-xs border-collapse border border-slate-400">
-          <thead>
-            <tr className="bg-slate-50 text-slate-800 font-bold uppercase tracking-wider text-[10px]">
-              <th className="p-2 border border-slate-400 w-12 text-center">No.</th>
-              <th className="p-2 border border-slate-400 w-32">Student ID</th>
-              <th className="p-2 border border-slate-400">Full Name</th>
-              <th className="p-2 border border-slate-400 w-32 text-center">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {attendanceSheet.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="p-4 text-center border border-slate-400 italic">No students registered in this class.</td>
-              </tr>
-            ) : (
-              attendanceSheet.map((item, index) => (
-                <tr key={item.studentId} className="border-b border-slate-300">
-                  <td className="p-2 border border-slate-400 text-center font-mono">{index + 1}</td>
-                  <td className="p-2 border border-slate-400 font-mono">{item.studentId}</td>
-                  <td className="p-2 border border-slate-400 font-bold">{item.studentName}</td>
-                  <td className="p-2 border border-slate-400 text-center">
-                    <span className="font-mono font-bold text-xs">
-                      {item.status.toUpperCase()}
-                    </span>
-                  </td>
+            <table className="w-full text-left text-xs border-collapse border border-slate-400">
+              <thead>
+                <tr className="bg-slate-50 text-slate-800 font-bold uppercase tracking-wider text-[10px]">
+                  <th className="p-2 border border-slate-400 w-12 text-center">No.</th>
+                  <th className="p-2 border border-slate-400 w-32">Student ID</th>
+                  <th className="p-2 border border-slate-400">Full Name</th>
+                  <th className="p-2 border border-slate-400 w-32 text-center">Status</th>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {attendanceSheet.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="p-4 text-center border border-slate-400 italic">No students registered in this class.</td>
+                  </tr>
+                ) : (
+                  attendanceSheet.map((item, index) => (
+                    <tr key={item.studentId} className="border-b border-slate-300">
+                      <td className="p-2 border border-slate-400 text-center font-mono">{index + 1}</td>
+                      <td className="p-2 border border-slate-400 font-mono">{item.studentId}</td>
+                      <td className="p-2 border border-slate-400 font-bold">{item.studentName}</td>
+                      <td className="p-2 border border-slate-400 text-center">
+                        <span className="font-mono font-bold text-xs">
+                          {item.status.toUpperCase()}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
 
-        {/* Statistical Summary Row */}
-        <div className="grid grid-cols-3 gap-4 border border-slate-400 p-3 bg-slate-50 font-mono text-[11px] mt-6 leading-6">
-          <div><strong>Present Summary:</strong> {presentCount} students</div>
-          <div><strong>Holiday Leave:</strong> {holidayCount} students</div>
-          <div><strong>Absent Summary:</strong> {absentCount} students</div>
-        </div>
+            {/* Statistical Summary Row */}
+            <div className="grid grid-cols-3 gap-4 border border-slate-400 p-3 bg-slate-50 font-mono text-[11px] mt-6 leading-6">
+              <div><strong>Present Summary:</strong> {presentCount} students</div>
+              <div><strong>Holiday Leave:</strong> {holidayCount} students</div>
+              <div><strong>Absent Summary:</strong> {absentCount} students</div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex justify-between items-center bg-slate-50 p-3 rounded border border-slate-200 mb-6 text-xs font-mono">
+              <div><strong>FACULTY LEVEL:</strong> All Active Academic Staff</div>
+              <div><strong>DATE OF REGISTER:</strong> {selectedDate}</div>
+              <div><strong>TOTAL STAFF:</strong> {staffTotalCount}</div>
+            </div>
+
+            <h2 className="text-base font-bold uppercase text-center tracking-widest border-b border-slate-400 pb-2 mb-4">
+              Daily Staff Attendance & Check-In Log
+            </h2>
+
+            <table className="w-full text-left text-xs border-collapse border border-slate-400">
+              <thead>
+                <tr className="bg-slate-50 text-slate-800 font-bold uppercase tracking-wider text-[10px]">
+                  <th className="p-2 border border-slate-400 w-12 text-center">No.</th>
+                  <th className="p-2 border border-slate-400 w-28">Staff ID</th>
+                  <th className="p-2 border border-slate-400">Full Name</th>
+                  <th className="p-2 border border-slate-400 w-24 text-center">In Time</th>
+                  <th className="p-2 border border-slate-400 w-24 text-center">Out Time</th>
+                  <th className="p-2 border border-slate-400 w-28 text-center">Status</th>
+                  <th className="p-2 border border-slate-400">Remarks</th>
+                </tr>
+              </thead>
+              <tbody>
+                {staffAttendanceSheet.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="p-4 text-center border border-slate-400 italic">No academic staff registered.</td>
+                  </tr>
+                ) : (
+                  staffAttendanceSheet.map((item, index) => (
+                    <tr key={item.teacherId} className="border-b border-slate-300">
+                      <td className="p-2 border border-slate-400 text-center font-mono">{index + 1}</td>
+                      <td className="p-2 border border-slate-400 font-mono">{item.teacherId}</td>
+                      <td className="p-2 border border-slate-400 font-bold">{item.teacherName}</td>
+                      <td className="p-2 border border-slate-400 text-center font-mono">{item.arrivalTime || '-'}</td>
+                      <td className="p-2 border border-slate-400 text-center font-mono">{item.departureTime || '-'}</td>
+                      <td className="p-2 border border-slate-400 text-center font-mono font-bold text-xs">{item.status.toUpperCase()}</td>
+                      <td className="p-2 border border-slate-400 italic text-[11px] text-slate-700">{item.remarks || '-'}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+
+            {/* Statistical Summary Row */}
+            <div className="grid grid-cols-3 gap-4 border border-slate-400 p-3 bg-slate-50 font-mono text-[11px] mt-6 leading-6">
+              <div><strong>Present Summary:</strong> {staffPresentCount} staff</div>
+              <div><strong>On Leave:</strong> {staffLeaveCount} staff</div>
+              <div><strong>Absent Summary:</strong> {staffAbsentCount} staff</div>
+            </div>
+          </>
+        )}
 
         <div className="mt-16 flex justify-between text-xs font-serif pt-6 border-t border-slate-300">
           <div className="text-center">
@@ -453,57 +1258,121 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
                   <p className="text-[8px] font-mono mt-1 text-stone-500">EMIS: {schoolInfo.emisCode} | REG NO: {schoolInfo.schoolNumber}</p>
                 </div>
 
-                <div className="flex justify-between items-center bg-stone-50 p-2 rounded border border-stone-200 mb-3 text-[8px] font-mono text-stone-700">
-                  <div><strong>CLASS:</strong> {selectedClass}</div>
-                  <div><strong>DATE:</strong> {selectedDate}</div>
-                  <div><strong>COUNT:</strong> {totalRosterCount}</div>
-                </div>
+                {attendanceView === 'student' ? (
+                  <>
+                    <div className="flex justify-between items-center bg-stone-50 p-2 rounded border border-stone-200 mb-3 text-[8px] font-mono text-stone-700">
+                      <div><strong>CLASS:</strong> {selectedClass}</div>
+                      <div><strong>DATE:</strong> {selectedDate}</div>
+                      <div><strong>COUNT:</strong> {totalRosterCount}</div>
+                    </div>
 
-                <h4 className="text-[10px] font-bold uppercase text-center tracking-widest border-b border-stone-300 pb-1 mb-2 text-stone-900">
-                  Daily Class Attendance Register Log
-                </h4>
+                    <h4 className="text-[10px] font-bold uppercase text-center tracking-widest border-b border-stone-300 pb-1 mb-2 text-stone-900">
+                      Daily Class Attendance Register Log
+                    </h4>
 
-                <table className="w-full text-left text-[8px] border-collapse border border-stone-400">
-                  <thead>
-                    <tr className="bg-stone-100 font-bold uppercase text-stone-800">
-                      <th className="p-1 border border-stone-400 text-center">No.</th>
-                      <th className="p-1 border border-stone-400">Full Name</th>
-                      <th className="p-1 border border-stone-400 text-center w-16">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {attendanceSheet.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} className="p-2 text-center border border-stone-400 italic">No student attendance logs to preview.</td>
-                      </tr>
-                    ) : (
-                      attendanceSheet.slice(0, 8).map((item, index) => (
-                        <tr key={item.studentId} className="border-b border-stone-300">
-                          <td className="p-1 border border-stone-400 text-center font-mono">{index + 1}</td>
-                          <td className="p-1 border border-stone-400 font-bold text-stone-950">{item.studentName}</td>
-                          <td className="p-1 border border-stone-400 text-center">
-                            <span className={`px-1.5 py-0.5 font-bold font-sans text-[7px] border rounded ${
-                              item.status === 'present' 
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
-                                : item.status === 'absent' 
-                                ? 'bg-rose-50 text-rose-700 border-rose-200' 
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
-                            }`}>
-                              {item.status.toUpperCase()}
-                            </span>
-                          </td>
+                    <table className="w-full text-left text-[8px] border-collapse border border-stone-400">
+                      <thead>
+                        <tr className="bg-stone-100 font-bold uppercase text-stone-800">
+                          <th className="p-1 border border-stone-400 text-center">No.</th>
+                          <th className="p-1 border border-stone-400">Full Name</th>
+                          <th className="p-1 border border-stone-400 text-center w-16">Status</th>
                         </tr>
-                      ))
-                    )}
-                    {attendanceSheet.length > 8 && (
-                      <tr>
-                        <td colSpan={3} className="p-1 border border-stone-400 text-center font-mono text-indigo-600 italic">
-                          ... and {attendanceSheet.length - 8} more students listed in Daily Register sheet ...
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody>
+                        {attendanceSheet.length === 0 ? (
+                          <tr>
+                            <td colSpan={3} className="p-2 text-center border border-stone-400 italic">No student attendance logs to preview.</td>
+                          </tr>
+                        ) : (
+                          attendanceSheet.slice(0, 8).map((item, index) => (
+                            <tr key={item.studentId} className="border-b border-stone-300">
+                              <td className="p-1 border border-stone-400 text-center font-mono">{index + 1}</td>
+                              <td className="p-1 border border-stone-400 font-bold text-stone-950">{item.studentName}</td>
+                              <td className="p-1 border border-stone-400 text-center">
+                                <span className={`px-1.5 py-0.5 font-bold font-sans text-[7px] border rounded ${
+                                  item.status.toLowerCase() === 'present' 
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                                    : item.status.toLowerCase() === 'absent' 
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200' 
+                                    : item.status.toLowerCase() === 'holiday'
+                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                    : 'bg-slate-50 text-slate-400 border-slate-200'
+                                }`}>
+                                  {item.status.toUpperCase()}
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                        {attendanceSheet.length > 8 && (
+                          <tr>
+                            <td colSpan={3} className="p-1 border border-stone-400 text-center font-mono text-indigo-600 italic">
+                              ... and {attendanceSheet.length - 8} more students listed in Daily Register sheet ...
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex justify-between items-center bg-stone-50 p-2 rounded border border-stone-200 mb-3 text-[8px] font-mono text-stone-700">
+                      <div><strong>FACULTY:</strong> Active Staff</div>
+                      <div><strong>DATE:</strong> {selectedDate}</div>
+                      <div><strong>COUNT:</strong> {staffTotalCount}</div>
+                    </div>
+
+                    <h4 className="text-[10px] font-bold uppercase text-center tracking-widest border-b border-stone-300 pb-1 mb-2 text-stone-900">
+                      Daily Staff Attendance Register Log
+                    </h4>
+
+                    <table className="w-full text-left text-[8px] border-collapse border border-stone-400">
+                      <thead>
+                        <tr className="bg-stone-100 font-bold uppercase text-stone-800">
+                          <th className="p-1 border border-stone-400 text-center">No.</th>
+                          <th className="p-1 border border-stone-400">Full Name</th>
+                          <th className="p-1 border border-stone-400 text-center">In/Out</th>
+                          <th className="p-1 border border-stone-400 text-center w-16">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {staffAttendanceSheet.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="p-2 text-center border border-stone-400 italic">No teacher registers found to preview.</td>
+                          </tr>
+                        ) : (
+                          staffAttendanceSheet.slice(0, 8).map((item, index) => (
+                            <tr key={item.teacherId} className="border-b border-stone-300 text-[8px]">
+                              <td className="p-1 border border-stone-400 text-center font-mono">{index + 1}</td>
+                              <td className="p-1 border border-stone-400 font-bold text-stone-950">{item.teacherName}</td>
+                              <td className="p-1 border border-stone-400 text-center font-mono text-[7px]">
+                                {item.status === 'Present' ? `${item.arrivalTime || '??'}/${item.departureTime || '??'}` : '-'}
+                              </td>
+                              <td className="p-1 border border-stone-400 text-center">
+                                <span className={`px-1 rounded text-[7px] font-mono font-bold border ${
+                                  item.status === 'Present'
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : item.status === 'On Leave'
+                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                    : 'bg-rose-50 text-rose-700 border-rose-200'
+                                }`}>
+                                  {item.status.toUpperCase()}
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                        {staffAttendanceSheet.length > 8 && (
+                          <tr>
+                            <td colSpan={4} className="p-1 border border-stone-400 text-center font-mono text-indigo-600 italic">
+                              ... and {staffAttendanceSheet.length - 8} more teachers listed ...
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </>
+                )}
               </div>
               
               <span className="text-[10px] text-slate-300 font-mono tracking-wide">Standard Portrait A4 Format Draft Miniature</span>
@@ -514,10 +1383,10 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
               <div className="space-y-4">
                 <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
                   <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0">
-                    <FileDown size={22} />
+                    <Eye size={22} />
                   </div>
                   <div>
-                    <h4 className="text-sm font-black text-slate-950">Save PDF & Print Controller</h4>
+                    <h4 className="text-sm font-black text-slate-950">Toggle Preview Mode & Print Controller</h4>
                     <p className="text-[10px] text-slate-400">Review register print parameters</p>
                   </div>
                 </div>
@@ -623,6 +1492,160 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
         >
           <Trash2 size={13} /> Delete All Section Data
         </button>
+      </div>
+    </div>
+
+    {/* OFF-SCREEN PRINT TEMPLATE FOR MONTHLY STAFF ATTENDANCE SUMMARY */}
+    <div id="staff-monthly-report-printable" className="absolute -top-[9999px] -left-[9999px] w-[800px] p-10 bg-white font-sans text-slate-900 border-12 border-double border-slate-400">
+      <div className="flex items-center justify-between border-b-2 border-slate-500 pb-4 mb-6">
+        <div className="flex items-center gap-4">
+          <div className="w-16 h-16 bg-slate-900 rounded-lg flex items-center justify-center text-white font-bold text-2xl shadow-sm">
+            {schoolInfo.name ? schoolInfo.name.charAt(0) : 'S'}
+          </div>
+          <div>
+            <h1 className="text-xl font-extrabold uppercase tracking-widest text-slate-800 font-serif">{schoolInfo.name}</h1>
+            <p className="text-[10px] text-slate-505 font-semibold uppercase font-sans tracking-wider">Motto: "{schoolInfo.motto}"</p>
+            <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+              EMIS: {schoolInfo.emisCode} | REG NO: {schoolInfo.schoolNumber}
+            </p>
+          </div>
+        </div>
+        <div className="text-right text-[10px] font-mono text-slate-500">
+          <div>MONTHLY FACULTY PERFORMANCE LEDGER</div>
+          <div className="font-bold text-slate-800 text-xs">{getMonthName(reportMonth).toUpperCase()} {reportYear}</div>
+          <div>GENERATED: {new Date().toLocaleDateString()}</div>
+        </div>
+      </div>
+
+      <h2 className="text-center text-sm font-black uppercase tracking-widest border-b border-slate-200 pb-2 mb-6 text-slate-900">
+        Monthly Academic Staff Attendance & Performance Summary
+      </h2>
+
+      {/* Aggregate metrics block */}
+      {(() => {
+        const teachersList = DbController.getTeachers();
+        const allSaved = DbController.getAllStaffAttendance();
+        
+        const stats = teachersList.map(teacher => {
+          const trs = allSaved.filter(r => r.teacherId === teacher.id && r.date.startsWith(`${reportYear}-${reportMonth}`) && r.status !== 'Unmarked');
+          const totalDays = trs.length;
+          const presentDays = trs.filter(r => r.status === 'Present').length;
+          const leaveDays = trs.filter(r => r.status === 'On Leave').length;
+          const absentDays = trs.filter(r => r.status === 'Absent').length;
+          const ratio = totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 0;
+          
+          const arrivalTimesInMinutes = trs
+            .filter(r => r.status === 'Present' && r.arrivalTime)
+            .map(r => {
+              const [h, m] = r.arrivalTime!.split(':').map(Number);
+              return h * 60 + m;
+            });
+            
+          let avgArrivalTime = '-';
+          if (arrivalTimesInMinutes.length > 0) {
+            const avgMinutes = Math.round(arrivalTimesInMinutes.reduce((sum, val) => sum + val, 0) / arrivalTimesInMinutes.length);
+            const avgHours = Math.floor(avgMinutes / 60);
+            const avgMinsFraction = avgMinutes % 60;
+            avgArrivalTime = `${avgHours.toString().padStart(2, '0')}:${avgMinsFraction.toString().padStart(2, '0')}`;
+          }
+          
+          return {
+            teacherId: teacher.id,
+            teacherName: `${teacher.firstName} ${teacher.middleName ? teacher.middleName + ' ' : ''}${teacher.lastName}`,
+            totalDays,
+            presentDays,
+            leaveDays,
+            absentDays,
+            ratio,
+            avgArrivalTime
+          };
+        });
+
+        const activeDates = new Set(allSaved.filter(r => r.date.startsWith(`${reportYear}-${reportMonth}`)).map(r => r.date));
+        const validStats = stats.filter(s => s.totalDays > 0);
+        const avgAttendance = validStats.length > 0 ? Math.round(validStats.reduce((sum, s) => sum + s.ratio, 0) / validStats.length) : 0;
+
+        return (
+          <>
+            <div className="grid grid-cols-4 gap-4 mb-6 text-center">
+              <div className="border border-slate-200 p-3 bg-slate-50 rounded-lg">
+                <div className="text-[9px] text-slate-500 font-bold uppercase">Total Faculty</div>
+                <div className="text-lg font-black text-slate-800 font-serif">{teachersList.length} staff</div>
+              </div>
+              <div className="border border-slate-200 p-3 bg-slate-50 rounded-lg">
+                <div className="text-[9px] text-slate-500 font-bold uppercase">Avg Month Attendance</div>
+                <div className="text-lg font-black text-emerald-700 font-serif">{avgAttendance}%</div>
+              </div>
+              <div className="border border-slate-200 p-3 bg-slate-50 rounded-lg">
+                <div className="text-[9px] text-slate-505 font-bold uppercase">Tracked Sittings</div>
+                <div className="text-lg font-black text-slate-800 font-serif">{activeDates.size} days</div>
+              </div>
+              <div className="border border-slate-200 p-3 bg-slate-50 rounded-lg">
+                <div className="text-[9px] text-slate-505 font-bold uppercase">Average Check-in</div>
+                <div className="text-lg font-black text-indigo-705 font-serif font-bold">
+                  {(() => {
+                    const allArrivals = allSaved
+                      .filter(r => r.date.startsWith(`${reportYear}-${reportMonth}`) && r.status === 'Present' && r.arrivalTime)
+                      .map(r => {
+                        const [h, m] = r.arrivalTime!.split(':').map(Number);
+                        return h * 60 + m;
+                      });
+                    if (allArrivals.length === 0) return '-';
+                    const avg = Math.round(allArrivals.reduce((sum, val) => sum + val, 0) / allArrivals.length);
+                    const h = Math.floor(avg / 60);
+                    const m = avg % 60;
+                    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+                  })()}
+                </div>
+              </div>
+            </div>
+
+            <table className="w-full text-left text-[11px] border-collapse border border-slate-300">
+              <thead>
+                <tr className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider text-[9px] border-b border-slate-300">
+                  <th className="p-2 border border-slate-300 text-center w-10">No.</th>
+                  <th className="p-2 border border-slate-300 w-24">Staff ID</th>
+                  <th className="p-2 border border-slate-300">Full Name</th>
+                  <th className="p-2 border border-slate-300 text-center w-24">Working Days</th>
+                  <th className="p-2 border border-slate-300 text-center w-16 text-emerald-800">Present</th>
+                  <th className="p-2 border border-slate-300 text-center w-16 text-amber-800">On Leave</th>
+                  <th className="p-2 border border-slate-300 text-center w-16 text-rose-800">Absent</th>
+                  <th className="p-2 border border-slate-300 text-center w-28 font-bold">Attendance %</th>
+                  <th className="p-2 border border-slate-300 text-center w-28 font-bold">Avg Arrival</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {stats.map((item, index) => (
+                  <tr key={item.teacherId} className="border-b border-slate-200">
+                    <td className="p-2 border border-slate-300 text-center font-mono">{index + 1}</td>
+                    <td className="p-2 border border-slate-300 font-mono font-bold text-slate-600">{item.teacherId}</td>
+                    <td className="p-2 border border-slate-300 font-bold text-slate-900">{item.teacherName}</td>
+                    <td className="p-2 border border-slate-300 text-center font-mono">{item.totalDays} days</td>
+                    <td className="p-2 border border-slate-300 text-center font-bold text-emerald-800 font-mono">{item.presentDays}</td>
+                    <td className="p-2 border border-slate-300 text-center font-bold text-amber-800 font-mono">{item.leaveDays}</td>
+                    <td className="p-2 border border-slate-300 text-center font-bold text-rose-800 font-mono">{item.absentDays}</td>
+                    <td className="p-2 border border-slate-300 text-center font-extrabold font-mono text-slate-850">{item.ratio}%</td>
+                    <td className="p-2 border border-slate-300 text-center font-mono font-bold text-slate-750">{item.avgArrivalTime}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        );
+      })()}
+
+      {/* Signature block */}
+      <div className="mt-16 flex justify-between text-[11px] font-serif pt-6 border-t border-slate-200">
+        <div className="text-center w-48">
+          <div className="h-10 border-b border-slate-300 mb-1" />
+          <div className="font-bold">Headteacher Signature</div>
+          <div className="text-[9px] text-slate-400">Date: ____/____/20__</div>
+        </div>
+        <div className="text-center w-48">
+          <div className="h-10 border-b border-slate-300 mb-1" />
+          <div className="font-bold">Stamp Area</div>
+          <div className="text-[9px] text-slate-400">Official Seal</div>
+        </div>
       </div>
     </div>
 

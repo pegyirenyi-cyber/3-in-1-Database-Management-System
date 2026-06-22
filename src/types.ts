@@ -14,35 +14,42 @@ export interface SchoolInfo {
   highestAcademicQualifications: string;
   district: string;
   circuit: string;
+  reopeningDate?: string;
+  signatureUrl?: string;
+  stampUrl?: string;
 }
 
 export type ClassType =
-  | 'Nursery'
-  | 'KG.1'
-  | 'KG.2'
-  | 'Class 1'
-  | 'Class 2'
-  | 'Class 3'
-  | 'Class 4'
-  | 'Class 5'
-  | 'Class 6'
-  | 'JHS 1'
-  | 'JHS 2'
-  | 'JHS 3';
+  | 'Creche'
+  | 'Nursery 1'
+  | 'Nursery 2'
+  | 'KG. 1'
+  | 'KG. 2'
+  | 'Basic 1'
+  | 'Basic 2'
+  | 'Basic 3'
+  | 'Basic 4'
+  | 'Basic 5'
+  | 'Basic 6'
+  | 'Basic 7'
+  | 'Basic 8'
+  | 'Basic 9';
 
 export const CLASSES: ClassType[] = [
-  'Nursery',
-  'KG.1',
-  'KG.2',
-  'Class 1',
-  'Class 2',
-  'Class 3',
-  'Class 4',
-  'Class 5',
-  'Class 6',
-  'JHS 1',
-  'JHS 2',
-  'JHS 3'
+  'Creche',
+  'Nursery 1',
+  'Nursery 2',
+  'KG. 1',
+  'KG. 2',
+  'Basic 1',
+  'Basic 2',
+  'Basic 3',
+  'Basic 4',
+  'Basic 5',
+  'Basic 6',
+  'Basic 7',
+  'Basic 8',
+  'Basic 9'
 ];
 
 export type SectionType = 'Faith' | 'Harmony' | 'Humility' | 'Peace';
@@ -67,6 +74,8 @@ export interface Student {
   residentialAddress: string;
   photoUrl: string; // Base64 or local path
   createdAt: string;
+  academicYear?: AcademicYearType;
+  term?: TermType;
 }
 
 export type TeacherRank =
@@ -119,7 +128,7 @@ export interface Teacher {
   createdAt: string;
 }
 
-export type AttendanceStatus = 'Present' | 'Holiday' | 'Absent';
+export type AttendanceStatus = 'Present' | 'Holiday' | 'Absent' | 'Unmarked';
 
 export interface AttendanceRecord {
   id: string; // date_studentId
@@ -130,19 +139,52 @@ export interface AttendanceRecord {
   status: AttendanceStatus;
 }
 
+export type StaffAttendanceStatus = 'Present' | 'Absent' | 'On Leave' | 'Unmarked';
+
+export interface StaffAttendanceRecord {
+  id: string; // date_teacherId
+  date: string; // YYYY-MM-DD
+  teacherId: string;
+  teacherName: string;
+  status: StaffAttendanceStatus;
+  arrivalTime?: string;   // e.g. "07:30"
+  departureTime?: string; // e.g. "16:00"
+  remarks?: string;
+}
+
 export type AcademicYearType =
   | '2025/2026'
   | '2026/2027'
   | '2027/2028'
   | '2028/2029'
-  | '2029/2030';
+  | '2029/2030'
+  | '2030/2031'
+  | '2031/2032'
+  | '2032/2033'
+  | '2033/2034'
+  | '2034/2035'
+  | '2035/2036'
+  | '2036/2037'
+  | '2037/2038'
+  | '2038/2039'
+  | '2039/2040';
 
 export const ACADEMIC_YEARS: AcademicYearType[] = [
   '2025/2026',
   '2026/2027',
   '2027/2028',
   '2028/2029',
-  '2029/2030'
+  '2029/2030',
+  '2030/2031',
+  '2031/2032',
+  '2032/2033',
+  '2033/2034',
+  '2034/2035',
+  '2035/2036',
+  '2036/2037',
+  '2037/2038',
+  '2038/2039',
+  '2039/2040'
 ];
 
 export type TermType = 'Term 1' | 'Term 2' | 'Term 3';
@@ -211,6 +253,11 @@ export interface UserAccount {
   name: string;
   role: UserRole;
   createdAt: string;
+  licenseType?: 'trial' | 'activated';
+  registeredOn?: string;
+  lastActivatedOn?: string;
+  activationCode?: string;
+  requestCode?: string;
 }
 
 export type ThemeType = 'Classic' | 'Emerald' | 'Ruby' | 'Cosmic' | 'Gold' | 'Sophisticated Dark' | 'Crystal Glass';
@@ -246,5 +293,118 @@ export interface StudentFeeBill {
   
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TermDatesConfig {
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
+}
+
+export interface AcademicYearConfig {
+  academicYear: AcademicYearType;
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
+  terms: Record<TermType, TermDatesConfig>;
+}
+
+export interface AcademicCalendarConfig {
+  activeAcademicYear: AcademicYearType;
+  activeTerm: TermType;
+  years: Record<AcademicYearType, AcademicYearConfig>;
+}
+
+export interface EmisData {
+  id: string; // academicYear to uniquely identify the year's record
+  academicYear: AcademicYearType;
+  censusDate: string; // YYYY-MM-DD
+  
+  // 1. General & Administration Info (GES specific)
+  emisCode: string; // GES EMIS unique identifier
+  circuitName: string;
+  districtName: string;
+  regionName: string;
+  schoolType: 'Public' | 'Private';
+  religiousAffiliation: string;
+  dayBoarding: 'Day' | 'Boarding' | 'Day & Boarding';
+  multiGradeTeaching: boolean;
+  
+  // 2. School Enrolment Statistics (Class level breakdowns mapping to ClassType)
+  boysEnrolled: Record<string, number>;
+  girlsEnrolled: Record<string, number>;
+  repeatersBoys: Record<string, number>;
+  repeatersGirls: Record<string, number>;
+  disabledBoys: Record<string, number>;
+  disabledGirls: Record<string, number>;
+  
+  // 3. Infrastructure & Facilities (GES EMIS Requirements)
+  permanentClassrooms: number;
+  temporaryClassrooms: number;
+  classroomsUnderTrees: number;
+  drinkingWaterSource: 'Pipe-borne' | 'Borehole' | 'Hand-dug Well' | 'None' | 'Other';
+  toiletType: 'Water Closet (WC)' | 'KVIP' | 'Pit Latrine' | 'None' | 'Other';
+  toiletBoothsBoys: number;
+  toiletBoothsGirls: number;
+  hasElectricity: boolean;
+  electricitySource: 'Grid (ECG/NEDCo)' | 'Solar' | 'Generator' | 'None';
+  hasFunctionalIctLab: boolean;
+  totalWorkingComputers: number;
+  
+  // 4. Textbooks & Teaching Materials
+  englishTextbooks: number;
+  mathTextbooks: number;
+  scienceTextbooks: number;
+  socialStudiesTextbooks: number;
+  
+  // 5. Staffing Status Summary
+  trainedMaleTeachers: number;
+  trainedFemaleTeachers: number;
+  untrainedMaleTeachers: number;
+  untrainedFemaleTeachers: number;
+  nonTeachingMaleStaff: number;
+  nonTeachingFemaleStaff: number;
+  
+  // 6. School Context & Foundations
+  locationType: 'Urban' | 'Rural' | 'Semi-Urban';
+  yearFounded: number;
+  isSchoolFeedingBeneficiary: boolean;
+  studentsFedDailyCount: number;
+
+  // 7. Advanced WASH & Health Facilities
+  hasSeparateStaffToilets: boolean;
+  hasHandwashingStations: boolean;
+  hasFunctionalSickBay: boolean;
+
+  // 8. Governance & Community Settings
+  hasActiveSmc: boolean; // School Management Committee
+  hasActivePta: boolean; // Parent-Teacher Association
+  ptaMeetingsHeldCount: number;
+
+  // 9. Academic Facilities
+  hasFunctionalLibrary: boolean;
+  totalLibraryBooks: number;
+  hasScienceKit: boolean;
+
+  // 10. Safety & Compound Security
+  isCompoundFenced: boolean;
+  hasSecurityGuard: boolean;
+  
+  targetCommunityPopulation?: number; // Optional community catchment population of school-age children (4-15 yrs)
+  
+  updatedAt: string;
+}
+
+export interface PaystackPayment {
+  id: string;
+  reference: string;
+  studentId: string;
+  studentName?: string;
+  billId: string;
+  component: string;
+  amount: number;
+  academicYear: string;
+  term: string;
+  status: string;
+  paidAt?: string;
+  createdAt: string;
 }
 

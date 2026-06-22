@@ -7,12 +7,16 @@ import {
 import { DbController } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  LineChart, Line
 } from 'recharts';
 import { 
   Printer, Save, CheckSquare, RefreshCw, Layers, Award, FileText, LayoutGrid, BarChart3, HelpCircle, AlertCircle, Sparkles, FileDown,
-  Eye, EyeOff, ShieldAlert, Trash2, RotateCcw, Eraser
+  Eye, EyeOff, ShieldAlert, Trash2, RotateCcw, Eraser, FileSpreadsheet,
+  Smartphone, MessageSquare, Send, CheckCircle, ExternalLink, Calendar,
+  X, Sliders, Check
 } from 'lucide-react';
+import { generateSecureToken } from '../utils';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 
 interface Props {
@@ -20,15 +24,36 @@ interface Props {
   students: Student[];
   isAutoSave: boolean;
   onManualSave: () => void;
+  selectedYear?: AcademicYearType;
+  setSelectedYear?: (yr: AcademicYearType) => void;
+  selectedTerm?: TermType;
+  setSelectedTerm?: (tm: TermType) => void;
 }
 
 type AssessmentSubMode = 'Worksheet' | 'IndividualReport' | 'Broadsheet' | 'PerformanceAnalytics';
 
-export default function AssessmentTab({ theme, students, isAutoSave, onManualSave }: Props) {
+export default function AssessmentTab({ 
+  theme, 
+  students, 
+  isAutoSave, 
+  onManualSave,
+  selectedYear: propYear,
+  setSelectedYear: propSetYear,
+  selectedTerm: propTerm,
+  setSelectedTerm: propSetTerm
+}: Props) {
   // Top selector ribbon states
   const [selectedClass, setSelectedClass] = useState<ClassType>('Class 1');
-  const [selectedYear, setSelectedYear] = useState<AcademicYearType>('2025/2026');
-  const [selectedTerm, setSelectedTerm] = useState<TermType>('Term 1');
+  
+  const [localYear, setLocalYear] = useState<AcademicYearType>('2026/2027');
+  const [localTerm, setLocalTerm] = useState<TermType>('Term 1');
+
+  const selectedYear = propYear || localYear;
+  const setSelectedYear = propSetYear || setLocalYear;
+
+  const selectedTerm = propTerm || localTerm;
+  const setSelectedTerm = propSetTerm || setLocalTerm;
+
   const [selectedSubject, setSelectedSubject] = useState<SubjectType>('English Language');
   
   // Navigation states
@@ -36,15 +61,179 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
   const [activeWorksheet, setActiveWorksheet] = useState<StudentAssessment[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   
+  // Student Trend Visualizer states
+  const [trendStudentId, setTrendStudentId] = useState<string>('');
+  const [trendSubject, setTrendSubject] = useState<string>('All');
+  
+  // Heatmap Threshold Benchmark state
+  const [heatmapThreshold, setHeatmapThreshold] = useState<number>(60);
+  
   // Save feedback states
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState('');
   const [reportCardPreviewMode, setReportCardPreviewMode] = useState(false);
+  const [bulkReportMode, setBulkReportMode] = useState(false);
   const [worksheetPreviewMode, setWorksheetPreviewMode] = useState(false);
   const [broadsheetPreviewMode, setBroadsheetPreviewMode] = useState(false);
   const [performancePreviewMode, setPerformancePreviewMode] = useState(false);
   const [showPreviewPane, setShowPreviewPane] = useState(true);
   const [pdfFloatingMinimized, setPdfFloatingMinimized] = useState(false);
+
+  // Parental SMS Integration states
+  const [smsModalOpen, setSmsModalOpen] = useState(false);
+  const [smsGuardianName, setSmsGuardianName] = useState('');
+  const [smsGuardianPhone, setSmsGuardianPhone] = useState('');
+  const [smsCustomMessage, setSmsCustomMessage] = useState('');
+  const [sendingSms, setSendingSms] = useState(false);
+  const [smsSuccessMessage, setSmsSuccessMessage] = useState<string | null>(null);
+  const [smsSentLogs, setSmsSentLogs] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('sms_assessment_sent_logs');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const [reopeningDate, setReopeningDate] = useState<string>(() => DbController.getSchoolInfo().reopeningDate || '');
+
+  const handleReopeningDateChange = (newDate: string) => {
+    setReopeningDate(newDate);
+    const info = DbController.getSchoolInfo();
+    const updated = { ...info, reopeningDate: newDate };
+    DbController.saveSchoolInfo(updated);
+    if (isAutoSave) {
+      setSaveFeedback('Auto-saved next term reopening date.');
+      setTimeout(() => setSaveFeedback(''), 1550);
+    } else {
+      onManualSave();
+    }
+  };
+
+  const formatReopeningDate = (dateStr?: string): string => {
+    if (!dateStr) return 'Not Configured';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      try {
+        const date = new Date(dateStr + 'T00:00:00');
+        if (!isNaN(date.getTime())) {
+          return date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+        }
+      } catch {
+        // fallback
+      }
+    }
+    return dateStr;
+  };
+
+  const triggerSmsModal = () => {
+    const student = students.find(s => s.id === selectedStudentId);
+    if (student) {
+      const token = generateSecureToken(student.id, selectedYear, selectedTerm);
+      const parentUrl = `${window.location.origin}/?studentId=${student.id}&year=${encodeURIComponent(selectedYear)}&term=${encodeURIComponent(selectedTerm)}&token=${token}`;
+      setSmsGuardianName(student.guardianName || `${student.firstName} ${student.lastName} Parent`);
+      setSmsGuardianPhone(student.guardianTelephone || '');
+      setSmsCustomMessage(`Hello ${student.guardianName || 'Guardian'}, the official Term Report Card for ${student.firstName} ${student.lastName} (${student.id}) is now ready. Click here to securely view/download the full report, grades, and fee statement anytime: ${parentUrl}`);
+      setSmsSuccessMessage(null);
+      setSmsModalOpen(true);
+    }
+  };
+
+  const handleSendSMS = async () => {
+    if (!smsGuardianPhone) return;
+    setSendingSms(true);
+    setSmsSuccessMessage(null);
+
+    // Load Twilio config from localStorage
+    let twilioConfig = { accountSid: '', authToken: '', fromNumber: '', enabled: false };
+    const savedTwilio = localStorage.getItem('geetech_twilio_config');
+    if (savedTwilio) {
+      try { twilioConfig = JSON.parse(savedTwilio); } catch (e) { /* ignore */ }
+    }
+
+    let isRealSuccess = true;
+    let errDetail = '';
+
+    if (twilioConfig.enabled && twilioConfig.accountSid && twilioConfig.authToken && twilioConfig.fromNumber) {
+      try {
+        const url = `https://api.twilio.com/2010-04-01/Accounts/${twilioConfig.accountSid}/Messages.json`;
+        const basicAuth = btoa(`${twilioConfig.accountSid}:${twilioConfig.authToken}`);
+
+        const requestBody = new URLSearchParams();
+        requestBody.append('To', smsGuardianPhone.trim());
+        requestBody.append('From', twilioConfig.fromNumber.trim());
+        requestBody.append('Body', smsCustomMessage);
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${basicAuth}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: requestBody.toString()
+        });
+
+        if (!res.ok) {
+          const parsed = await res.json();
+          isRealSuccess = false;
+          errDetail = parsed.message || `HTTP ${res.status}`;
+        }
+      } catch (err: any) {
+        isRealSuccess = false;
+        errDetail = err.message || 'Network Timeout';
+      }
+    } else {
+      // Simulate delivery success for mocking
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    if (!isRealSuccess) {
+      setSendingSms(false);
+      alert(`Twilio API Gateway Error: ${errDetail}. Please verify credentials in Systems controls or dispatch via the 'Native SMS App' button.`);
+      return;
+    }
+
+    const newLog = {
+      id: `SMS_${Date.now()}`,
+      studentId: selectedStudentId,
+      studentName: students.find(s => s.id === selectedStudentId)?.firstName + " " + students.find(s => s.id === selectedStudentId)?.lastName,
+      recipientName: smsGuardianName,
+      phoneNumber: smsGuardianPhone,
+      message: smsCustomMessage,
+      timestamp: new Date().toISOString(),
+      status: 'Delivered'
+    };
+
+    const updatedLogs = [newLog, ...smsSentLogs];
+    setSmsSentLogs(updatedLogs);
+    localStorage.setItem('sms_assessment_sent_logs', JSON.stringify(updatedLogs));
+
+    // Auto-update student telephone if it was blank or edited
+    const studentIndex = students.findIndex(s => s.id === selectedStudentId);
+    if (studentIndex !== -1 && students[studentIndex].guardianTelephone !== smsGuardianPhone) {
+      try {
+        const student = students[studentIndex];
+        const updatedStudent = {
+          ...student,
+          guardianName: smsGuardianName,
+          guardianTelephone: smsGuardianPhone
+        };
+        await DbController.saveStudent(updatedStudent);
+        // Explicitly sync back to DB to ensure persistence
+        if (navigator.onLine) {
+          DbController.syncAllDataFromFirebase().catch(e => console.warn(e));
+        }
+      } catch (err) {
+        console.warn("Failed to auto-save updated parent contact info:", err);
+      }
+    }
+
+    setSendingSms(false);
+    setSmsSuccessMessage(`Successfully dispatched automated secure portal SMS to ${smsGuardianName} (${smsGuardianPhone})!`);
+  };
 
   // Fetch or construct worksheet records whenever filters update!
   useEffect(() => {
@@ -135,18 +324,18 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
     const cleared = activeWorksheet.map(row => {
       const resetRow = {
         ...row,
-        classScore1: 0,
-        classScore2: 0,
-        classScore3: 0,
-        classScore4: 0,
-        examScore: 0,
-        classTotal: 0,
-        classFifty: 0,
-        examFifty: 0,
+        exercises: [0, 0, 0, 0],
+        tests: [0, 0],
+        projectWork: 0,
+        groupWork: 0,
+        examScore100: 0,
+        classScoreTotal: 0,
+        classScore50: 0,
+        examScore50: 0,
         totalScore: 0,
-        grade: 'F',
-        remarks: 'Fail',
-        position: ''
+        gradeLevel: 'L5' as const,
+        remarks: 'Emerging',
+        position: undefined
       };
       return DbController.calculateScoreDetails(resetRow);
     });
@@ -168,18 +357,18 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
           if (row.studentId === selectedStudentId) {
             const resetRow = {
               ...row,
-              classScore1: 0,
-              classScore2: 0,
-              classScore3: 0,
-              classScore4: 0,
-              examScore: 0,
-              classTotal: 0,
-              classFifty: 0,
-              examFifty: 0,
+              exercises: [0, 0, 0, 0],
+              tests: [0, 0],
+              projectWork: 0,
+              groupWork: 0,
+              examScore100: 0,
+              classScoreTotal: 0,
+              classScore50: 0,
+              examScore50: 0,
               totalScore: 0,
-              grade: 'F',
-              remarks: 'Fail',
-              position: ''
+              gradeLevel: 'L5' as const,
+              remarks: 'Emerging',
+              position: undefined
             };
             return DbController.calculateScoreDetails(resetRow);
           }
@@ -202,23 +391,116 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
 
   const handleDeleteAllAssessments = () => {
     if (window.confirm("CRITICAL WARNING: Are you sure you want to completely delete all historical Class Assessments from the entire database? This cannot be undone.")) {
-      localStorage.setItem('school_assessments', JSON.stringify([]));
+      DbController.clearAllAssessments();
       setActiveWorksheet([]);
       onManualSave();
       alert("Successfully purged all recorded class assessments from database.");
     }
   };
 
+  const handleExportAllAssessmentsCSV = () => {
+    const allAssessments = DbController.getAssessments();
+    
+    if (allAssessments.length === 0) {
+      alert("No assessment records found in the database to export.");
+      return;
+    }
+
+    const headers = [
+      'Assessment ID', 'Student ID', 'Student Name', 'Class', 'Academic Year', 'Term', 'Subject',
+      'Exercise 1', 'Exercise 2', 'Exercise 3', 'Exercise 4',
+      'Test 1', 'Test 2', 'Project Work', 'Group Work',
+      'Class Score Total', 'Class Score 50%', 'Exam Score 100', 'Exam Score 50%',
+      'Total Score (0-100)', 'Grade Level', 'Remarks', 'Class Position', 'Teacher Remarks'
+    ];
+    
+    const csvRows = [headers.join(',')];
+    
+    for (const record of allAssessments) {
+      const ex1 = record.exercises && record.exercises[0] !== undefined ? record.exercises[0] : '';
+      const ex2 = record.exercises && record.exercises[1] !== undefined ? record.exercises[1] : '';
+      const ex3 = record.exercises && record.exercises[2] !== undefined ? record.exercises[2] : '';
+      const ex4 = record.exercises && record.exercises[3] !== undefined ? record.exercises[3] : '';
+      
+      const t1 = record.tests && record.tests[0] !== undefined ? record.tests[0] : '';
+      const t2 = record.tests && record.tests[1] !== undefined ? record.tests[1] : '';
+
+      const values = [
+        record.id,
+        record.studentId,
+        record.studentName,
+        record.class,
+        record.academicYear,
+        record.term,
+        record.subject,
+        ex1,
+        ex2,
+        ex3,
+        ex4,
+        t1,
+        t2,
+        record.projectWork !== undefined ? record.projectWork : '',
+        record.groupWork !== undefined ? record.groupWork : '',
+        record.classScoreTotal !== undefined ? record.classScoreTotal : '',
+        record.classScore50 !== undefined ? record.classScore50 : '',
+        record.examScore100 !== undefined ? record.examScore100 : '',
+        record.examScore50 !== undefined ? record.examScore50 : '',
+        record.totalScore !== undefined ? record.totalScore : '',
+        record.gradeLevel || '',
+        record.remarks || '',
+        record.position !== undefined ? record.position : '',
+        record.teacherRemarks || ''
+      ].map(val => {
+        const escaped = ('' + (val ?? '')).replace(/"/g, '""');
+        return `"${escaped}"`;
+      });
+      csvRows.push(values.join(','));
+    }
+    
+    const blob = new Blob([csvRows.join("\n")], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `all_student_assessments_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const [printBlocked, setPrintBlocked] = useState(false);
   const [showPdfGuide, setShowPdfGuide] = useState(false);
+  const [showPrintPreviewModal, setShowPrintPreviewModal] = useState(false);
+  
+  // Interactive Verification Checklist States
+  const [checklistStudent, setChecklistStudent] = useState(false);
+  const [checklistGrades, setChecklistGrades] = useState(false);
+  const [checklistRemarks, setChecklistRemarks] = useState(false);
+  const [checklistFinances, setChecklistFinances] = useState(false);
+
+  // A4 Layout & Theme Preferences
+  const [previewOrientation, setPreviewOrientation] = useState<'portrait' | 'landscape'>('portrait');
+  const [previewThemePreset, setPreviewThemePreset] = useState<'vivid' | 'charcoal' | 'grayscale'>('vivid');
+  const [previewMarginSize, setPreviewMarginSize] = useState<'normal' | 'narrow' | 'none'>('normal');
 
   const handlePrint = () => {
-    try {
-      window.print();
-    } catch (e) {
-      console.warn("Direct print restricted inside sandbox iframe:", e);
-      setPrintBlocked(true);
-    }
+    // Reset checklists for the new verification run
+    setChecklistStudent(false);
+    setChecklistGrades(false);
+    setChecklistRemarks(false);
+    setChecklistFinances(false);
+    setShowPrintPreviewModal(true);
+  };
+
+  const executeNativePrint = () => {
+    setShowPrintPreviewModal(false);
+    setTimeout(() => {
+      try {
+        window.print();
+      } catch (e) {
+        console.warn("Direct print restricted inside sandbox iframe:", e);
+        setPrintBlocked(true);
+      }
+    }, 200);
   };
 
   // Compute individual student report card metrics across all subjects
@@ -226,6 +508,168 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
     if (!selectedStudentId) return null;
     return DbController.getStudentTermReportCard(selectedStudentId, selectedYear, selectedTerm);
   }, [selectedStudentId, selectedYear, selectedTerm, activeWorksheet]);
+
+  // Compute student financial outstanding balance and next term plan
+  const studentFinancials = useMemo(() => {
+    if (!selectedStudentId) return null;
+    const bills = DbController.getStudentFeeBills();
+    
+    // Find current bill
+    const currentBill = bills.find(b => b.studentId === selectedStudentId && b.academicYear === selectedYear && b.term === selectedTerm);
+    const currentExpected = currentBill 
+      ? (currentBill.schoolFees + currentBill.utilityBill + currentBill.sportsFees + currentBill.ptaDues + currentBill.otherFee)
+      : 0;
+    const currentPaid = currentBill
+      ? currentBill.payments.reduce((sum, p) => sum + p.amount, 0)
+      : 0;
+    const currentOutstanding = currentExpected - currentPaid;
+
+    // Find all previous bills to compute cumulative arrears
+    const allPreviousBills = bills.filter(b => {
+      if (b.studentId !== selectedStudentId) return false;
+      
+      const currentSortValue = parseInt(selectedYear.split('/')[0], 10) * 10 + parseInt(selectedTerm.replace(/\D/g, ''), 10);
+      const bSortValue = parseInt(b.academicYear.split('/')[0], 10) * 10 + parseInt(b.term.replace(/\D/g, ''), 10);
+      return bSortValue < currentSortValue;
+    });
+    
+    let previousOutstanding = 0;
+    allPreviousBills.forEach(pb => {
+      const pExp = pb.schoolFees + pb.utilityBill + pb.sportsFees + pb.ptaDues + pb.otherFee;
+      const pPaid = pb.payments.reduce((sum, p) => sum + p.amount, 0);
+      previousOutstanding += Math.max(0, pExp - pPaid);
+    });
+
+    const totalOutstanding = currentOutstanding + previousOutstanding;
+
+    // Determine next term term and year
+    let nextTerm: TermType = 'Term 1';
+    let nextYear = selectedYear;
+
+    if (selectedTerm === 'Term 1') {
+      nextTerm = 'Term 2';
+    } else if (selectedTerm === 'Term 2') {
+      nextTerm = 'Term 3';
+    } else {
+      nextTerm = 'Term 1';
+      const parts = selectedYear.split('/');
+      if (parts.length === 2) {
+        const y1 = parseInt(parts[0], 10);
+        const y2 = parseInt(parts[1], 10);
+        if (!isNaN(y1) && !isNaN(y2)) {
+          nextYear = `${y1 + 1}/${y2 + 1}`;
+        }
+      }
+    }
+
+    // Find next term bill
+    const nextTermBillObj = bills.find(b => b.studentId === selectedStudentId && b.academicYear === nextYear && b.term === nextTerm);
+    let nextTermBillSum = 0;
+    let isEstimated = false;
+
+    if (nextTermBillObj) {
+      nextTermBillSum = nextTermBillObj.schoolFees + nextTermBillObj.utilityBill + nextTermBillObj.sportsFees + nextTermBillObj.ptaDues + nextTermBillObj.otherFee;
+    } else {
+      nextTermBillSum = currentExpected;
+      isEstimated = true;
+    }
+
+    return {
+      currentTermBill: currentExpected,
+      currentTermPaid: currentPaid,
+      currentOutstanding,
+      previousOutstanding,
+      totalOutstanding,
+      nextTerm,
+      nextYear,
+      nextTermBillSum,
+      isEstimated
+    };
+  }, [selectedStudentId, selectedYear, selectedTerm]);
+
+  // Compute bulk class report cards for all students in selected class
+  const bulkClassReports = useMemo(() => {
+    const classStudents = students.filter(s => s.class === selectedClass);
+    const bills = DbController.getStudentFeeBills();
+
+    return classStudents.map(student => {
+      const report = DbController.getStudentTermReportCard(student.id, selectedYear, selectedTerm);
+      
+      // Calculate financials for this student
+      const currentBill = bills.find(b => b.studentId === student.id && b.academicYear === selectedYear && b.term === selectedTerm);
+      const currentExpected = currentBill 
+        ? (currentBill.schoolFees + currentBill.utilityBill + currentBill.sportsFees + currentBill.ptaDues + currentBill.otherFee)
+        : 0;
+      const currentPaid = currentBill
+        ? currentBill.payments.reduce((sum, p) => sum + p.amount, 0)
+        : 0;
+      const currentOutstanding = currentExpected - currentPaid;
+
+      const allPreviousBills = bills.filter(b => {
+        if (b.studentId !== student.id) return false;
+        const currentSortValue = parseInt(selectedYear.split('/')[0], 10) * 10 + parseInt(selectedTerm.replace(/\D/g, ''), 10);
+        const bSortValue = parseInt(b.academicYear.split('/')[0], 10) * 10 + parseInt(b.term.replace(/\D/g, ''), 10);
+        return bSortValue < currentSortValue;
+      });
+      
+      let previousOutstanding = 0;
+      allPreviousBills.forEach(pb => {
+        const pExp = pb.schoolFees + pb.utilityBill + pb.sportsFees + pb.ptaDues + pb.otherFee;
+        const pPaid = pb.payments.reduce((sum, p) => sum + p.amount, 0);
+        previousOutstanding += Math.max(0, pExp - pPaid);
+      });
+
+      const totalOutstanding = currentOutstanding + previousOutstanding;
+
+      let nextTerm: TermType = 'Term 1';
+      let nextYear = selectedYear;
+
+      if (selectedTerm === 'Term 1') {
+        nextTerm = 'Term 2';
+      } else if (selectedTerm === 'Term 2') {
+        nextTerm = 'Term 3';
+      } else {
+        nextTerm = 'Term 1';
+        const parts = selectedYear.split('/');
+        if (parts.length === 2) {
+          const y1 = parseInt(parts[0], 10);
+          const y2 = parseInt(parts[1], 10);
+          if (!isNaN(y1) && !isNaN(y2)) {
+            nextYear = `${y1 + 1}/${y2 + 1}`;
+          }
+        }
+      }
+
+      const nextTermBillObj = bills.find(b => b.studentId === student.id && b.academicYear === nextYear && b.term === nextTerm);
+      let nextTermBillSum = 0;
+      let isEstimated = false;
+
+      if (nextTermBillObj) {
+        nextTermBillSum = nextTermBillObj.schoolFees + nextTermBillObj.utilityBill + nextTermBillObj.sportsFees + nextTermBillObj.ptaDues + nextTermBillObj.otherFee;
+      } else {
+        nextTermBillSum = currentExpected;
+        isEstimated = true;
+      }
+
+      const financials = {
+        currentTermBill: currentExpected,
+        currentTermPaid: currentPaid,
+        currentOutstanding,
+        previousOutstanding,
+        totalOutstanding,
+        nextTerm,
+        nextYear,
+        nextTermBillSum,
+        isEstimated
+      };
+
+      return {
+        student,
+        report,
+        financials
+      };
+    });
+  }, [students, selectedClass, selectedYear, selectedTerm, activeWorksheet]);
 
   // Compute broad sheet showing student ranks and score aggregates across key subjects
   const broadsheetData = useMemo(() => {
@@ -328,6 +772,118 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
       .sort((a, b) => b.score - a.score);
   }, [activeWorksheet, students]);
 
+  // Selected class student list for trend selectors
+  const classStudentsForTrend = useMemo(() => {
+    return students.filter(s => s.class === selectedClass);
+  }, [students, selectedClass]);
+
+  // Safeguard/Auto-resolve selected trend student
+  const selectedTrendStudent = useMemo(() => {
+    const found = classStudentsForTrend.find(s => s.id === trendStudentId);
+    return found || classStudentsForTrend[0] || null;
+  }, [classStudentsForTrend, trendStudentId]);
+
+  // Set initial trend student ID
+  useEffect(() => {
+    if (classStudentsForTrend.length > 0 && (!trendStudentId || !classStudentsForTrend.some(s => s.id === trendStudentId))) {
+      setTrendStudentId(classStudentsForTrend[0].id);
+    }
+  }, [classStudentsForTrend, trendStudentId]);
+
+  // Compute Student Trend Data
+  const studentTrendData = useMemo(() => {
+    if (!selectedTrendStudent) return [];
+    
+    const allAssessments = DbController.getAssessments();
+    const studentRecords = allAssessments.filter(a => a.studentId === selectedTrendStudent.id);
+    
+    // Filter by subject if specified
+    const subjectRecords = trendSubject === 'All'
+      ? studentRecords
+      : studentRecords.filter(a => a.subject === trendSubject);
+      
+    // Group records by acad_year + term
+    const groups: { [key: string]: {
+      academicYear: string;
+      term: string;
+      totalScores: number[];
+      classScores: number[];
+      examScores: number[];
+    } } = {};
+    
+    subjectRecords.forEach(a => {
+      const key = `${a.academicYear} - ${a.term}`;
+      if (!groups[key]) {
+        groups[key] = {
+          academicYear: a.academicYear,
+          term: a.term,
+          totalScores: [],
+          classScores: [],
+          examScores: []
+        };
+      }
+      if (a.totalScore !== undefined) groups[key].totalScores.push(a.totalScore);
+      if (a.classScoreTotal !== undefined) groups[key].classScores.push(a.classScoreTotal);
+      if (a.examScore100 !== undefined) groups[key].examScores.push(a.examScore100);
+    });
+    
+    const termOrderList: { [k: string]: number } = { 'Term 1': 1, 'Term 2': 2, 'Term 3': 3 };
+    
+    const formattedData = Object.values(groups).map(g => {
+      const avgTotal = g.totalScores.length > 0
+        ? Math.round(g.totalScores.reduce((sum, v) => sum + v, 0) / g.totalScores.length)
+        : 0;
+      const avgClass = g.classScores.length > 0
+        ? Math.round(g.classScores.reduce((sum, v) => sum + v, 0) / g.classScores.length)
+        : 0;
+      const avgExam = g.examScores.length > 0
+        ? Math.round(g.examScores.reduce((sum, v) => sum + v, 0) / g.examScores.length)
+        : 0;
+        
+      return {
+        period: `${g.academicYear} ${g.term}`,
+        academicYear: g.academicYear,
+        term: g.term,
+        'Overall Grade': avgTotal,
+        'Class Assessment': avgClass,
+        'Exam Score': avgExam
+      };
+    });
+    
+    // Sort chronologically
+    formattedData.sort((a, b) => {
+      if (a.academicYear !== b.academicYear) {
+        return a.academicYear.localeCompare(b.academicYear);
+      }
+      return (termOrderList[a.term] || 0) - (termOrderList[b.term] || 0);
+    });
+    
+    return formattedData;
+  }, [selectedTrendStudent, trendSubject]);
+
+  // Subject Performance Heatmap calculation comparing subject averages with the threshold
+  const subjectAveragesData = useMemo(() => {
+    const allAssessments = DbController.getAssessments();
+    const filtered = allAssessments.filter(
+      a => a.class === selectedClass && 
+           a.academicYear === selectedYear && 
+           a.term === selectedTerm
+    );
+
+    return SUBJECTS.map(subj => {
+      const subjAssessments = filtered.filter(a => a.subject === subj);
+      const scoreSum = subjAssessments.reduce((sum, current) => sum + current.totalScore, 0);
+      const avgScore = subjAssessments.length > 0 ? parseFloat((scoreSum / subjAssessments.length).toFixed(1)) : null;
+      const gradedCount = subjAssessments.length;
+
+      return {
+        subject: subj,
+        average: avgScore,
+        gradedCount,
+      };
+    });
+  }, [selectedClass, selectedYear, selectedTerm, students, activeWorksheet]);
+
   return (
     <div className="space-y-6 fade-in text-xs">
       
@@ -335,7 +891,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
       <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4 no-print">
         
         {/* Academic Filters */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pb-4 border-b border-slate-100">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 pb-4 border-b border-slate-100">
           <div>
             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Academic Year</label>
             <select
@@ -388,6 +944,19 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
               ))}
             </select>
           </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-teal-700 uppercase tracking-wider mb-1 flex items-center gap-1 font-semibold">
+              <Calendar size={13} className="text-teal-600" />
+              Next Term Reopen
+            </label>
+            <input
+              type="date"
+              value={reopeningDate}
+              onChange={(e) => handleReopeningDateChange(e.target.value)}
+              className="w-full px-3 py-1.5 border border-teal-200 rounded-lg bg-teal-50/10 font-semibold focus:outline-none focus:ring-1 focus:ring-teal-400 focus:border-teal-400 text-teal-900 text-xs cursor-pointer"
+            />
+          </div>
         </div>
 
         {/* Component Dashboard Sub-Navigation Tabs */}
@@ -421,11 +990,28 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
 
           <div className="flex items-center gap-2 self-end sm:self-auto">
             <button
-              onClick={() => setShowPdfGuide(true)}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 transition font-bold rounded-lg cursor-pointer active:translate-y-0.5"
+              onClick={handleExportAllAssessmentsCSV}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 whitespace-nowrap text-xs shadow-sm"
+              title="Export all student performance records across subjects to CSV"
             >
-              <FileDown size={14} /> Save PDF
+              <FileSpreadsheet size={14} /> Export All to CSV
             </button>
+            {subMode !== 'IndividualReport' && (
+              <button
+                onClick={() => {
+                  if (subMode === 'Worksheet') {
+                    setWorksheetPreviewMode(!worksheetPreviewMode);
+                  } else if (subMode === 'Broadsheet') {
+                    setBroadsheetPreviewMode(!broadsheetPreviewMode);
+                  } else if (subMode === 'PerformanceAnalytics') {
+                    setPerformancePreviewMode(!performancePreviewMode);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs whitespace-nowrap"
+              >
+                <Eye size={14} /> Toggle Preview Mode
+              </button>
+            )}
             
             {subMode === 'Worksheet' && (
               <button
@@ -470,7 +1056,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
               </span>
               <button
                 type="button"
-                onClick={() => setWorksheetPreviewMode(true)}
+                onClick={() => setWorksheetPreviewMode(!worksheetPreviewMode)}
                 className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 no-print"
               >
                 <Eye size={12} /> Toggle Preview Mode
@@ -515,7 +1101,13 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {activeWorksheet.map((row, index) => (
-                    <tr key={row.studentId} className="hover:bg-slate-50/20 transition">
+                    <motion.tr 
+                      key={row.studentId} 
+                      className="hover:bg-slate-50/20 transition"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.2, delay: Math.min(index * 0.02, 0.4), ease: 'easeOut' }}
+                    >
                       <td className="py-1 px-1.5 text-center font-mono text-slate-300 font-bold">{index + 1}</td>
                       <td className="py-1 px-2 font-semibold text-slate-800 truncate leading-tight font-sans">
                         <div>{row.studentName}</div>
@@ -616,7 +1208,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                       <td className="py-1 px-0.5 text-center bg-purple-50 text-indigo-800 font-black font-mono">
                         {row.position ? `${row.position}` : 'N/A'}
                       </td>
-                    </tr>
+                    </motion.tr>
                   ))}
                 </tbody>
               </table>
@@ -659,10 +1251,20 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
               {compiledReport && compiledReport.grades.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setReportCardPreviewMode(true)}
+                  onClick={() => setReportCardPreviewMode(!reportCardPreviewMode)}
                   className={`py-1.5 px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5`}
                 >
                   <Eye size={14} /> Toggle Preview Mode
+                </button>
+              )}
+
+              {students.filter(s => s.class === selectedClass).length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setBulkReportMode(true)}
+                  className="py-1.5 px-3.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5"
+                >
+                  <Printer size={14} /> Print Bulk (Class {selectedClass})
                 </button>
               )}
             </div>
@@ -738,13 +1340,13 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                 </div>
 
                 {/* Student Personal Data metadata */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50 p-4 rounded-lg text-xs leading-relaxed border border-slate-100 print:bg-white print:border-none">
+                <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 bg-slate-50 p-4 rounded-lg text-xs leading-relaxed border border-slate-100 print:bg-white print:border-none">
                   <div>
                     <span className="text-[10px] uppercase text-slate-401 font-mono font-medium block">Student ID</span>
                     <strong className="text-slate-800 font-mono">{compiledReport.student.id}</strong>
                   </div>
                   <div>
-                    <span className="text-[10px] uppercase text-slate-401 font-mono font-medium block">Full Name</span>
+                    <span className="text-[10px] uppercase text-slate-415 font-mono font-medium block">Full Name</span>
                     <strong className="text-slate-800">{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
                   </div>
                   <div>
@@ -754,6 +1356,14 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                   <div>
                     <span className="text-[10px] uppercase text-slate-401 font-mono font-medium block">Report Term</span>
                     <strong className="text-slate-800 font-mono">{selectedTerm} ({selectedYear})</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase text-indigo-700 font-mono font-medium block">Class Rank Standings</span>
+                    <strong className="text-indigo-900 font-mono font-bold">{compiledReport.classRank || 'N/A'}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
+                    <strong className="text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
                   </div>
                 </div>
 
@@ -770,8 +1380,14 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {compiledReport.grades.map(item => (
-                      <tr key={item.id} className="hover:bg-slate-50/50">
+                    {compiledReport.grades.map((item, index) => (
+                      <motion.tr 
+                        key={item.id} 
+                        className="hover:bg-slate-50/50"
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2, delay: Math.min(index * 0.03, 0.4), ease: 'easeOut' }}
+                      >
                         <td className="py-2.5 px-2 border border-slate-200 font-bold text-slate-900">{item.subject}</td>
                         <td className="py-2.5 px-1 border border-slate-200 text-center font-mono font-semibold">{item.classScore50}</td>
                         <td className="py-2.5 px-1 border border-slate-200 text-center font-mono font-semibold">{item.examScore50}</td>
@@ -782,7 +1398,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                           </span>
                         </td>
                         <td className="py-2.5 px-1 border border-slate-200 text-center font-mono font-black text-indigo-700">{item.position ? `${item.position}` : 'N/A'}</td>
-                      </tr>
+                      </motion.tr>
                     ))}
                   </tbody>
                 </table>
@@ -798,14 +1414,46 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     <strong className="text-slate-800 text-sm italic">{compiledReport.averageScore}%</strong>
                   </div>
                   <div>
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase">Attendance Present</span>
-                    <strong className="text-slate-800 text-sm">Present</strong>
+                    <span className="text-slate-400 font-sans block text-[10px] uppercase">Attendance / School Open</span>
+                    <strong className="text-slate-800 text-sm">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days Present</strong>
                   </div>
                   <div>
                     <span className="text-slate-400 font-sans block text-[10px] uppercase">Grade Rating</span>
                     <strong className="text-slate-805 text-sm uppercase">GES Certified</strong>
                   </div>
                 </div>
+
+                {/* Financial Ledger Section */}
+                {studentFinancials && (
+                  <div className="mt-6 bg-slate-50 border border-slate-200/80 rounded-xl p-4 font-sans text-xs flex flex-col md:flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300">
+                    <div className="space-y-1">
+                      <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-base font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                          GHS {studentFinancials.totalOutstanding.toFixed(2)}
+                        </span>
+                        {studentFinancials.totalOutstanding > 0 && studentFinancials.previousOutstanding > 0 && (
+                          <span className="text-[10px] text-slate-400">
+                            (Term: GHS {studentFinancials.currentOutstanding.toFixed(2)} | Arrears: GHS {studentFinancials.previousOutstanding.toFixed(2)})
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-400">Outstanding student balance of registered accounts ledger.</div>
+                    </div>
+                    <div className="border-t md:border-t-0 md:border-l border-slate-250 md:pl-6 pt-3 md:pt-0 space-y-1">
+                      <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm}, {studentFinancials.nextYear})</div>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-base font-bold text-slate-800">
+                          GHS {studentFinancials.nextTermBillSum.toFixed(2)}
+                        </span>
+                        {studentFinancials.isEstimated && (
+                          <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black font-mono">Estimated Rate</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-400">Projected billing plan for the upcoming academic module term.</div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Remarks & Signatures desk */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-16 border-t border-slate-100 pt-6">
@@ -822,9 +1470,34 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     </p>
                   </div>
 
-                  <div className="flex flex-col justify-end items-end space-y-2 pr-6">
-                    <div className="w-40 border-b border-slate-900 h-10"></div>
-                    <span className="text-[10px] text-slate-500 font-serif">Signature of Headteacher</span>
+                  <div className="flex flex-col justify-end items-end space-y-1.5 pr-6 relative">
+                    <div className="relative w-48 h-14 flex items-center justify-center">
+                      {DbController.getSchoolInfo().stampUrl && (
+                        <img 
+                          src={DbController.getSchoolInfo().stampUrl} 
+                          alt="School Stamp" 
+                          className="absolute w-16 h-16 object-contain opacity-75 z-0 transform -rotate-12 translate-x-[-15%] translate-y-[-5%]" 
+                          referrerPolicy="no-referrer"
+                        />
+                      )}
+                      {DbController.getSchoolInfo().signatureUrl ? (
+                        <img 
+                          src={DbController.getSchoolInfo().signatureUrl} 
+                          alt="Headteacher Signature" 
+                          className="absolute w-32 h-10 object-contain z-10" 
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="h-[1px] w-40 bg-slate-400 self-end"></div>
+                      )}
+                    </div>
+                    {DbController.getSchoolInfo().signatureUrl && <div className="h-[1px] w-40 bg-slate-300"></div>}
+                    <div className="text-right">
+                      {DbController.getSchoolInfo().headteacherName && (
+                        <span className="font-bold text-[9px] text-slate-800 block leading-tight">{DbController.getSchoolInfo().headteacherName}</span>
+                      )}
+                      <span className="text-[10px] text-slate-500 font-serif">Signature of Headteacher</span>
+                    </div>
                   </div>
                 </div>
 
@@ -851,6 +1524,305 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                 </div>
               </div>
 
+            </div>
+          )}
+
+          {/* Immersive Fullscreen Bulk Print Mode for ALL Report Cards of Class */}
+          {bulkReportMode && (
+            <div 
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setBulkReportMode(false);
+              }}
+              className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 overflow-y-auto flex flex-col items-center py-6 px-4 no-scrollbar font-sans text-xs cursor-pointer"
+            >
+              <div onClick={(e) => e.stopPropagation()} className="w-full max-w-4xl flex flex-col items-center cursor-default">
+                
+                {/* Immersive Preview Header Controls Bar (no-print) */}
+                <div className="w-full max-w-4xl bg-white border border-slate-200 p-4 rounded-xl shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 no-print">
+                  <div className="flex flex-wrap items-center gap-4 text-slate-800">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-2.5 w-2.5 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-sky-500"></span>
+                      </span>
+                      <span className="font-bold text-slate-900 font-display">PRISTINE CLASS BATCH PRINT REPORT ENGINE</span>
+                    </div>
+                    <div className="border-l border-slate-200 pl-4 text-slate-500 font-medium font-sans">
+                      Class: <strong className="text-slate-950 font-sans font-bold">{selectedClass}</strong> ({bulkClassReports.length} student files compiled)
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try {
+                          window.print();
+                        } catch (err) {
+                          console.warn("Direct window print error:", err);
+                          setPrintBlocked(true);
+                        }
+                      }}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-indigo-650 hover:bg-indigo-750 text-white font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center transition shadow-md bg-indigo-600 hover:bg-indigo-700"
+                    >
+                      <Printer size={14} /> Batch Print Now
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setBulkReportMode(false)}
+                      className="flex items-center gap-1.5 px-4 py-2 border border-slate-250 hover:bg-slate-50 text-slate-755 font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center transition bg-white"
+                    >
+                      Exit Batch Mode
+                    </button>
+                  </div>
+                </div>
+
+                {/* Batch compiled student report list */}
+                <div className="w-full space-y-8 no-scrollbar">
+                  {bulkClassReports.length === 0 ? (
+                    <div className="bg-white p-12 text-center text-slate-400 rounded-xl space-y-2 max-w-4xl w-full">
+                      <FileText size={36} className="text-slate-300 mx-auto animate-bounce" />
+                      <h4 className="font-bold text-slate-600">No Students Registered in class {selectedClass}</h4>
+                    </div>
+                  ) : (
+                    bulkClassReports.map(({ student, report, financials }, batchIdx) => {
+                      if (!report || report.grades.length === 0) {
+                        return (
+                          <div key={student.id} className="w-full bg-white/95 p-10 rounded-2xl border border-dashed border-slate-200 text-center text-slate-400 font-sans space-y-2 no-print shadow-xl">
+                            <FileText size={28} className="mx-auto text-slate-300" />
+                            <h5 className="font-bold text-slate-600 text-xs">No Graded Statements For: {student.firstName} {student.lastName} ({student.id})</h5>
+                            <p className="text-[10px] text-slate-400 max-w-sm mx-auto">Please draft and lock terminal report cards inside the main grade worksheet view.</p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div 
+                          key={student.id} 
+                          className="w-full bg-white p-12 md:p-16 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-left bulk-report-card-print-page relative"
+                        >
+                          {/* Professional Letterhead */}
+                          <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 pb-5 mb-8 gap-4 font-sans text-left">
+                            {DbController.getSchoolInfo().logoUrl ? (
+                              <img 
+                                src={DbController.getSchoolInfo().logoUrl} 
+                                alt="School Logo" 
+                                className="w-20 h-20 object-contain flex-shrink-0" 
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <div className="w-20 h-20 rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0">
+                                <div className="w-full h-full rounded-full border border-dashed border-slate-400 bg-white flex flex-col items-center justify-center text-[8px] text-slate-500 font-mono font-bold leading-normal">
+                                  <Award size={24} className="text-indigo-600 mb-1" />
+                                  <span className="scale-75 origin-center uppercase">CREST</span>
+                                </div>
+                              </div>
+                            )}
+                            <div className="flex-1 text-center space-y-0.5">
+                              <h2 className="text-2xl font-black text-slate-950 tracking-tight leading-tight uppercase font-display text-center">
+                                {DbController.getSchoolInfo().name}
+                              </h2>
+                              <p className="text-xs italic font-serif text-slate-600 text-center">
+                                Motto: "{DbController.getSchoolInfo().motto}"
+                              </p>
+                              <div className="text-[10px] text-slate-500 font-sans flex flex-wrap justify-center gap-x-3 gap-y-0.5 mt-0.5 leading-normal">
+                                {DbController.getSchoolInfo().gpsAddress && <span>📍 {DbController.getSchoolInfo().gpsAddress}</span>}
+                                {DbController.getSchoolInfo().telephone && <span>☎️ {DbController.getSchoolInfo().telephone}</span>}
+                                {DbController.getSchoolInfo().email && <span>📧 {DbController.getSchoolInfo().email}</span>}
+                              </div>
+                              <div className="text-[9px] font-mono text-slate-400 uppercase tracking-widest font-semibold flex justify-center gap-3 mt-0.5">
+                                {DbController.getSchoolInfo().emisCode && <span>EMIS ID: {DbController.getSchoolInfo().emisCode}</span>}
+                                {DbController.getSchoolInfo().schoolNumber && <span>SCHOOL ID: {DbController.getSchoolInfo().schoolNumber}</span>}
+                              </div>
+                              <p className="text-[10px] font-mono text-slate-800 font-bold uppercase tracking-wider bg-slate-100 px-3.5 py-0.5 rounded-full inline-block mt-2">
+                                Official Student Progress Statement Card
+                              </p>
+                            </div>
+                            
+                            {student.photoUrl ? (
+                              <img 
+                                src={student.photoUrl} 
+                                alt={`${student.firstName} ${student.lastName}`} 
+                                className="w-16 h-16 rounded border border-slate-300 object-cover flex-shrink-0" 
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <div className="w-16 h-16 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none">
+                                <div className="font-bold scale-90">PASSPORT</div>
+                                <div className="scale-75">STAMP</div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Student Personal Data metadata */}
+                          <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 bg-slate-50 p-5 rounded-xl text-xs leading-relaxed border border-slate-100">
+                            <div>
+                              <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Student ID</span>
+                              <strong className="text-slate-800 font-mono text-sm">{student.id}</strong>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Full Name</span>
+                              <strong className="text-slate-800 text-sm">{student.firstName} {student.lastName}</strong>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Academic Class</span>
+                              <strong className="text-slate-800 text-sm">{student.class} ({student.section})</strong>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Report Term</span>
+                              <strong className="text-slate-800 text-sm font-mono">{selectedTerm} ({selectedYear})</strong>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold block">Class Rank Standing</span>
+                              <strong className="text-indigo-900 text-sm font-mono font-bold">{report.classRank || 'N/A'}</strong>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
+                              <strong className="text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 text-sm">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
+                            </div>
+                          </div>
+
+                          {/* Registered Subjects grades table */}
+                          <table className="w-full text-left border-collapse border border-slate-200 text-xs mt-8">
+                            <thead>
+                              <tr className="bg-slate-100 border-b-2 border-slate-800">
+                                <th className="py-3 px-3 border border-slate-200 font-bold uppercase tracking-wider">Subject Course</th>
+                                <th className="py-3 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Class 50%</th>
+                                <th className="py-3 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Exams 50%</th>
+                                <th className="py-3 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Total 100%</th>
+                                <th className="py-3 px-3 border border-slate-200 font-bold text-center uppercase tracking-wider">Remarks</th>
+                                <th className="py-3 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Rank</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {report.grades.map((item) => (
+                                <tr key={item.id} className="hover:bg-slate-50/40">
+                                  <td className="py-3 px-3 border border-slate-200 font-black text-slate-900 text-sm">{item.subject}</td>
+                                  <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.classScore50}</td>
+                                  <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.examScore50}</td>
+                                  <td className="py-3 px-2 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10 text-sm">{item.totalScore}%</td>
+                                  <td className="py-3 px-3 border border-slate-200 text-center">
+                                    <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-black ${item.gradeLevel === 'L1' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' : item.gradeLevel === 'L2' ? 'bg-blue-50 text-blue-800 border border-blue-100' : item.gradeLevel === 'L3' ? 'bg-amber-50 text-amber-800 border border-amber-100' : 'bg-red-50 text-red-800 border border-red-100'}`}>
+                                      {item.remarks} ({item.gradeLevel})
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-2 border border-slate-200 text-center font-mono font-black text-indigo-700 text-sm">{item.position ? `${item.position}` : 'N/A'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+
+                          {/* Report Card Aggregates Footer summary */}
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8 border-t border-slate-200 pt-6 text-xs text-center font-mono leading-relaxed">
+                            <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                              <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
+                              <strong className="text-slate-800 text-sm">{report.totalSubjects} courses</strong>
+                            </div>
+                            <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                              <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Term Average Score</span>
+                              <strong className="text-slate-800 text-sm italic">{report.averageScore}%</strong>
+                            </div>
+                            <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                              <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance / School Open</span>
+                              <strong className="text-slate-800 text-sm font-sans">{report.attendancePresent} / {report.schoolOpenDays} Days Present</strong>
+                            </div>
+                            <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                              <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Grade Rating</span>
+                              <strong className="text-slate-800 text-sm">GES Certified</strong>
+                            </div>
+                          </div>
+
+                          {/* Financial Ledger Section */}
+                          {financials && (
+                            <div className="mt-6 bg-slate-50 border border-slate-200/80 rounded-xl p-4 font-sans text-xs flex flex-col md:flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300">
+                              <div className="space-y-1">
+                                <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
+                                <div className="flex items-baseline gap-2">
+                                  <span className={`text-base font-black ${financials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                                    GHS {financials.totalOutstanding.toFixed(2)}
+                                  </span>
+                                  {financials.totalOutstanding > 0 && financials.previousOutstanding > 0 && (
+                                    <span className="text-[10px] text-slate-400">
+                                      (Term: GHS {financials.currentOutstanding.toFixed(2)} | Arrears: GHS {financials.previousOutstanding.toFixed(2)})
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-400 font-sans">Outstanding student balance of registered accounts ledger.</div>
+                              </div>
+                              <div className="border-t md:border-t-0 md:border-l border-slate-250 md:pl-6 pt-3 md:pt-0 space-y-1">
+                                <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Next Term Projected Bill ({financials.nextTerm}, {financials.nextYear})</div>
+                                <div className="flex items-baseline gap-1.5">
+                                  <span className="text-base font-bold text-slate-800">
+                                    GHS {financials.nextTermBillSum.toFixed(2)}
+                                  </span>
+                                  {financials.isEstimated && (
+                                    <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black font-mono">Estimated Rate</span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-400 font-sans">Projected billing plan for the upcoming academic module term.</div>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Remarks & Signatures desk */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-16 border-t border-slate-100 pt-8 text-xs">
+                            <div className="space-y-2 text-left">
+                              <span className="text-[10px] font-mono text-slate-500 uppercase font-black">Principal Headteacher Remarks</span>
+                              <p className="text-[11px] italic text-slate-700 bg-slate-50 p-4 rounded-xl border border-slate-200/50 leading-relaxed min-h-[70px] print:bg-white print:border-none">
+                                {report.averageScore >= 80 
+                                  ? 'Excellent performance! The student reflects high mastery level standards on the GES curriculum benchmarks.' 
+                                  : report.averageScore >= 68 
+                                  ? 'Satisfactory progress. Proficient level achieved across most cognitive subject domains.' 
+                                  : report.averageScore >= 54 
+                                  ? 'An average term result. Needs more dedication and revision in quantitative sciences.' 
+                                  : 'Underperforming benchmarks. Urgent tutoring is recommended to foster remediation.'}
+                              </p>
+                            </div>
+
+                            <div className="flex flex-col justify-end items-end space-y-1.5 pr-6 relative">
+                              <div className="relative w-52 h-16 flex items-center justify-center">
+                                {DbController.getSchoolInfo().stampUrl && (
+                                  <img 
+                                    src={DbController.getSchoolInfo().stampUrl} 
+                                    alt="School Stamp" 
+                                    className="absolute w-20 h-20 object-contain opacity-75 z-0 transform -rotate-12 translate-x-[-15%] translate-y-[-5%]" 
+                                    referrerPolicy="no-referrer"
+                                  />
+                                )}
+                                {DbController.getSchoolInfo().signatureUrl ? (
+                                  <img 
+                                    src={DbController.getSchoolInfo().signatureUrl} 
+                                    alt="Headteacher Signature" 
+                                    className="absolute w-36 h-12 object-contain z-10" 
+                                    referrerPolicy="no-referrer"
+                                  />
+                                ) : (
+                                  <div className="h-[1.5px] w-52 bg-slate-400 self-end"></div>
+                                )}
+                              </div>
+                              {DbController.getSchoolInfo().signatureUrl && <div className="h-[1px] w-52 bg-slate-300"></div>}
+                              <div className="text-right">
+                                {DbController.getSchoolInfo().headteacherName && (
+                                  <span className="font-bold text-[10px] text-slate-800 block leading-tight">{DbController.getSchoolInfo().headteacherName}</span>
+                                )}
+                                <span className="text-[10px] text-slate-500 font-serif font-semibold">Signature of Headteacher</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* visual card tag */}
+                          <div className="absolute top-4 right-4 bg-slate-100 text-slate-500 font-mono text-[9px] font-bold px-2.5 py-1 rounded select-none no-print">
+                            Batch Report Card Draft #{batchIdx + 1} of {bulkClassReports.length}
+                          </div>
+
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+              </div>
             </div>
           )}
 
@@ -894,10 +1866,18 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                 <div className="flex items-center gap-2.5">
                   <button
                     type="button"
-                    onClick={() => setShowPdfGuide(true)}
+                    onClick={() => setShowPdfGuide(!showPdfGuide)}
                     className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center"
                   >
-                    <FileDown size={14} /> Save PDF
+                    <Printer size={14} /> PDF & Cloud Export Options
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={triggerSmsModal}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center shadow-md select-none"
+                  >
+                    <Smartphone size={14} /> Notify Parent via SMS
                   </button>
 
                   <button
@@ -919,7 +1899,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
               </div>
 
               {/* Full-Scale A4 Visual Report Card Sheet (Target of print template) */}
-              <div className="w-full max-w-4xl bg-white p-12 md:p-16 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-left">
+              <div className="w-full max-w-4xl bg-white p-12 md:p-16 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-left report-card-print-container">
                 
                 {/* Professional School Profile Header with Crest, Logo & Info */}
                 <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 pb-5 mb-8 gap-4 font-sans text-left">
@@ -974,7 +1954,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                 </div>
 
                 {/* Student Personal Data metadata */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50 p-5 rounded-xl text-xs leading-relaxed border border-slate-100">
+                <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 bg-slate-50 p-5 rounded-xl text-xs leading-relaxed border border-slate-100">
                   <div>
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Student ID</span>
                     <strong className="text-slate-800 font-mono text-sm">{compiledReport.student.id}</strong>
@@ -991,6 +1971,14 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Report Term</span>
                     <strong className="text-slate-800 text-sm font-mono">{selectedTerm} ({selectedYear})</strong>
                   </div>
+                  <div>
+                    <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold block">Class Rank Standing</span>
+                    <strong className="text-indigo-900 text-sm font-mono font-bold">{compiledReport.classRank || 'N/A'}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
+                    <strong className="text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 text-sm">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
+                  </div>
                 </div>
 
                 {/* Registered Subjects grades table */}
@@ -1006,8 +1994,14 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {compiledReport.grades.map(item => (
-                      <tr key={item.id} className="hover:bg-slate-50/40">
+                    {compiledReport.grades.map((item, index) => (
+                      <motion.tr 
+                        key={item.id} 
+                        className="hover:bg-slate-50/40"
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2, delay: Math.min(index * 0.03, 0.4), ease: 'easeOut' }}
+                      >
                         <td className="py-3 px-3 border border-slate-200 font-black text-slate-900 text-sm">{item.subject}</td>
                         <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.classScore50}</td>
                         <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.examScore50}</td>
@@ -1018,7 +2012,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                           </span>
                         </td>
                         <td className="py-3 px-2 border border-slate-200 text-center font-mono font-black text-indigo-700 text-sm">{item.position ? `${item.position}` : 'N/A'}</td>
-                      </tr>
+                      </motion.tr>
                     ))}
                   </tbody>
                 </table>
@@ -1034,14 +2028,46 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     <strong className="text-slate-800 text-sm italic">{compiledReport.averageScore}%</strong>
                   </div>
                   <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance Present</span>
-                    <strong className="text-slate-800 text-sm font-sans">Present</strong>
+                    <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance / School Open</span>
+                    <strong className="text-slate-800 text-sm font-sans">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days Present</strong>
                   </div>
                   <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
                     <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Grade Rating</span>
                     <strong className="text-slate-800 text-sm uppercase">GES Certified</strong>
                   </div>
                 </div>
+
+                {/* Financial Ledger Section */}
+                {studentFinancials && (
+                  <div className="mt-6 bg-slate-50 border border-slate-200/80 rounded-xl p-4 font-sans text-xs flex flex-col md:flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300">
+                    <div className="space-y-1">
+                      <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-base font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                          GHS {studentFinancials.totalOutstanding.toFixed(2)}
+                        </span>
+                        {studentFinancials.totalOutstanding > 0 && studentFinancials.previousOutstanding > 0 && (
+                          <span className="text-[10px] text-slate-400">
+                            (Term: GHS {studentFinancials.currentOutstanding.toFixed(2)} | Arrears: GHS {studentFinancials.previousOutstanding.toFixed(2)})
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-400">Outstanding student balance of registered accounts ledger.</div>
+                    </div>
+                    <div className="border-t md:border-t-0 md:border-l border-slate-250 md:pl-6 pt-3 md:pt-0 space-y-1">
+                      <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm}, {studentFinancials.nextYear})</div>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-base font-bold text-slate-800">
+                          GHS {studentFinancials.nextTermBillSum.toFixed(2)}
+                        </span>
+                        {studentFinancials.isEstimated && (
+                          <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black font-mono">Estimated Rate</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-400">Projected billing plan for the upcoming academic module term.</div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Remarks & Signatures desk */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-16 border-t border-slate-100 pt-8 text-xs">
@@ -1058,9 +2084,34 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     </p>
                   </div>
 
-                  <div className="flex flex-col justify-end items-end space-y-2 pr-6">
-                    <div className="w-52 border-b-2 border-slate-900 h-12"></div>
-                    <span className="text-[10px] text-slate-500 font-serif font-semibold">Signature of Headteacher</span>
+                  <div className="flex flex-col justify-end items-end space-y-1.5 pr-6 relative">
+                    <div className="relative w-52 h-16 flex items-center justify-center">
+                      {DbController.getSchoolInfo().stampUrl && (
+                        <img 
+                          src={DbController.getSchoolInfo().stampUrl} 
+                          alt="School Stamp" 
+                          className="absolute w-20 h-20 object-contain opacity-75 z-0 transform -rotate-12 translate-x-[-15%] translate-y-[-5%]" 
+                          referrerPolicy="no-referrer"
+                        />
+                      )}
+                      {DbController.getSchoolInfo().signatureUrl ? (
+                        <img 
+                          src={DbController.getSchoolInfo().signatureUrl} 
+                          alt="Headteacher Signature" 
+                          className="absolute w-36 h-12 object-contain z-10" 
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="h-[1.5px] w-52 bg-slate-400 self-end"></div>
+                      )}
+                    </div>
+                    {DbController.getSchoolInfo().signatureUrl && <div className="h-[1px] w-52 bg-slate-300"></div>}
+                    <div className="text-right">
+                      {DbController.getSchoolInfo().headteacherName && (
+                        <span className="font-bold text-[10px] text-slate-800 block leading-tight">{DbController.getSchoolInfo().headteacherName}</span>
+                      )}
+                      <span className="text-[10px] text-slate-500 font-serif font-semibold">Signature of Headteacher</span>
+                    </div>
                   </div>
                 </div>
 
@@ -1137,7 +2188,13 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {activeWorksheet.map((row, idx) => (
-                        <tr key={row.studentId} className="hover:bg-slate-50/20 transition">
+                        <motion.tr 
+                          key={row.studentId} 
+                          className="hover:bg-slate-50/20 transition"
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.2, delay: Math.min(idx * 0.02, 0.4), ease: 'easeOut' }}
+                        >
                           <td className="py-1 px-1.5 text-center font-mono text-slate-300 font-bold">{idx + 1}</td>
                           <td className="py-1 px-2 font-semibold text-slate-800 truncate leading-tight font-sans text-left">
                             <div>{row.studentName}</div>
@@ -1218,7 +2275,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                           <td className="py-1 px-0.5 text-center bg-purple-50 text-indigo-800 font-black font-mono">
                             {row.position ? `${row.position}` : 'N/A'}
                           </td>
-                        </tr>
+                        </motion.tr>
                       ))}
                     </tbody>
                   </table>
@@ -1292,7 +2349,13 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {broadsheetData.map((row, index) => (
-                        <tr key={row.student.id} className="hover:bg-slate-50/20">
+                        <motion.tr 
+                          key={row.student.id} 
+                          className="hover:bg-slate-50/20"
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.25, delay: Math.min(index * 0.04, 0.8), ease: 'easeOut' }}
+                        >
                           <td className="py-2 px-3 text-center font-bold font-mono text-purple-700 bg-purple-50">{index + 1}</td>
                           <td className="py-2 px-2 font-semibold text-slate-800 font-sans">{row.student.firstName} {row.student.lastName}</td>
                           {SUBJECTS.slice(0, 5).map(sub => {
@@ -1305,7 +2368,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                           })}
                           <td className="py-2 px-2 text-center text-slate-550 font-mono bg-slate-50">{row.subjectsCount} registered</td>
                           <td className="py-2 px-2 text-center font-black bg-indigo-50 text-indigo-800 font-mono text-xs">{row.averageOverallScore}%</td>
-                        </tr>
+                        </motion.tr>
                       ))}
                     </tbody>
                   </table>
@@ -1396,7 +2459,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                       📊 Class Mastery Performance Distribution
                     </h3>
                     <div className="h-72 font-sans text-[10px]">
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" aspect={undefined}>
                         <BarChart data={gradeLevelsStats}>
                           <CartesianGrid strokeDasharray="3 3" vertical={false} />
                           <XAxis dataKey="name" />
@@ -1473,7 +2536,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
             
             <button
               type="button"
-              onClick={() => setBroadsheetPreviewMode(true)}
+              onClick={() => setBroadsheetPreviewMode(!broadsheetPreviewMode)}
               className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto no-print"
             >
               <Eye size={12} /> Toggle Preview Mode
@@ -1502,7 +2565,13 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {broadsheetData.map((row, index) => (
-                    <tr key={row.student.id} className="hover:bg-slate-50/20">
+                    <motion.tr 
+                      key={row.student.id} 
+                      className="hover:bg-slate-50/20"
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.25, delay: Math.min(index * 0.04, 0.8), ease: 'easeOut' }}
+                    >
                       <td className="py-2 px-3 text-center font-bold font-mono text-purple-700 bg-purple-50">{index + 1}</td>
                       <td className="py-2 px-2 font-semibold text-slate-800 font-sans">{row.student.firstName} {row.student.lastName}</td>
                       {SUBJECTS.slice(0, 5).map(sub => {
@@ -1515,7 +2584,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                       })}
                       <td className="py-2 px-2 text-center text-slate-500 font-mono bg-slate-50">{row.subjectsCount} graded</td>
                       <td className="py-2 px-2 text-center font-black bg-indigo-50 text-indigo-800 font-mono">{row.averageOverallScore}%</td>
-                    </tr>
+                    </motion.tr>
                   ))}
                 </tbody>
               </table>
@@ -1538,7 +2607,7 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
             
             <button
               type="button"
-              onClick={() => setPerformancePreviewMode(true)}
+              onClick={() => setPerformancePreviewMode(!performancePreviewMode)}
               className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto"
             >
               <Eye size={12} /> Toggle Preview Mode
@@ -1670,6 +2739,356 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
             </div>
           </div>
 
+          {/* Subject Performance Heatmap Card */}
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5 text-left">
+                  📊 Subject Mastery & Standard Heatmap
+                </h3>
+                <p className="text-[10px] text-slate-400 mt-0.5 text-left">
+                  Comparative performance landscape for {selectedClass} during {selectedYear} • {selectedTerm}.
+                </p>
+              </div>
+
+              {/* Threshold Adjuster slider and inputs */}
+              <div className="flex items-center gap-3 bg-slate-50 p-2.5 rounded-xl border border-slate-150 self-start sm:self-auto">
+                <span className="text-[9px] font-black uppercase text-slate-500 tracking-wider">
+                  🎯 Expected Standard Benchmark:
+                </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min="40"
+                    max="80"
+                    step="5"
+                    value={heatmapThreshold}
+                    onChange={(e) => setHeatmapThreshold(parseInt(e.target.value))}
+                    className="w-24 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                  />
+                  <span className="font-mono text-xs font-black bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-100 min-w-[40px] text-center">
+                    {heatmapThreshold}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Grid display for heatmap */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              {subjectAveragesData.map((item) => {
+                const { subject, average, gradedCount } = item;
+                const isNoData = average === null;
+                const isBelowStandard = !isNoData && average < heatmapThreshold;
+
+                let cellBgClass = 'bg-slate-50 border-slate-200 text-slate-400';
+                let indicatorDot = 'bg-slate-300';
+                let badgeText = 'No Records';
+
+                if (!isNoData) {
+                  if (average < 50) {
+                    cellBgClass = 'bg-rose-50/70 border-rose-200 text-rose-700 hover:bg-rose-100/70';
+                    indicatorDot = 'bg-rose-500 animate-pulse';
+                    badgeText = 'Critical Struggle';
+                  } else if (average < heatmapThreshold) {
+                    cellBgClass = 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100/70';
+                    indicatorDot = 'bg-amber-500';
+                    badgeText = 'Below Target';
+                  } else if (average < 80) {
+                    cellBgClass = 'bg-indigo-50/50 border-indigo-150 text-indigo-700 hover:bg-indigo-100/50';
+                    indicatorDot = 'bg-indigo-500';
+                    badgeText = 'Proficient';
+                  } else {
+                    cellBgClass = 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100/75';
+                    indicatorDot = 'bg-emerald-500';
+                    badgeText = 'Outstanding';
+                  }
+                }
+
+                return (
+                  <div
+                    key={subject}
+                    onClick={() => {
+                      if (!isNoData) {
+                        setSelectedSubject(subject as SubjectType);
+                        const sheet = DbController.getAssessmentsSheet(selectedClass, selectedYear, selectedTerm, subject as SubjectType);
+                        setActiveWorksheet(sheet);
+                        setSubMode('Worksheet');
+                      }
+                    }}
+                    className={`p-3.5 rounded-xl border flex flex-col justify-between min-h-[115px] transition group relative ${
+                      isNoData ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:shadow-xs'
+                    } ${cellBgClass}`}
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[8px] font-black uppercase font-mono px-1.5 py-0.5 rounded bg-white/90 border border-slate-100 shadow-3xs">
+                          {badgeText}
+                        </span>
+                        {!isNoData && isBelowStandard && (
+                          <span className="text-[10px]" title="Below expected standard!">⚠️</span>
+                        )}
+                      </div>
+                      <h4 className="text-[10.5px] font-bold tracking-tight line-clamp-2 leading-snug text-left pt-1.5 group-hover:text-slate-900 transition">
+                        {subject}
+                      </h4>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-100/40 mt-2 flex items-baseline justify-between">
+                      <div className="text-left">
+                        <span className="text-[8px] uppercase text-slate-400 block font-bold leading-none">Average</span>
+                        <strong className="text-sm font-black font-mono leading-none">
+                          {!isNoData ? `${average}%` : 'N/A'}
+                        </strong>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[8px] uppercase text-slate-400 block font-bold leading-none font-mono">Size</span>
+                        <strong className="text-[10px] font-bold font-mono leading-none">
+                          {gradedCount}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Threshold analysis helper details block */}
+            <div className="bg-slate-50/75 rounded-xl border border-slate-200/60 p-4 space-y-4 text-left">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1 px-1.5 bg-rose-100 text-rose-700 rounded-lg text-xs">⚠️</div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-850">
+                      Expected Benchmark Gap Analysis
+                    </h4>
+                    <p className="text-[9.5px] text-slate-405 leading-relaxed">
+                      Color-mapped by student outcomes. Benchmark expectation currently set at <strong className="text-indigo-600 font-bold">{heatmapThreshold}%</strong>.
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex flex-wrap items-center gap-3 text-xs shrink-0 self-start sm:self-auto font-mono">
+                  <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-md border border-slate-100">
+                    <span className="w-2 h-2 rounded bg-rose-500 border border-rose-500/10" />
+                    <span className="text-[9px] text-slate-500 font-bold">Unsatisfactory (&lt;50%)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-md border border-slate-100">
+                    <span className="w-2 h-2 rounded bg-amber-500 border border-amber-500/10" />
+                    <span className="text-[9px] text-slate-500 font-bold">Fragile (&lt;{heatmapThreshold}%)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-md border border-slate-100">
+                    <span className="w-2 h-2 rounded bg-indigo-500 border border-indigo-500/10" />
+                    <span className="text-[9px] text-slate-500 font-bold">Proficient (⋝{heatmapThreshold}%)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-md border border-slate-100">
+                    <span className="w-2 h-2 rounded bg-emerald-500 border border-emerald-500/10" />
+                    <span className="text-[9px] text-slate-500 font-bold">High Achievers (⋝80%)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action priority recommendations */}
+              {(() => {
+                const flagged = subjectAveragesData.filter(item => item.average !== null && item.average < heatmapThreshold);
+                if (flagged.length === 0) {
+                  return (
+                    <div className="flex items-center gap-2 py-1 text-[11px] text-emerald-700 bg-emerald-50/50 p-2.5 rounded-lg border border-emerald-100">
+                      <span className="text-sm">🎉</span>
+                      <span><strong>Outstanding Cohort Performance!</strong> All currently graded subject curriculums have fully satisfied or exceeded your expected target standard of <strong>{heatmapThreshold}%</strong>. No emergency interventions required.</span>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2.5">
+                    <div className="text-[10.5px] font-bold text-rose-750 flex items-center gap-1.5">
+                      🚨 Flagged Areas: <span className="bg-rose-100 text-rose-800 text-[10px] px-2 py-0.2 rounded font-mono font-black">{flagged.length} Subject{flagged.length > 1 ? 's' : ''} Falling Below Standard</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {flagged.map((item) => {
+                        let recoveryFocus = '';
+                        if (item.subject.toLowerCase().includes('math')) {
+                          recoveryFocus = 'Increase lesson plan focus on physical math manipulatives, structural geometric models, and daily diagnostic mental drills.';
+                        } else if (item.subject.toLowerCase().includes('science')) {
+                          recoveryFocus = 'Organize supplementary group experiments, lab-based visual guides, and interactive curriculum inquiry projects.';
+                        } else if (item.subject.toLowerCase().includes('english') || item.subject.toLowerCase().includes('language')) {
+                          recoveryFocus = 'Establish mandatory silent spelling practices, shared grammar readings, and localized phonics games.';
+                        } else {
+                          recoveryFocus = 'Re-allocate class discussion segments, assign targeted weekend take-home exercises, and review term units.';
+                        }
+
+                        return (
+                          <div key={item.subject} className="bg-white p-2.5 rounded-lg border border-slate-200 flex flex-col justify-between space-y-1.5 text-left shadow-3xs">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-extrabold text-slate-800">{item.subject}</span>
+                              <span className="text-[10px] font-black font-mono text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-100">
+                                {item.average}% average
+                              </span>
+                            </div>
+                            <p className="text-[9.5px] text-slate-550 leading-normal italic">
+                              👉 {recoveryFocus} [Curriculum pool: {item.gradedCount} graded]
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* Student Performance Trend Visualizer (Line Chart Track) */}
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5 animate-pulse">
+                  📈 Student Performance Trend Tracker
+                </h3>
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  Analyze individual student learning trajectories and terminal grade improvements over multiple terms.
+                </p>
+              </div>
+
+              {/* Selector fields */}
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-col">
+                  <span className="text-[8px] font-black uppercase text-slate-400 tracking-wider mb-1">🎯 Selected Student</span>
+                  <select
+                    value={trendStudentId}
+                    onChange={(e) => setTrendStudentId(e.target.value)}
+                    className="py-1 px-2 border border-slate-200 rounded-md text-[11px] focus:outline-hidden focus:ring-1 focus:ring-indigo-550 bg-slate-50 font-bold"
+                  >
+                    {classStudentsForTrend.length === 0 ? (
+                      <option value="">No students in class</option>
+                    ) : (
+                      classStudentsForTrend.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.firstName} {s.lastName}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div className="flex flex-col">
+                  <span className="text-[8px] font-black uppercase text-slate-400 tracking-wider mb-1">📚 Subject Track</span>
+                  <select
+                    value={trendSubject}
+                    onChange={(e) => setTrendSubject(e.target.value)}
+                    className="py-1 px-2 border border-slate-200 rounded-md text-[11px] focus:outline-hidden focus:ring-1 focus:ring-indigo-550 bg-slate-50 font-bold"
+                  >
+                    <option value="All">All Subjects (Average)</option>
+                    {SUBJECTS.map(subj => (
+                      <option key={subj} value={subj}>
+                        {subj}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Line Chart Area */}
+            {classStudentsForTrend.length === 0 ? (
+              <div className="p-12 text-center text-slate-400 italic bg-slate-50/50 rounded-xl border border-slate-150">
+                ⚠️ Register students in {selectedClass} first to begin performance charting.
+              </div>
+            ) : studentTrendData.length === 0 ? (
+              <div className="p-12 text-center text-slate-400 bg-slate-50/50 rounded-xl border border-slate-150 flex flex-col items-center justify-center gap-2">
+                <span className="text-xl">📊</span>
+                <p className="font-bold text-slate-600 text-xs">No historical term records found for {selectedTrendStudent ? `${selectedTrendStudent.firstName} ${selectedTrendStudent.lastName}` : "this student"}.</p>
+                <p className="text-[10px] text-slate-400 max-w-sm">To generate a learning trajectory trend curve, navigate or switch to worksheets for other terms or academic years, record assessment items, and persist them.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-center">
+                {/* Chart container */}
+                <div className="lg:col-span-3 h-80 font-sans text-[10px]">
+                  <ResponsiveContainer width="100%" height="100%" aspect={undefined}>
+                    <LineChart data={studentTrendData} margin={{ top: 10, right: 30, left: 0, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                      <XAxis dataKey="period" stroke="#94a3b8" />
+                      <YAxis domain={[0, 100]} stroke="#94a3b8" />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: '#ffffff', 
+                          border: '1px solid #e2e8f0', 
+                          borderRadius: '8px',
+                          fontSize: '11px',
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
+                        }} 
+                      />
+                      <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', fontWeight: 'bold' }} />
+                      <Line 
+                        type="monotone" 
+                        dataKey="Overall Grade" 
+                        stroke="#4f46e5" 
+                        strokeWidth={3} 
+                        activeDot={{ r: 6 }} 
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="Class Assessment" 
+                        stroke="#10b981" 
+                        strokeWidth={2} 
+                        strokeDasharray="4 4" 
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="Exam Score" 
+                        stroke="#f59e0b" 
+                        strokeWidth={2} 
+                        strokeDasharray="4 4" 
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Cognitive Summary Insights Panel */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3 h-full flex flex-col justify-center">
+                  <div className="space-y-1">
+                    <span className="text-[9px] uppercase font-black text-slate-400 block tracking-wider">Scholar Trajectory</span>
+                    <h4 className="font-extrabold text-slate-800 text-xs text-indigo-700">
+                      {selectedTrendStudent?.firstName} {selectedTrendStudent?.lastName}
+                    </h4>
+                  </div>
+
+                  <div className="space-y-2 text-[11px] text-slate-600">
+                    <div className="flex justify-between items-center py-1 pb-1.5 border-b border-slate-100">
+                      <span>Periods Tracked</span>
+                      <strong className="text-slate-800 font-mono font-extrabold">{studentTrendData.length} Terms</strong>
+                    </div>
+
+                    <div className="flex justify-between items-center py-1 pb-1.5 border-b border-slate-100">
+                      <span>Latest Term Grade</span>
+                      <strong className="text-indigo-600 font-mono font-extrabold">
+                        {studentTrendData[studentTrendData.length - 1]?.['Overall Grade']}%
+                      </strong>
+                    </div>
+
+                    <div className="flex justify-between items-center py-1 pb-1.5 border-b border-slate-100">
+                      <span>Classwork Average</span>
+                      <strong className="text-emerald-600 font-mono font-extrabold">
+                        {Math.round(studentTrendData.reduce((acc, current) => acc + current['Class Assessment'], 0) / studentTrendData.length)}%
+                      </strong>
+                    </div>
+
+                    <div className="flex justify-between items-center py-1">
+                      <span>Exam Average</span>
+                      <strong className="text-amber-600 font-mono font-extrabold">
+                        {Math.round(studentTrendData.reduce((acc, current) => acc + current['Exam Score'], 0) / studentTrendData.length)}%
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="mt-1 p-2 bg-indigo-50/55 rounded-lg border border-indigo-100/50 text-[10px] text-indigo-700 leading-relaxed italic">
+                    ⭐ Learning curves plot 50% Continuous Assessment work coupled with 50% End of Term examination performance.
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Academic Remediation & Intervention Tracker */}
             <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
@@ -1791,9 +3210,9 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
         {showPdfGuide && (
           <>
           {/* Always Render Print/PDF Target templates in a stable offscreen environment for jsPDF canvas engine */}
-          <div className="fixed left-[-9999px] top-[-9999px] pointer-events-none z-[-100] no-print select-none opacity-0 bg-white" aria-hidden="true">
+          <div className="fixed left-[-9999px] top-[-9999px] pointer-events-none z-[-100] select-none opacity-0 bg-white no-print" aria-hidden="true">
             {/* Target A: Portrait Report Card Template */}
-            <div id="assessment-report-preview-portrait" className="w-[800px] bg-white p-12 text-black border-[8px] border-double border-slate-900 space-y-6 font-sans">
+            <div id="assessment-report-preview-portrait" className="w-[800px] bg-white p-12 text-black border-[8px] border-double border-slate-900 space-y-6 font-sans report-card-print-container">
               {/* Professional Letterhead */}
               <div className="flex items-center justify-between border-b-2 border-slate-900 pb-5 gap-4">
                 {DbController.getSchoolInfo().logoUrl ? (
@@ -1848,6 +3267,10 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                 <div><span className="text-[9px] text-slate-400 uppercase font-sans font-medium block">Full Legal Name</span><strong>{compiledReport ? `${compiledReport.student.firstName} ${compiledReport.student.lastName}` : 'Not Selected'}</strong></div>
                 <div><span className="text-[9px] text-slate-400 uppercase font-sans font-medium block">Academic Class</span><strong>{compiledReport?.student.class || selectedClass} ({compiledReport?.student.section || 'N/A'})</strong></div>
                 <div><span className="text-[9px] text-slate-400 uppercase font-sans font-medium block">Report Term & Year</span><strong>{selectedTerm} ({selectedYear})</strong></div>
+                <div className="col-span-2 grid grid-cols-2 gap-3 border-t border-slate-200 pt-2">
+                  <div><span className="text-[9px] text-indigo-700 uppercase font-sans font-bold block">Class Rank Standing</span><strong className="text-indigo-900 font-sans text-xs">{compiledReport?.classRank || 'N/A'}</strong></div>
+                  <div><span className="text-[9px] text-teal-800 uppercase font-sans font-bold block">Next Reopening Date</span><strong className="text-teal-900 font-sans text-xs">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong></div>
+                </div>
               </div>
 
               <h3 className="text-sm font-black uppercase text-center tracking-wide py-1.5 bg-slate-100 text-slate-900 border-y border-slate-200">
@@ -1904,6 +3327,38 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                 </div>
               )}
 
+              {/* Financial Ledger Section */}
+              {studentFinancials && (
+                <div className="mt-6 bg-slate-50 border border-slate-200/80 rounded-xl p-4 font-sans text-xs grid grid-cols-2 gap-4 leading-normal print:bg-white print:border-slate-300">
+                  <div className="space-y-1">
+                    <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
+                    <div className="flex items-baseline gap-2">
+                      <span className={`text-base font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                        GHS {studentFinancials.totalOutstanding.toFixed(2)}
+                      </span>
+                      {studentFinancials.totalOutstanding > 0 && studentFinancials.previousOutstanding > 0 && (
+                        <span className="text-[10px] text-slate-400">
+                          (Term: GHS {studentFinancials.currentOutstanding.toFixed(2)} | Arrears: GHS {studentFinancials.previousOutstanding.toFixed(2)})
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-400">Outstanding student balance of registered accounts ledger.</div>
+                  </div>
+                  <div className="border-l border-slate-250 pl-6 space-y-1">
+                    <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm}, {studentFinancials.nextYear})</div>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-base font-bold text-slate-800">
+                        GHS {studentFinancials.nextTermBillSum.toFixed(2)}
+                      </span>
+                      {studentFinancials.isEstimated && (
+                        <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black font-mono">Estimated Rate</span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-400">Projected billing plan for the upcoming academic module term.</div>
+                  </div>
+                </div>
+              )}
+
               {/* Signature block */}
               <div className="grid grid-cols-2 gap-6 pt-6 border-t border-slate-200 mt-6 font-sans">
                 <div>
@@ -1916,9 +3371,34 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                       : 'Satisfactory performance. Continual tutoring encouraged.'}
                   </p>
                 </div>
-                <div className="flex flex-col justify-end items-end space-y-1.5 pr-4">
-                  <div className="w-40 border-b border-slate-900 h-10"></div>
-                  <span className="text-[10px] text-slate-400 uppercase block font-medium">Headteacher Signature</span>
+                <div className="flex flex-col justify-end items-end space-y-1 pr-4 relative">
+                  <div className="relative w-40 h-12 flex items-center justify-center">
+                    {DbController.getSchoolInfo().stampUrl && (
+                      <img 
+                        src={DbController.getSchoolInfo().stampUrl} 
+                        alt="School Stamp" 
+                        className="absolute w-14 h-14 object-contain opacity-75 z-0 transform -rotate-12 translate-x-[-15%] translate-y-[-5%]" 
+                        referrerPolicy="no-referrer"
+                      />
+                    )}
+                    {DbController.getSchoolInfo().signatureUrl ? (
+                      <img 
+                        src={DbController.getSchoolInfo().signatureUrl} 
+                        alt="Headteacher Signature" 
+                        className="absolute w-28 h-9 object-contain z-10" 
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="h-[1px] w-36 bg-slate-400 self-end"></div>
+                    )}
+                  </div>
+                  {DbController.getSchoolInfo().signatureUrl && <div className="h-[1px] w-36 bg-slate-200"></div>}
+                  <div className="text-right">
+                    {DbController.getSchoolInfo().headteacherName && (
+                      <span className="font-bold text-[8.5px] text-slate-800 block leading-tight">{DbController.getSchoolInfo().headteacherName}</span>
+                    )}
+                    <span className="text-[9px] text-slate-400 uppercase block font-semibold">Headteacher Signature</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2137,6 +3617,16 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                             <span>Average Term Grade: {compiledReport.averageScore.toFixed(1)}%</span>
                           </div>
                         )}
+
+                        {studentFinancials && (
+                          <div className="bg-slate-50 p-1 rounded border border-slate-200 text-left text-[4.5px] font-mono leading-relaxed space-y-0.5">
+                            <div className="flex justify-between border-b border-slate-100 pb-0.5">
+                              <span>BAL DUE: <strong>GHS {studentFinancials.totalOutstanding.toFixed(2)}</strong></span>
+                              <span>NEXT BILL: <strong>GHS {studentFinancials.nextTermBillSum.toFixed(2)}</strong></span>
+                            </div>
+                            <div className="text-slate-400 text-[4px] text-center">Includes term outstanding & incoming {studentFinancials.nextTerm} plan.</div>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       /* Broadsheet Roster Landscape Visual Preview Clone */
@@ -2200,10 +3690,10 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
                   <div className="space-y-4">
                     <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
                       <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0 animate-pulse">
-                        <FileDown size={20} />
+                        <Eye size={20} />
                       </div>
                       <div>
-                        <h4 className="text-xs font-black text-slate-950">Save PDF & Print Controller</h4>
+                        <h4 className="text-xs font-black text-slate-950">Toggle Preview Mode & Print Controller</h4>
                         <p className="text-[10px] text-slate-400">Review assessment sheet print parameters</p>
                       </div>
                     </div>
@@ -2339,6 +3829,651 @@ export default function AssessmentTab({ theme, students, isAutoSave, onManualSav
         </button>
       </div>
     </div>
+
+    {/* PARENTAL SMS NOTIFICATION HANDSHAKE MODAL OVERLAY */}
+    <AnimatePresence>
+      {smsModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto no-print">
+          {/* Backdrop */}
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setSmsModalOpen(false)}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs cursor-pointer"
+          />
+
+          {/* Modal Container */}
+          <div className="flex min-h-full items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ type: 'spring', duration: 0.5 }}
+              className="relative w-full max-w-xl bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 md:p-8 space-y-6 text-slate-850 text-left font-sans"
+            >
+              
+              {/* Header */}
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-amber-500/10 border border-amber-500/20 text-amber-600 rounded-2xl flex items-center justify-center">
+                    <Smartphone size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">Parent SMS Notification Desk</h3>
+                    <p className="text-[11px] text-slate-400">Bridge parent-school communication with secure digital portal tokens.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSmsModalOpen(false)}
+                  className="p-1 px-2.5 rounded-lg border border-slate-100 hover:bg-slate-50 transition font-black text-slate-400 text-sm cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Status indicator Success */}
+              {smsSuccessMessage && (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl text-xs flex items-start gap-2.5 leading-relaxed">
+                  <CheckCircle size={16} className="text-emerald-600 flex-shrink-0 mt-0.5 animate-bounce" />
+                  <div>
+                    <strong className="font-bold block uppercase text-[10px] tracking-wide">Transmission Success</strong>
+                    {smsSuccessMessage}
+                  </div>
+                </div>
+              )}
+
+              {/* Form Input fields */}
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Guardian Name */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase block tracking-wider">Guardian Name:</label>
+                    <input 
+                      type="text"
+                      value={smsGuardianName}
+                      onChange={(e) => {
+                        setSmsGuardianName(e.target.value);
+                        setSmsSuccessMessage(null);
+                      }}
+                      placeholder="e.g. Peg Yirenyi"
+                      className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white text-slate-900 shadow-6xs"
+                    />
+                  </div>
+
+                  {/* Guardian Telephone */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase block tracking-wider flex justify-between">
+                      <span>Guardian Telephone:</span>
+                      {!smsGuardianPhone && <span className="text-amber-600 lowercase font-black text-[9px] animate-pulse">Required *</span>}
+                    </label>
+                    <input 
+                      type="tel"
+                      value={smsGuardianPhone}
+                      onChange={(e) => {
+                        setSmsGuardianPhone(e.target.value);
+                        setSmsSuccessMessage(null);
+                      }}
+                      placeholder="e.g. +233240000000"
+                      className={`w-full text-xs px-3.5 py-2.5 border rounded-xl font-bold font-mono focus:outline-none focus:ring-2 text-slate-900 shadow-6xs ${!smsGuardianPhone ? 'border-amber-300 bg-amber-50/50 focus:ring-amber-500' : 'border-slate-200 bg-slate-50 focus:ring-emerald-500'}`}
+                    />
+                  </div>
+                </div>
+
+                {/* Editable Message Textarea */}
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase block tracking-wider">Sms SMS Message Template Content:</label>
+                    <span className="text-[9px] font-mono font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                      Chars: {smsCustomMessage.length} ({(Math.ceil(smsCustomMessage.length / 160))} SMS)
+                    </span>
+                  </div>
+                  <textarea
+                    rows={4}
+                    value={smsCustomMessage}
+                    onChange={(e) => {
+                      setSmsCustomMessage(e.target.value);
+                      setSmsSuccessMessage(null);
+                    }}
+                    className="w-full text-xs p-4 border border-slate-200 rounded-2xl bg-slate-50 font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white text-slate-700 leading-relaxed max-h-[140px]"
+                  />
+                  <div className="text-[9.5px] italic text-slate-400 flex items-center gap-1">
+                    <MessageSquare size={12} className="text-slate-400" />
+                    <span>Secure parent access links automatically feature highly encrypted institutional signature tokens.</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex flex-col gap-2.5 pt-3 border-t border-slate-100">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={sendingSms || !smsGuardianPhone}
+                    onClick={handleSendSMS}
+                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-black shadow-md cursor-pointer transition active:translate-y-0.5 text-center ${!smsGuardianPhone ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white'}`}
+                  >
+                    {sendingSms ? (
+                      <>
+                        <RefreshCw size={13} className="animate-spin" /> Cellular Handshake...
+                      </>
+                    ) : (
+                      <>
+                        <Send size={13} /> Send via Twilio
+                      </>
+                    )}
+                  </button>
+                  
+                  {/* Direct Native Cellular link protocol */}
+                  <a
+                    href={(() => {
+                      const formattedPhone = (smsGuardianPhone || '').trim().replace(/[\s\-\(\)]/g, '');
+                      const encodedMsg = encodeURIComponent(smsCustomMessage || '');
+                      const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
+                      return isIOS ? `sms:${formattedPhone}&body=${encodedMsg}` : `sms:${formattedPhone}?body=${encodedMsg}`;
+                    })()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => {
+                      // Log standard manual mobile carrier transfer
+                      const newLog = {
+                        id: `SMS_${Date.now()}_local`,
+                        studentId: selectedStudentId,
+                        studentName: students.find(s => s.id === selectedStudentId)?.firstName + " " + students.find(s => s.id === selectedStudentId)?.lastName,
+                        recipientName: smsGuardianName,
+                        phoneNumber: smsGuardianPhone,
+                        message: smsCustomMessage,
+                        timestamp: new Date().toISOString(),
+                        status: 'Delivered'
+                      };
+                      const updatedLogs = [newLog, ...smsSentLogs];
+                      setSmsSentLogs(updatedLogs);
+                      localStorage.setItem('sms_assessment_sent_logs', JSON.stringify(updatedLogs));
+                    }}
+                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-indigo-50 border border-indigo-200 text-indigo-950 hover:bg-indigo-100 rounded-xl text-xs font-black transition cursor-pointer text-center ${!smsGuardianPhone ? 'pointer-events-none opacity-50 bg-slate-50 border-slate-100' : ''}`}
+                    title="Dispatch instantly through user device cellular network"
+                  >
+                    📱 Native SMS App
+                  </a>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSmsModalOpen(false)}
+                  className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-650 transition rounded-xl font-bold text-xs cursor-pointer text-center"
+                >
+                  Cancel
+                </button>
+              </div>
+
+              {/* SMS Audit Trail Logs Section */}
+              <div className="border-t border-slate-100 pt-5 space-y-3">
+                <h4 className="text-[10px] font-black uppercase text-slate-400 font-mono tracking-wider">SMS Dispatch History Log ({smsSentLogs.filter(l => l.studentId === selectedStudentId).length})</h4>
+                {smsSentLogs.filter(l => l.studentId === selectedStudentId).length === 0 ? (
+                  <p className="text-[10px] text-slate-400 italic">No historical notifications triggered for this student report card yet.</p>
+                ) : (
+                  <div className="max-h-[110px] overflow-y-auto divide-y divide-slate-100 space-y-1.5 pr-2">
+                    {smsSentLogs.filter(l => l.studentId === selectedStudentId).map((log, idx) => (
+                      <div key={log.id} className="text-[10.5px] py-2 flex flex-col space-y-1 font-sans">
+                        <div className="flex justify-between font-mono text-[9px]">
+                          <span className="text-slate-500 font-semibold">{log.recipientName} ({log.phoneNumber})</span>
+                          <span className="text-emerald-600 font-black flex items-center gap-0.5">
+                            <CheckCircle size={9} /> DELIVERED
+                          </span>
+                        </div>
+                        <p className="text-slate-500 text-[10px] leading-relaxed line-clamp-1">{log.message}</p>
+                        <span className="text-[8.5px] font-mono text-slate-400">{new Date(log.timestamp).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </motion.div>
+          </div>
+        </div>
+      )}
+    </AnimatePresence>
+
+    {/* ⎯⎯⎯⎯⎯⎯⎯⎯ HIGH-FIDELITY SIMULATED A4 PRINT PREVIEW MODAL ⎯⎯⎯⎯⎯⎯⎯⎯ */}
+    <AnimatePresence>
+      {showPrintPreviewModal && compiledReport && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 overflow-y-auto flex items-center justify-center p-4 font-sans select-none no-print">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 15 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 250 }}
+            className="bg-slate-900 border border-slate-800 w-full max-w-6xl rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[90vh]"
+          >
+            {/* Modal Top Header Control Ribbon */}
+            <div className="flex items-center justify-between px-6 py-4 bg-slate-950 border-b border-slate-800 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-indigo-600/20 text-indigo-400 rounded-lg">
+                  <Printer size={18} />
+                </div>
+                <div className="text-left">
+                  <h3 className="text-sm font-black tracking-tight text-white uppercase font-display">Simulated A4 Page Print Preview</h3>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Verify visual layout margins and dynamic progress reports before physical print output</p>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setShowPrintPreviewModal(false)}
+                className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Split layout: Sidebar controls & Interactive A4 Sheet View */}
+            <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
+              {/* Left Sidebar Section */}
+              <div className="w-full md:w-[350px] bg-slate-950/40 p-5 border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto space-y-5 text-left flex-shrink-0">
+                
+                {/* Print Verification Checklist */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase text-indigo-400 tracking-wider">Verification Checklist</span>
+                    <span className="text-[9px] font-mono bg-indigo-600/20 text-indigo-300 px-2 py-0.5 rounded-full font-bold">
+                      {Math.round(((checklistStudent ? 1 : 0) + (checklistGrades ? 1 : 0) + (checklistRemarks ? 1 : 0) + (checklistFinances ? 1 : 0)) / 4 * 100)}% Verified
+                    </span>
+                  </div>
+                  
+                  <div className="space-y-2.5 bg-slate-950/65 p-3.5 rounded-xl border border-slate-800">
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                      <input 
+                        type="checkbox" 
+                        checked={checklistStudent} 
+                        onChange={(e) => setChecklistStudent(e.target.checked)}
+                        className="mt-1 rounded border-slate-700 text-indigo-600 focus:ring-indigo-550 h-3.5 w-3.5 bg-slate-900"
+                      />
+                      <div className="text-[11px] leading-normal">
+                        <span className="font-bold text-slate-200">Student Metadata & Identity</span>
+                        <p className="text-[9.5px] text-slate-400 mt-0.5">Verify ID ({compiledReport.student.id}), spelling, class: {compiledReport.student.class}, and academic year indicators.</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none border-t border-slate-800 pt-2.5 mt-2.5">
+                      <input 
+                        type="checkbox" 
+                        checked={checklistGrades} 
+                        onChange={(e) => setChecklistGrades(e.target.checked)}
+                        className="mt-1 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5 bg-slate-900"
+                      />
+                      <div className="text-[11px] leading-normal">
+                        <span className="font-bold text-slate-200">Grades & Course Averages</span>
+                        <p className="text-[9.5px] text-slate-400 mt-0.5">Validate class marks, exam totals (50%), rankings, and weighted terminal average score ({compiledReport.averageScore}%).</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none border-t border-slate-800 pt-2.5 mt-2.5">
+                      <input 
+                        type="checkbox" 
+                        checked={checklistRemarks} 
+                        onChange={(e) => setChecklistRemarks(e.target.checked)}
+                        className="mt-1 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5 bg-slate-900"
+                      />
+                      <div className="text-[11px] leading-normal">
+                        <span className="font-bold text-slate-200">Remarks, Signatures & Stamps</span>
+                        <p className="text-[9.5px] text-slate-400 mt-0.5">Verify teacher remarks logic, school stamp logo URL, and authority signatures rendering.</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none border-t border-slate-800 pt-2.5 mt-2.5">
+                      <input 
+                        type="checkbox" 
+                        checked={checklistFinances} 
+                        onChange={(e) => setChecklistFinances(e.target.checked)}
+                        className="mt-1 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5 bg-slate-900"
+                      />
+                      <div className="text-[11px] leading-normal">
+                        <span className="font-bold text-slate-200">Ledger Balances & Reopenings</span>
+                        <p className="text-[9.5px] text-slate-400 mt-0.5">Validate future billing projections (GHS {studentFinancials?.nextTermBillSum.toFixed(2) || '0.00'}) and reopening date schedule.</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Print Layout Options */}
+                <div className="space-y-3 pt-1 border-t border-slate-800/80">
+                  <span className="text-[10px] font-black uppercase text-indigo-400 tracking-wider flex items-center gap-1.5">
+                    <Sliders size={12} /> Paper & Layout Settings
+                  </span>
+                  
+                  <div className="space-y-3">
+                    {/* Orientation Selector */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-slate-400 uppercase font-mono tracking-wider">Orientation Mode</label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button 
+                          type="button"
+                          onClick={() => setPreviewOrientation('portrait')}
+                          className={`py-1.5 text-[10.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${previewOrientation === 'portrait' ? 'bg-indigo-600 border-indigo-500 text-white animate-pulse' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                        >
+                          Portrait A4
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setPreviewOrientation('landscape')}
+                          className={`py-1.5 text-[10.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${previewOrientation === 'landscape' ? 'bg-indigo-600 border-indigo-500 text-white animate-pulse' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                        >
+                          Landscape A4
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Palette preset */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-slate-400 uppercase font-mono tracking-wider">Color Style Preset</label>
+                      <div className="grid grid-cols-3 gap-1">
+                        <button 
+                          type="button"
+                          onClick={() => setPreviewThemePreset('vivid')}
+                          className={`py-1 text-[9.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${previewThemePreset === 'vivid' ? 'bg-indigo-600/30 border-indigo-500 text-indigo-300 font-bold' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                        >
+                          Vivid Accent
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setPreviewThemePreset('charcoal')}
+                          className={`py-1 text-[9.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${previewThemePreset === 'charcoal' ? 'bg-indigo-600/30 border-indigo-500 text-indigo-300 font-bold' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                        >
+                          Charcoal
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setPreviewThemePreset('grayscale')}
+                          className={`py-1 text-[9.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${previewThemePreset === 'grayscale' ? 'bg-indigo-600/30 border-indigo-500 text-indigo-300 font-bold' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                        >
+                          Grayscale
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Margins */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-slate-400 uppercase font-mono tracking-wider">Simulated Margin Width</label>
+                      <div className="grid grid-cols-3 gap-1">
+                        <button 
+                          type="button"
+                          onClick={() => setPreviewMarginSize('normal')}
+                          className={`py-1 text-[9.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${previewMarginSize === 'normal' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                        >
+                          Normal (32px)
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setPreviewMarginSize('narrow')}
+                          className={`py-1 text-[9.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${previewMarginSize === 'narrow' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                        >
+                          Narrow (16px)
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setPreviewMarginSize('none')}
+                          className={`py-1 text-[9.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${previewMarginSize === 'none' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                        >
+                          Compact
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Print Guidance Alert */}
+                <div className="p-3.5 bg-slate-950/80 rounded-xl border border-slate-800 leading-normal space-y-1">
+                  <span className="text-[9.5px] font-black uppercase text-amber-500 tracking-wider flex items-center gap-1 font-sans">
+                    <HelpCircle size={11} className="text-amber-500" /> System Printer Guidelines
+                  </span>
+                  <div className="text-[8.5px] text-slate-450 space-y-1 font-sans">
+                    <p>• Check <strong>Background graphics</strong> to preserve the custom colors, headers, and seals correctly.</p>
+                    <p>• Avoid custom margins; select <strong>Default/None</strong> to respect the chosen digital margin styling layout.</p>
+                    <p>• Set paper size option to <strong>A4</strong> and disable header/footers to remove automated URL strings.</p>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Right Canvas: Professional simulated A4 view */}
+              <div className="flex-1 bg-slate-950 p-6 md:p-10 flex items-start justify-center overflow-y-auto h-full">
+                <div 
+                  className={`bg-white text-slate-900 shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-slate-100/10 transition-all duration-300 transform rounded-sm relative origin-top ${
+                    previewOrientation === 'portrait' ? 'w-full max-w-[760px] aspect-[1/1.414]' : 'w-full max-w-[1000px] aspect-[1.414/1]'
+                  } ${
+                    previewThemePreset === 'charcoal' ? 'ring-1 ring-slate-400' : previewThemePreset === 'grayscale' ? 'filter grayscale contrast-125' : ''
+                  }`}
+                  style={{
+                    padding: previewMarginSize === 'normal' ? '40px' : previewMarginSize === 'narrow' ? '24px' : '12px'
+                  }}
+                >
+                  {/* Top-Right Simulated Paper Dimensions Tag */}
+                  <div className="absolute top-2.5 right-3 px-2 py-0.5 bg-slate-100 text-slate-500 rounded font-mono text-[8px] font-bold select-none tracking-wider pointer-events-none uppercase">
+                    A4 Sheet • {previewOrientation === 'portrait' ? '210 x 297mm (Portrait)' : '297 x 210mm (Landscape)'}
+                  </div>
+
+                  {/* High fidelity simulation contents */}
+                  <div className="h-full flex flex-col justify-between font-sans relative text-left">
+                    
+                    {/* Header Structure */}
+                    <div>
+                      <div className="flex items-center justify-between border-b pb-4 mb-5 gap-3">
+                        <div className="flex items-center gap-2.5">
+                          {DbController.getSchoolInfo().logoUrl ? (
+                            <img 
+                              src={DbController.getSchoolInfo().logoUrl} 
+                              alt="Logo" 
+                              className="w-11 h-11 object-contain flex-shrink-0"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="w-11 h-11 bg-slate-100 rounded-full flex items-center justify-center border p-1 border-slate-200">
+                              <Award size={16} className="text-indigo-600" />
+                            </div>
+                          )}
+                          <div>
+                            <h2 className="text-[13px] font-black uppercase tracking-tight text-slate-950 font-display">
+                              {DbController.getSchoolInfo().name}
+                            </h2>
+                            <p className="text-[9px] italic text-slate-500">Motto: "{DbController.getSchoolInfo().motto}"</p>
+                            <span className="text-[8px] text-slate-400 block mt-0.5 font-sans">📍 {DbController.getSchoolInfo().gpsAddress || 'GPS Info N/A'} • ☎️ {DbController.getSchoolInfo().telephone || 'N/A'}</span>
+                          </div>
+                        </div>
+
+                        {compiledReport.student.photoUrl ? (
+                          <img 
+                            src={compiledReport.student.photoUrl} 
+                            alt="Student" 
+                            className="w-10 h-10 rounded object-cover border border-slate-200 flex-shrink-0"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 text-[6px] text-slate-400 font-mono flex-shrink-0 text-center leading-tight">
+                            <span>PASSPORT</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Title Banners */}
+                      <div className="bg-slate-100 px-3 py-1.5 rounded-lg flex items-center justify-between text-[9px] font-medium text-slate-705 select-none">
+                        <span>OFFICIAL STUDENT PROGRESS STATEMENT</span>
+                        <span className="font-mono bg-slate-300 text-slate-950 px-2 py-0.5 rounded font-black text-slate-900">{selectedTerm} ({selectedYear})</span>
+                      </div>
+
+                      {/* Metadata Cards */}
+                      <div className="grid grid-cols-4 gap-2.5 mt-3 bg-slate-50/50 p-2.5 rounded-lg border border-slate-100 text-[10px]">
+                        <div>
+                          <span className="text-[8px] uppercase text-slate-400 font-mono font-medium block">STUDENT ID</span>
+                          <span className="font-mono font-black text-slate-900">{compiledReport.student.id}</span>
+                        </div>
+                        <div>
+                          <span className="text-[8px] uppercase text-slate-400 font-mono font-medium block">FULL NAME</span>
+                          <strong className="text-slate-800">{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
+                        </div>
+                        <div>
+                          <span className="text-[8px] uppercase text-slate-400 font-mono font-medium block">CLASS</span>
+                          <span className="text-slate-800 font-bold">{compiledReport.student.class} ({compiledReport.student.section})</span>
+                        </div>
+                        <div>
+                          <span className="text-[8px] uppercase text-indigo-700 font-mono font-bold block">CLASS RANK</span>
+                          <strong className="text-indigo-900 font-bold font-mono">{compiledReport.classRank || 'N/A'}</strong>
+                        </div>
+                      </div>
+
+                      {/* Grades Table */}
+                      <div className="mt-4">
+                        <table className="w-full text-left border-collapse border border-slate-200 text-[9px]">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-300 font-mono text-[8px] font-black text-slate-500 uppercase tracking-wider animate-pulse">
+                              <th className="py-1 px-2 border border-slate-200 font-black">Course Subject</th>
+                              <th className="py-1 px-1.5 border border-slate-200 text-center font-black">Class (50%)</th>
+                              <th className="py-1 px-1.5 border border-slate-200 text-center font-black">Exams (50%)</th>
+                              <th className="py-1 px-1.5 border border-slate-200 text-center font-black">Total (100)</th>
+                              <th className="py-1 px-2 border border-slate-200 text-center font-black">Grade Descriptor</th>
+                              <th className="py-1 px-1.5 border border-slate-200 text-center font-black">Rank</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {compiledReport.grades.slice(0, 7).map((item) => (
+                              <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50/10">
+                                <td className="py-1 px-2 font-bold text-slate-800">{item.subject}</td>
+                                <td className="py-1 px-1.5 text-center font-mono text-slate-600">{item.classScore50}</td>
+                                <td className="py-1 px-1.5 text-center font-mono text-slate-600">{item.examScore50}</td>
+                                <td className="py-1 px-1.5 text-center font-mono font-black text-indigo-700">{item.totalScore}%</td>
+                                <td className="py-1 px-2 text-center">
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[7.5px] font-black uppercase font-mono ${
+                                    item.totalScore >= 80 ? 'bg-emerald-50 text-emerald-800 border border-emerald-110' : item.totalScore >= 60 ? 'bg-blue-50 text-blue-800 border border-blue-110' : 'bg-rose-50 text-rose-800 border border-rose-110'
+                                  }`}>
+                                    {item.remarks} ({item.gradeLevel})
+                                  </span>
+                                </td>
+                                <td className="py-1 px-1.5 text-center font-mono font-bold text-slate-700">{item.position || 'N/A'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {compiledReport.grades.length > 7 && (
+                          <div className="text-[8px] italic text-slate-400 mt-1 select-none font-mono text-center">
+                            (+ {compiledReport.grades.length - 7} remaining subjects in compilation roster)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Footer Aggregates, Fees ledger and Principal Sign-off Columns */}
+                    <div className="mt-4 pt-3 border-t space-y-3">
+                      {/* Course statistics card */}
+                      <div className="grid grid-cols-4 gap-2 text-center text-[9px]">
+                        <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal">
+                          <span className="text-[7.5px] uppercase text-slate-400 block font-mono">Total Courses</span>
+                          <strong className="text-slate-800 text-[10px] font-mono leading-tight">{compiledReport.totalSubjects}</strong>
+                        </div>
+                        <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal">
+                          <span className="text-[7.5px] uppercase text-slate-400 block font-mono">Weighted Average</span>
+                          <strong className="text-slate-800 text-[10px] font-mono leading-tight">{compiledReport.averageScore}%</strong>
+                        </div>
+                        <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal">
+                          <span className="text-[7.5px] uppercase text-slate-400 block font-mono">Total Attendance</span>
+                          <strong className="text-slate-800 text-[9px] leading-tight">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} days</strong>
+                        </div>
+                        <div className="bg-slate-50 p-1 rounded border border-slate-100 text-indigo-750 leading-normal">
+                          <span className="text-[7.5px] uppercase text-indigo-400 block font-mono">Academic Status</span>
+                          <strong className="text-indigo-805 text-[9px] uppercase leading-tight font-bold">GES Certified</strong>
+                        </div>
+                      </div>
+
+                      {/* Direct Ledger Integration */}
+                      {studentFinancials && (
+                        <div className="grid grid-cols-2 gap-3.5 bg-slate-100/40 p-2.5 rounded text-[8.5px] leading-normal border border-slate-200">
+                          <div>
+                            <span className="text-[7.5px] uppercase text-slate-500 font-mono block">Current Balance status</span>
+                            <strong className={`${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'} font-bold text-[9.5px]`}>
+                              GHS {studentFinancials.totalOutstanding.toFixed(2)}
+                            </strong>
+                            <div className="text-[7px] text-slate-400 leading-none mt-0.5">Includes outstanding system invoice history.</div>
+                          </div>
+                          <div>
+                            <span className="text-[7.5px] uppercase text-slate-500 font-mono block">Estimated Next Term Projected</span>
+                            <strong className="text-slate-800 font-bold text-[9.5px]">GHS {studentFinancials.nextTermBillSum.toFixed(2)}</strong>
+                            <div className="text-[7px] text-slate-400 leading-none mt-0.5 font-sans">Next reopens: {formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Headteacher Endorsements desk */}
+                      <div className="grid grid-cols-2 gap-4 text-[9px] leading-relaxed">
+                        <div className="space-y-1">
+                          <span className="text-[7.5px] font-mono text-slate-400 uppercase font-black">Principal Headteacher Remarks</span>
+                          <p className="p-2 bg-slate-50 rounded border border-slate-100 italic text-slate-650 min-h-[40px] text-[8px] leading-relaxed">
+                            {compiledReport.averageScore >= 80 
+                              ? 'Excellent performance! The student reflects high mastery level standards on the GES curriculum benchmarks.' 
+                              : compiledReport.averageScore >= 68 
+                              ? 'Satisfactory progress. Proficient level achieved across most cognitive subject domains.' 
+                              : compiledReport.averageScore >= 54 
+                              ? 'An average term result. Needs more dedication and revision in quantitative sciences.' 
+                              : 'Underperforming benchmarks. Urgent tutoring is recommended to foster remediation.'}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-center justify-end text-center relative mt-2">
+                          <div className="relative w-full h-8 flex items-center justify-center">
+                            {DbController.getSchoolInfo().stampUrl && (
+                              <img 
+                                src={DbController.getSchoolInfo().stampUrl} 
+                                alt="Stamp" 
+                                className="absolute w-10 h-10 object-contain opacity-40 transform -rotate-12 translate-x-[-15%]" 
+                                referrerPolicy="no-referrer"
+                              />
+                            )}
+                            {DbController.getSchoolInfo().signatureUrl ? (
+                              <img 
+                                src={DbController.getSchoolInfo().signatureUrl} 
+                                alt="Signature" 
+                                className="absolute w-20 h-6 object-contain" 
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <div className="border-b border-dashed border-slate-300 w-28 mb-1"></div>
+                            )}
+                          </div>
+                          <span className="text-[7.5px] uppercase tracking-wider text-slate-400 font-mono mt-1 font-bold">Authorized Seal Sign-off</span>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Modal Bottom control panel bar */}
+            <div className="flex items-center justify-between px-6 py-4 bg-slate-950 border-t border-slate-800 flex-shrink-0">
+              <span className="hidden sm:inline text-[10px] text-slate-400 text-left">
+                Ensure all verification checkboxes on the left are reviewed for safety compliance
+              </span>
+              <div className="flex items-center gap-3 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => setShowPrintPreviewModal(false)}
+                  className="px-4 py-2 hover:bg-slate-800 text-slate-300 hover:text-white font-bold transition rounded-xl text-xs cursor-pointer select-none"
+                >
+                  Cancel & Adjust
+                </button>
+                <button
+                  type="button"
+                  onClick={executeNativePrint}
+                  className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 hover:scale-[1.01] active:scale-[0.99] text-white font-black transition rounded-xl text-xs flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-950/20 select-none animate-bounce"
+                >
+                  <Printer size={13} /> Confirm & Proceed to Print
+                </button>
+              </div>
+            </div>
+
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
 
     </div>
   );

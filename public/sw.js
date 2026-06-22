@@ -47,6 +47,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Bypass API routes entirely
+  if (url.pathname.startsWith('/api/')) {
+    return;
+  }
+
   // Bypass Firebase firestore protocol routes which shouldn't be cached through local custom SW
   if (url.hostname.includes('firestore.googleapis.com') || url.hostname.includes('firebase')) {
     return;

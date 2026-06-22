@@ -4,7 +4,7 @@ import { SchoolInfo } from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
-import { Printer, Save, CheckCircle, Info, Landmark, ShieldCheck, FileDown, Trash2, RotateCcw, Eraser } from 'lucide-react';
+import { Printer, Save, CheckCircle, Info, Landmark, ShieldCheck, FileDown, Trash2, RotateCcw, Eraser, Eye } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 
 export function DefaultCrest({ className = "h-12 w-12" }: { className?: string }) {
@@ -61,6 +61,46 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
     }
   };
 
+  const handleSignatureUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        if (typeof reader.result === 'string') {
+          const base64 = reader.result;
+          try {
+            const compressed = await compressImage(base64);
+            handleInputChange('signatureUrl', compressed);
+          } catch (err) {
+            console.error("Signature compression error:", err);
+            handleInputChange('signatureUrl', base64);
+          }
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleStampUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        if (typeof reader.result === 'string') {
+          const base64 = reader.result;
+          try {
+            const compressed = await compressImage(base64);
+            handleInputChange('stampUrl', compressed);
+          } catch (err) {
+            console.error("Stamp compression error:", err);
+            handleInputChange('stampUrl', base64);
+          }
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleSave = () => {
     DbController.saveSchoolInfo(formData);
     onManualSave();
@@ -96,7 +136,8 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
       qualifications: '',
       highestAcademicQualifications: '',
       district: '',
-      circuit: ''
+      circuit: '',
+      reopeningDate: ''
     };
     setFormData(cleared);
     onUpdate(cleared);
@@ -132,7 +173,8 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
         qualifications: '',
         highestAcademicQualifications: '',
         district: '',
-        circuit: ''
+        circuit: '',
+        reopeningDate: ''
       };
       setFormData(blank);
       onUpdate(blank);
@@ -154,12 +196,13 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
         </div>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={() => setShowPdfGuide(true)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer"
+            className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 border border-slate-900 text-white hover:bg-slate-850 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-sm"
           >
-            <FileDown size={15} /> Save PDF Document
+            <Printer size={15} /> Print Profile
           </button>
-          
+
           {!isAutoSave && (
             <button
                onClick={handleSave}
@@ -244,6 +287,8 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
                   placeholder="e.g. AK-045-2317"
                 />
               </div>
+
+
 
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">School Type</label>
@@ -357,15 +402,128 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
                 </select>
               </div>
 
-              <div className="md:col-span-2">
+              <div className="md:col-span-2 space-y-2">
                 <label className="block text-xs font-medium text-slate-600 mb-1">Professional / Academic Certifications</label>
-                <textarea
-                  value={formData.qualifications}
-                  onChange={(e) => handleInputChange('qualifications', e.target.value)}
-                  rows={2}
-                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400 focus:border-slate-400"
-                  placeholder="List of academic degrees/licensing credentials"
-                />
+                <select
+                  value={
+                    formData.qualifications === '' 
+                      ? '' 
+                      : (["NTC Professional Teacher License", "Certificate in School Leadership and Management (CSLM)", "Post Graduate Diploma in Education (PGDE)", "Diploma in Basic Education (DBE)", "Teacher Certificate 'A'", "Professional Certificate in Educational Administration", "Early Childhood Care and Development Certification", "Executive Certificate in Educational Leadership", "Certificate in Guidance and Counseling", "Special Education (SPED) Certificate", "None"].includes(formData.qualifications) 
+                        ? formData.qualifications 
+                        : 'Other')
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === 'Other') {
+                      handleInputChange('qualifications', 'Custom Certification');
+                    } else {
+                      handleInputChange('qualifications', val);
+                    }
+                  }}
+                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg focus:outline-none bg-white text-slate-800"
+                >
+                  <option value="">-- Select Professional/Academic Certification --</option>
+                  <option value="None">None / Not certified</option>
+                  <option value="NTC Professional Teacher License">NTC Professional Teacher License (National Teaching Council)</option>
+                  <option value="Certificate in School Leadership and Management (CSLM)">Certificate in School Leadership and Management (CSLM)</option>
+                  <option value="Post Graduate Diploma in Education (PGDE)">Post Graduate Diploma in Education (PGDE)</option>
+                  <option value="Diploma in Basic Education (DBE)">Diploma in Basic Education (DBE)</option>
+                  <option value="Teacher Certificate 'A'">Teacher Certificate 'A'</option>
+                  <option value="Professional Certificate in Educational Administration">Professional Certificate in Educational Administration</option>
+                  <option value="Early Childhood Care and Development Certification">Early Childhood Care and Development Certification</option>
+                  <option value="Executive Certificate in Educational Leadership">Executive Certificate in Educational Leadership</option>
+                  <option value="Certificate in Guidance and Counseling">Certificate in Guidance and Counseling</option>
+                  <option value="Special Education (SPED) Certificate">Special Education (SPED) Certificate</option>
+                  <option value="Other">Other (Specify details below)</option>
+                </select>
+
+                {(formData.qualifications !== '' && !["NTC Professional Teacher License", "Certificate in School Leadership and Management (CSLM)", "Post Graduate Diploma in Education (PGDE)", "Diploma in Basic Education (DBE)", "Teacher Certificate 'A'", "Professional Certificate in Educational Administration", "Early Childhood Care and Development Certification", "Executive Certificate in Educational Leadership", "Certificate in Guidance and Counseling", "Special Education (SPED) Certificate", "None"].includes(formData.qualifications)) && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    className="pt-1.5"
+                  >
+                    <input
+                      type="text"
+                      value={formData.qualifications === 'Custom Certification' ? '' : formData.qualifications}
+                      onChange={(e) => handleInputChange('qualifications', e.target.value)}
+                      className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400 focus:border-slate-400"
+                      placeholder="Specify your custom professional certification details..."
+                    />
+                  </motion.div>
+                )}
+              </div>
+
+              <div className="md:col-span-2 border-t border-slate-100/65 pt-4 mt-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Digital Signature */}
+                <div className="space-y-1 text-left">
+                  <label className="block text-xs font-semibold text-slate-700">Headteacher's Digital Signature</label>
+                  <div className="flex items-center gap-3 p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                    <div className="w-24 h-12 rounded bg-white border border-slate-300 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-2xs">
+                      {formData.signatureUrl ? (
+                        <img src={formData.signatureUrl} className="w-full h-full object-contain" alt="Signature Preview" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="text-[10px] text-slate-400 italic font-mono text-center leading-none">No Signature Uploaded</div>
+                      )}
+                    </div>
+                    <div className="flex-grow space-y-1">
+                      <label className="inline-block px-2 py-1 bg-white border border-slate-205 text-slate-700 hover:bg-slate-50 text-[10px] font-bold rounded shadow-2xs cursor-pointer transition select-none">
+                        Choose File
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleSignatureUpload}
+                        />
+                      </label>
+                      {formData.signatureUrl && (
+                        <button
+                          type="button"
+                          onClick={() => handleInputChange('signatureUrl', '')}
+                          className="block text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                        >
+                          Remove Signature
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-slate-400">Renders on the Signature section of printed Report Cards.</p>
+                </div>
+
+                {/* School Stamp */}
+                <div className="space-y-1 text-left">
+                  <label className="block text-xs font-semibold text-slate-700">School Stamp / Seal</label>
+                  <div className="flex items-center gap-3 p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                    <div className="w-16 h-12 rounded bg-white border border-slate-300 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-2xs">
+                      {formData.stampUrl ? (
+                        <img src={formData.stampUrl} className="w-full h-full object-contain" alt="Stamp Preview" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="text-[10px] text-slate-400 italic font-mono text-center leading-none">No Stamp Uploaded</div>
+                      )}
+                    </div>
+                    <div className="flex-grow space-y-1">
+                      <label className="inline-block px-2 py-1 bg-white border border-slate-205 text-slate-700 hover:bg-slate-50 text-[10px] font-bold rounded shadow-2xs cursor-pointer transition select-none">
+                        Choose File
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleStampUpload}
+                        />
+                      </label>
+                      {formData.stampUrl && (
+                        <button
+                          type="button"
+                          onClick={() => handleInputChange('stampUrl', '')}
+                          className="block text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                        >
+                          Remove Stamp
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-slate-400 font-sans">Superimposed adjacent to the Signature block.</p>
+                </div>
               </div>
             </div>
           </div>
@@ -542,13 +700,45 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
         </div>
 
         <div className="mt-20 flex justify-between text-xs font-serif pt-8 border-t border-slate-300">
-          <div className="text-center">
-            <div className="h-12 w-48 border-b border-slate-500"></div>
-            <p className="mt-2 font-semibold font-mono">{formData.headteacherName}</p>
+          <div className="text-center w-48">
+            <div className="h-14 w-48 relative flex items-center justify-center">
+              {formData.stampUrl && (
+                <img 
+                  src={formData.stampUrl} 
+                  alt="Official Stamp" 
+                  className="absolute w-16 h-16 object-contain opacity-75 z-0 transform -rotate-12 translate-x-[-15%]" 
+                  referrerPolicy="no-referrer"
+                />
+              )}
+              {formData.signatureUrl ? (
+                <img 
+                  src={formData.signatureUrl} 
+                  alt="Headteacher Signature" 
+                  className="absolute w-32 h-10 object-contain z-10" 
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="h-[1px] w-48 bg-slate-500 self-end"></div>
+              )}
+            </div>
+            {formData.signatureUrl && <div className="h-[1px] w-48 bg-slate-300"></div>}
+            <p className="mt-2 font-semibold font-mono">{formData.headteacherName || 'Headteacher'}</p>
             <p className="text-slate-500 italic">Signature of Headteacher</p>
           </div>
-          <div className="text-center">
-            <div className="h-12 w-48 border-b border-slate-500"></div>
+          <div className="text-center w-48">
+            <div className="h-14 w-48 relative flex items-center justify-center">
+              {formData.stampUrl ? (
+                <img 
+                  src={formData.stampUrl} 
+                  alt="Official Date Stamp" 
+                  className="absolute w-16 h-16 object-contain opacity-85" 
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="h-[1px] w-48 bg-slate-500 self-end"></div>
+              )}
+            </div>
+            {formData.stampUrl && <div className="h-[1px] w-48 bg-slate-300"></div>}
             <p className="mt-2 font-mono">{new Date().toLocaleDateString()}</p>
             <p className="text-slate-500 italic">Official Date Stamp</p>
           </div>
@@ -659,10 +849,10 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
               <div className="space-y-4">
                 <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
                   <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0">
-                    <FileDown size={22} />
+                    <Eye size={22} />
                   </div>
                   <div>
-                    <h4 className="text-sm font-black text-slate-950">Save PDF & Print Controller</h4>
+                    <h4 className="text-sm font-black text-slate-950">Toggle Preview Mode & Print Controller</h4>
                     <p className="text-[10px] text-slate-400">Review print layout parameters</p>
                   </div>
                 </div>

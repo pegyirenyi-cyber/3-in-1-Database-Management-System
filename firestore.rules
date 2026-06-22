@@ -67,15 +67,45 @@ service cloud.firestore {
       allow write: if isSignedIn() && isAdminOrHead() && isValidId(assessmentId);
     }
 
-    // Fees access (Admin/Head full access)
+    // Fees access (Admin/Head full access, plus parent portal payment writes)
     match /fees/{feeId} {
+      allow read: if isSignedIn() || isValidId(feeId);
+      allow write: if (isSignedIn() && isAdminOrHead() && isValidId(feeId)) || isValidId(feeId);
+    }
+
+    // Paystack logs (Registered by Webhook and Client checkout)
+    match /paystack_payments/{paymentId} {
+      allow read: if isSignedIn() || isValidId(paymentId);
+      allow write: if isValidId(paymentId);
+    }
+
+    // Staff attendance access (Admin/Head full access)
+    match /staff_attendance/{recordId} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(feeId);
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(recordId);
+    }
+
+    // Settings configurations (e.g. academic calendar)
+    match /settings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(settingId);
+    }
+
+    // EMIS Data Collection (GES compliance)
+    match /emis/{emisId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isAdminOrHead() && isValidId(emisId);
     }
 
     // Users credentials registry access (User can read and write their own or Admin can write)
     match /users/{userId} {
       allow read, write: if isSignedIn() && (request.auth.uid == userId || isUserRole('Admin')) && isValidId(userId);
+    }
+
+    // Connection check test collection (Required for testConnection initialization check)
+    match /test/{docId} {
+      allow read: if true;
+      allow write: if isSignedIn();
     }
   }
 }

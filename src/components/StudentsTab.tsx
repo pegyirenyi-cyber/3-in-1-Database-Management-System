@@ -1,10 +1,14 @@
-import { useState, useRef, ChangeEvent, FormEvent } from 'react';
-import { Student, ClassType, CLASSES, SectionType, SECTIONS } from '../types';
+import React, { useState, useRef, ChangeEvent, FormEvent, useMemo } from 'react';
+import { 
+  Student, ClassType, CLASSES, SectionType, SECTIONS, 
+  AcademicYearType, ACADEMIC_YEARS, TermType, TERMS 
+} from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
-  Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, User, MapPin, PhoneCall, ShieldAlert, BadgeCheck, FileDown, RotateCcw, Eraser
+  Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, User, MapPin, PhoneCall, ShieldAlert, BadgeCheck, FileDown, RotateCcw, Eraser, Eye, FileSpreadsheet,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { motion, AnimatePresence } from 'motion/react';
@@ -15,13 +19,17 @@ interface Props {
   onRefresh: () => void;
   isAutoSave: boolean;
   onManualSave: () => void;
+  selectedYear?: AcademicYearType;
+  setSelectedYear?: (yr: AcademicYearType) => void;
+  selectedTerm?: TermType;
+  setSelectedTerm?: (tm: TermType) => void;
 }
 
 const INITIAL_FORM: Partial<Student> = {
   firstName: '',
   middleName: '',
   lastName: '',
-  class: 'Class 1',
+  class: 'Basic 1',
   gender: 'Male',
   dateOfBirth: '',
   placeOfBirth: '',
@@ -32,13 +40,34 @@ const INITIAL_FORM: Partial<Student> = {
   guardianTelephone: '',
   guardianOccupation: '',
   residentialAddress: '',
-  photoUrl: ''
+  photoUrl: '',
+  academicYear: '2026/2027',
+  term: 'Term 1'
 };
 
-export default function StudentsTab({ theme, students, onRefresh, isAutoSave, onManualSave }: Props) {
+export default function StudentsTab({ 
+  theme, 
+  students, 
+  onRefresh, 
+  isAutoSave, 
+  onManualSave,
+  selectedYear,
+  setSelectedYear,
+  selectedTerm,
+  setSelectedTerm
+}: Props) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClass, setSelectedClass] = useState<string>('All');
   const [selectedSection, setSelectedSection] = useState<string>('All');
+  
+  // Pagination states
+  const [studentPage, setStudentPage] = useState(1);
+  const [studentPageSize, setStudentPageSize] = useState(12);
+
+  // Reset page when search or filters change
+  React.useEffect(() => {
+    setStudentPage(1);
+  }, [searchTerm, selectedClass, selectedSection, selectedYear, selectedTerm]);
   
   // Modal/Form toggle states
   const [isEditing, setIsEditing] = useState(false);
@@ -48,17 +77,397 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Filter students dynamically
-  const filteredStudents = students.filter(std => {
-    const fullName = `${std.firstName} ${std.middleName || ''} ${std.lastName}`.toLowerCase();
-    const matchesSearch = fullName.includes(searchTerm.toLowerCase()) || std.id.includes(searchTerm);
-    const matchesClass = selectedClass === 'All' || std.class === selectedClass;
-    const matchesSection = selectedSection === 'All' || std.section === selectedSection;
-    return matchesSearch && matchesClass && matchesSection;
-  });
+  // Bulk import states
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [parsedStudents, setParsedStudents] = useState<{ student: Partial<Student>; errors: string[] }[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Parse CSV utility which handles quotes and double quotes escapes properly
+  const parseCSV = (text: string): string[][] => {
+    const result: string[][] = [];
+    let row: string[] = [];
+    let cell = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const nextChar = text[i + 1];
+
+      if (inQuotes) {
+        if (char === '"') {
+          if (nextChar === '"') {
+            cell += '"';
+            i++; // skip next char
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          cell += char;
+        }
+      } else {
+        if (char === '"') {
+          inQuotes = true;
+        } else if (char === ',') {
+          row.push(cell.trim());
+          cell = '';
+        } else if (char === '\n' || char === '\r') {
+          row.push(cell.trim());
+          cell = '';
+          if (row.length > 0 && (row.length > 1 || row[0] !== '')) {
+            result.push(row);
+          }
+          row = [];
+          if (char === '\r' && nextChar === '\n') {
+            i++;
+          }
+        } else {
+          cell += char;
+        }
+      }
+    }
+
+    if (row.length > 0 || cell !== '') {
+      row.push(cell.trim());
+      if (row.length > 1 || row[0] !== '') {
+        result.push(row);
+      }
+    }
+
+    return result;
+  };
+
+  // Maps raw CSV cells to structured Student records with inline warnings & default fallbacks
+  const mapCSVRowsToStudents = (rows: string[][]): { student: Partial<Student>; errors: string[] }[] => {
+    if (rows.length < 2) return [];
+
+    const rawHeaders = rows[0].map(h => h.trim().toLowerCase());
+    const dataRows = rows.slice(1);
+
+    // Dynamic, flexible index matching
+    const findIndex = (aliases: string[]) => {
+      return rawHeaders.findIndex(header => 
+        aliases.some(alias => header === alias || header.replace(/[\s_-]/g, '') === alias.replace(/[\s_-]/g, ''))
+      );
+    };
+
+    const idIdx = findIndex(['id', 'idcode', 'studentid', 'student id']);
+    const firstNameIdx = findIndex(['firstname', 'first name', 'fname']);
+    const middleNameIdx = findIndex(['middlename', 'middle name', 'mname']);
+    const lastNameIdx = findIndex(['lastname', 'last name', 'lname']);
+    const classIdx = findIndex(['class', 'classlevel', 'class level', 'grade']);
+    const genderIdx = findIndex(['gender', 'sex']);
+    const dobIdx = findIndex(['dateofbirth', 'date of birth', 'dob', 'birthdate']);
+    const placeOfBirthIdx = findIndex(['placeofbirth', 'place of birth']);
+    const statusIdx = findIndex(['status', 'type', 'enrollmentstatus', 'dayboarder']);
+    const sectionIdx = findIndex(['section', 'house', 'stream']);
+    const nationalityIdx = findIndex(['nationality', 'country']);
+    const guardianNameIdx = findIndex(['guardianname', 'guardian name', 'parent', 'parentname']);
+    const guardianTelephoneIdx = findIndex(['guardiantelephone', 'guardian telephone', 'guardianphone', 'parentphone', 'phone']);
+    const guardianOccupationIdx = findIndex(['guardianoccupation', 'guardian occupation', 'parentoccupation']);
+    const residentialAddressIdx = findIndex(['residentialaddress', 'residential address', 'address']);
+
+    return dataRows.map((row) => {
+      const getValue = (idx: number) => (idx >= 0 && idx < row.length ? row[idx].trim() : '');
+      const errors: string[] = [];
+
+      // Required fields checks
+      const firstName = getValue(firstNameIdx);
+      if (!firstName) {
+        errors.push("Missing First Name *");
+      }
+
+      const lastName = getValue(lastNameIdx);
+      if (!lastName) {
+        errors.push("Missing Last Name *");
+      }
+
+      // Class validation & alignment
+      let studentClass: ClassType = 'Basic 1';
+      const rawClass = getValue(classIdx);
+      if (rawClass) {
+        const foundClass = CLASSES.find(c => 
+          c.toLowerCase() === rawClass.toLowerCase() || 
+          c.replace(/\s+/g, '').toLowerCase() === rawClass.replace(/\s+/g, '').toLowerCase()
+        );
+        if (foundClass) {
+          studentClass = foundClass;
+        } else {
+          errors.push(`Invalid Class: "${rawClass}". Expected one of: ${CLASSES.join(', ')}`);
+        }
+      } else {
+        studentClass = (selectedClass !== 'All' ? selectedClass : 'Class 1') as ClassType;
+      }
+
+      // Gender normalization
+      let gender: 'Male' | 'Female' = 'Male';
+      const rawGender = getValue(genderIdx);
+      if (rawGender) {
+        const gLower = rawGender.toLowerCase();
+        if (gLower === 'male' || gLower === 'm') {
+          gender = 'Male';
+        } else if (gLower === 'female' || gLower === 'f') {
+          gender = 'Female';
+        } else {
+          errors.push(`Invalid Gender value: "${rawGender}". Must specify "Male" or "Female"`);
+        }
+      }
+
+      // Birthdate formatting checks
+      const dateOfBirth = getValue(dobIdx);
+      if (!dateOfBirth) {
+        errors.push("Missing Date of Birth * (YYYY-MM-DD)");
+      } else {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(dateOfBirth)) {
+          errors.push(`Invalid Date format: "${dateOfBirth}". Use absolute YYYY-MM-DD`);
+        }
+      }
+
+      // Boarding/Day registration status
+      let status: 'Day' | 'Boarder' = 'Day';
+      const rawStatus = getValue(statusIdx);
+      if (rawStatus) {
+        const sLower = rawStatus.toLowerCase();
+        if (sLower === 'day' || sLower === 'd') {
+          status = 'Day';
+        } else if (sLower === 'boarder' || sLower === 'boarding' || sLower === 'b') {
+          status = 'Boarder';
+        } else {
+          errors.push(`Invalid Status: "${rawStatus}". Use "Day" or "Boarder"`);
+        }
+      }
+
+      // Admin house/section selection
+      let section: SectionType = 'Faith';
+      const rawSection = getValue(sectionIdx);
+      if (rawSection) {
+        const foundSec = SECTIONS.find(s => s.toLowerCase() === rawSection.toLowerCase());
+        if (foundSec) {
+          section = foundSec;
+        } else {
+          errors.push(`Invalid Section: "${rawSection}". Specify one of: ${SECTIONS.join(', ')}`);
+        }
+      } else {
+        section = (selectedSection !== 'All' ? selectedSection : 'Faith') as SectionType;
+      }
+
+      const rawId = getValue(idIdx);
+      const id = rawId || 'ST' + Math.floor(100000 + Math.random() * 90000);
+
+      const student: Partial<Student> = {
+        id,
+        firstName,
+        middleName: getValue(middleNameIdx),
+        lastName,
+        class: studentClass,
+        gender,
+        dateOfBirth,
+        placeOfBirth: getValue(placeOfBirthIdx),
+        status,
+        section,
+        nationality: getValue(nationalityIdx) || 'Ghanaian',
+        guardianName: getValue(guardianNameIdx),
+        guardianTelephone: getValue(guardianTelephoneIdx),
+        guardianOccupation: getValue(guardianOccupationIdx),
+        residentialAddress: getValue(residentialAddressIdx),
+        photoUrl: '', // Default blank on bulk uploading
+        academicYear: selectedYear || '2026/2027',
+        term: selectedTerm || 'Term 1',
+        createdAt: new Date().toISOString()
+      };
+
+      return { student, errors };
+    });
+  };
+
+  const processFile = (file: File) => {
+    setImportFile(file);
+    setImportError(null);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      try {
+        const rows = parseCSV(text);
+        if (rows.length < 2) {
+          setImportError("CSV contains insufficient rows. Please include a header row followed by data.");
+          setParsedStudents([]);
+          return;
+        }
+        const mapped = mapCSVRowsToStudents(rows);
+        setParsedStudents(mapped);
+      } catch (err) {
+        console.error(err);
+        setImportError("Encountered filesystem read or encoding error parsing the CSV.");
+        setParsedStudents([]);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      if (file.name.endsWith('.csv')) {
+        processFile(file);
+      } else {
+        setImportError("The dropped file is not a supported CSV spreadsheet. Please upload a .csv file.");
+      }
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.name.endsWith('.csv')) {
+        processFile(file);
+      } else {
+        setImportError("The selected file must be a structured CSV spreadsheet format (.csv).");
+      }
+    }
+  };
+
+  const handleDownloadTemplate = () => {
+    const headers = [
+      'First Name', 'Middle Name', 'Last Name', 'Class', 'Gender',
+      'Date of Birth', 'Place of Birth', 'Status', 'Section', 'Nationality',
+      'Guardian Name', 'Guardian Telephone', 'Guardian Occupation', 'Residential Address'
+    ];
+    const examples = [
+      ['Kofi', 'Kwadwo', 'Mensah', 'Class 1', 'Male', '2016-04-12', 'Kumasi', 'Day', 'Faith', 'Ghanaian', 'Kwame Mensah', '0241234567', 'Trader', '12 Main St Kumasi'],
+      ['Ama', 'Osei', 'Sarpong', 'Class 2', 'Female', '2015-08-23', 'Accra', 'Boarder', 'Harmony', 'Ghanaian', 'Abena Sarpong', '0209876543', 'Teacher', 'Plot 45 East Legon']
+    ];
+
+    const csvContent = [
+      headers.join(','),
+      ...examples.map(ex => ex.map(val => `"${val.replace(/"/g, '""')}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "student_bulk_import_template.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExecuteImport = () => {
+    const validRows = parsedStudents.filter(p => p.errors.length === 0);
+    if (validRows.length === 0) {
+      alert("No valid rows available to import. Correct validation issues and try again.");
+      return;
+    }
+
+    validRows.forEach(row => {
+      DbController.saveStudent(row.student as Student);
+    });
+
+    onRefresh();
+    setShowImportModal(false);
+    setImportFile(null);
+    setParsedStudents([]);
+    alert(`Successfully populated ${validRows.length} new student records to roster database.`);
+
+    if (isAutoSave) {
+      // Auto save triggered
+    } else {
+      onManualSave();
+    }
+  };
+
+  // Filter students dynamically with academicYear and term support with high-performance memoization
+  const filteredStudents = useMemo(() => {
+    return students.filter(std => {
+      const fullName = `${std.firstName} ${std.middleName || ''} ${std.lastName}`.toLowerCase();
+      const matchesSearch = fullName.includes(searchTerm.toLowerCase()) || std.id.includes(searchTerm);
+      const matchesClass = selectedClass === 'All' || std.class === selectedClass;
+      const matchesSection = selectedSection === 'All' || std.section === selectedSection;
+      const matchesYear = !selectedYear || (std.academicYear || '2026/2027') === selectedYear;
+      const matchesTerm = !selectedTerm || (std.term || 'Term 1') === selectedTerm;
+      return matchesSearch && matchesClass && matchesSection && matchesYear && matchesTerm;
+    });
+  }, [students, searchTerm, selectedClass, selectedSection, selectedYear, selectedTerm]);
+
+  // Paginated students slice for desktop UI performance with high-performance memoization
+  const totalStudentsCount = filteredStudents.length;
+  const totalStudentPages = useMemo(() => Math.ceil(totalStudentsCount / studentPageSize), [totalStudentsCount, studentPageSize]);
+  const activeStudentPage = Math.min(Math.max(1, studentPage), totalStudentPages || 1);
+  
+  const paginatedStudents = useMemo(() => {
+    return filteredStudents.slice((activeStudentPage - 1) * studentPageSize, activeStudentPage * studentPageSize);
+  }, [filteredStudents, activeStudentPage, studentPageSize]);
+
+  const handleExportCSV = () => {
+    const headers = [
+      'Student ID', 'First Name', 'Middle Name', 'Last Name', 'Class', 'Gender',
+      'Date of Birth', 'Place of Birth', 'Status', 'Section', 'Nationality',
+      'Guardian Name', 'Guardian Telephone', 'Guardian Occupation', 'Residential Address', 
+      'Academic Year', 'Academic Term', 'Created At'
+    ];
+    
+    const csvRows = [headers.join(',')];
+    
+    for (const std of filteredStudents) {
+      const values = [
+        std.id,
+        std.firstName,
+        std.middleName || '',
+        std.lastName,
+        std.class,
+        std.gender,
+        std.dateOfBirth,
+        std.placeOfBirth,
+        std.status,
+        std.section,
+        std.nationality,
+        std.guardianName,
+        std.guardianTelephone,
+        std.guardianOccupation,
+        std.residentialAddress,
+        std.academicYear || '2026/2027',
+        std.term || 'Term 1',
+        std.createdAt
+      ].map(val => {
+        const escaped = ('' + (val || '')).replace(/"/g, '""');
+        return `"${escaped}"`;
+      });
+      csvRows.push(values.join(','));
+    }
+    
+    const blob = new Blob([csvRows.join("\n")], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `student_database_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const handleOpenAdd = () => {
-    setFormState({ ...INITIAL_FORM, id: 'ST' + Math.floor(100000 + Math.random() * 90000) });
+    setFormState({ 
+      ...INITIAL_FORM, 
+      id: 'ST' + Math.floor(100000 + Math.random() * 90000),
+      academicYear: selectedYear || '2026/2027',
+      term: selectedTerm || 'Term 1'
+    });
     setIsEditing(false);
     setShowFormModal(true);
   };
@@ -115,11 +524,9 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
 
   const handleDeleteAllStudents = () => {
     if (window.confirm("CRITICAL WARNING: Are you sure you want to delete ALL students from the system? This will also cascade delete all their bills and grades. This action cannot be undone.")) {
-      // Clear students by saving empty array
-      localStorage.setItem('school_students', JSON.stringify([]));
-      // Save empty fees and assessments
-      localStorage.setItem('school_assessments', JSON.stringify([]));
-      localStorage.setItem('school_fees_bills', JSON.stringify([]));
+      DbController.clearAllStudents();
+      DbController.clearAllAssessments();
+      DbController.clearAllStudentFeeBills();
       onRefresh();
       alert("Successfully purged all student rosters, fee ledgers and grade registry entries.");
     }
@@ -174,6 +581,8 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
       guardianOccupation: formState.guardianOccupation || '',
       residentialAddress: formState.residentialAddress || '',
       photoUrl: formState.photoUrl || '',
+      academicYear: formState.academicYear || selectedYear || '2026/2027',
+      term: formState.term || selectedTerm || 'Term 1',
       createdAt: formState.createdAt || new Date().toISOString()
     };
 
@@ -238,14 +647,52 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
               <option key={sec} value={sec}>{sec}</option>
             ))}
           </select>
+
+          {selectedYear && setSelectedYear && (
+            <select
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(e.target.value as AcademicYearType)}
+              className="text-xs px-2.5 py-2 border border-slate-200 rounded-lg bg-white font-medium"
+            >
+              {ACADEMIC_YEARS.map(yr => (
+                <option key={yr} value={yr}>{yr}</option>
+              ))}
+            </select>
+          )}
+
+          {selectedTerm && setSelectedTerm && (
+            <select
+              value={selectedTerm}
+              onChange={(e) => setSelectedTerm(e.target.value as TermType)}
+              className="text-xs px-2.5 py-2 border border-slate-200 rounded-lg bg-white font-medium"
+            >
+              {TERMS.map(tm => (
+                <option key={tm} value={tm}>{tm}</option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="flex items-center gap-2 w-full md:w-auto justify-end">
           <button
-            onClick={() => setShowPdfGuide(true)}
+            onClick={handleExportCSV}
+            className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+            title="Export filtered/all records to a CSV spreadsheet"
+          >
+            <FileSpreadsheet size={15} /> Export to CSV
+          </button>
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 border border-blue-600 text-white hover:bg-blue-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+            title="Import student records from a formatted CSV file"
+          >
+            <Upload size={15} /> Bulk Import CSV
+          </button>
+          <button
+            onClick={() => setShowPdfGuide(!showPdfGuide)}
             className="flex items-center gap-1.5 px-3 py-2 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer"
           >
-            <FileDown size={15} /> Save PDF
+            <Eye size={15} /> Toggle Preview Mode
           </button>
           <button
             onClick={handleOpenAdd}
@@ -258,7 +705,7 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
 
       {/* Grid container of student cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 no-print">
-        {filteredStudents.length === 0 ? (
+        {paginatedStudents.length === 0 ? (
           <div className="col-span-full bg-slate-50 border-2 border-dashed border-slate-200 p-12 text-center rounded-xl">
             <User size={36} className="text-slate-300 mx-auto mb-2" />
             <h4 className="text-sm font-semibold text-slate-700">No Student Records Found</h4>
@@ -271,10 +718,13 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
             </button>
           </div>
         ) : (
-          filteredStudents.map(std => (
-            <div 
+          paginatedStudents.map((std, idx) => (
+            <motion.div 
               key={std.id}
               className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs hover:shadow-md transition duration-200 flex flex-col justify-between"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25, delay: Math.min(idx * 0.03, 0.4), ease: 'easeOut' }}
             >
               <div className="p-4 flex gap-4">
                 {/* Photo profile container */}
@@ -304,6 +754,9 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                       {std.section}
                     </span>
                   </div>
+                  <div className="text-[10px] text-slate-500 font-semibold mt-1 font-mono">
+                    Session: {std.academicYear || '2026/2027'} • {std.term || 'Term 1'}
+                  </div>
                 </div>
               </div>
 
@@ -331,10 +784,104 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                 </div>
               </div>
 
-            </div>
+            </motion.div>
           ))
         )}
       </div>
+
+      {/* Student pagination controls */}
+      {filteredStudents.length > 0 && (
+        <div id="student-pagination-bar" className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 p-4 mt-2 bg-white border border-slate-200 rounded-xl no-print shadow-2xs">
+          <div className="text-xs text-slate-500 font-sans">
+            Showing <span className="font-semibold text-slate-700">{(activeStudentPage - 1) * studentPageSize + 1}</span> to{' '}
+            <span className="font-semibold text-slate-700">{Math.min(activeStudentPage * studentPageSize, totalStudentsCount)}</span> of{' '}
+            <span className="font-semibold text-slate-700">{totalStudentsCount}</span> student records
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-1.5 text-xs text-slate-500">
+              <span>Show</span>
+              <select
+                value={studentPageSize}
+                onChange={(e) => {
+                  setStudentPageSize(Number(e.target.value));
+                  setStudentPage(1);
+                }}
+                className="bg-white border border-slate-200 rounded px-1.5 py-1 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-700 cursor-pointer"
+              >
+                {[6, 12, 24, 48, 100].map(sz => (
+                  <option key={sz} value={sz}>{sz}</option>
+                ))}
+              </select>
+              <span>records</span>
+            </div>
+            
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setStudentPage(1)}
+                disabled={activeStudentPage === 1}
+                className="p-1 px-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent transition text-xs font-semibold cursor-pointer disabled:cursor-not-allowed"
+                title="First Page"
+              >
+                First
+              </button>
+              <button
+                type="button"
+                onClick={() => setStudentPage(p => Math.max(1, p - 1))}
+                disabled={activeStudentPage === 1}
+                className="p-1 px-2.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent transition text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <ChevronLeft size={14} />
+                <span>Prev</span>
+              </button>
+              
+              {/* Numeric Page indicators */}
+              {(() => {
+                const pageRange = [];
+                const maxButtons = 5;
+                let startPage = Math.max(1, activeStudentPage - 2);
+                let endPage = Math.min(totalStudentPages, startPage + maxButtons - 1);
+                if (endPage - startPage < maxButtons - 1) {
+                  startPage = Math.max(1, endPage - maxButtons + 1);
+                }
+                for (let i = startPage; i <= endPage; i++) {
+                  pageRange.push(i);
+                }
+                return pageRange.map(p => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setStudentPage(p)}
+                    className={`w-7 h-7 flex items-center justify-center text-xs font-bold rounded-lg border transition cursor-pointer ${p === activeStudentPage ? `${theme.primaryBg || 'bg-slate-900'} text-white border-transparent` : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                  >
+                    {p}
+                  </button>
+                ));
+              })()}
+              
+              <button
+                type="button"
+                onClick={() => setStudentPage(p => Math.min(totalStudentPages, p + 1))}
+                disabled={activeStudentPage === totalStudentPages}
+                className="p-1 px-2.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent transition text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <span>Next</span>
+                <ChevronRight size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setStudentPage(totalStudentPages)}
+                disabled={activeStudentPage === totalStudentPages}
+                className="p-1 px-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent transition text-xs font-semibold cursor-pointer disabled:cursor-not-allowed"
+                title="Last Page"
+              >
+                Last
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* COMPACT PRINT-ONLY SHEET (Meets date of birth, section, status print requirements perfectly!) */}
       <div className="hidden print:block font-sans max-w-6xl mx-auto p-4 bg-white text-black">
@@ -360,6 +907,7 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
               <th className="py-2 px-1 border border-slate-300 font-bold">Student ID</th>
               <th className="py-2 px-1 border border-slate-300 font-bold">Student Full Name</th>
               <th className="py-2 px-1 border border-slate-300 font-bold">Class Level</th>
+              <th className="py-2 px-1 border border-slate-300 font-bold">Academic Session</th>
               <th className="py-2 px-1 border border-slate-300 font-bold">Gender</th>
               <th className="py-2 px-1 border border-slate-300 font-bold">Date of Birth</th>
               <th className="py-2 px-1 border border-slate-300 font-bold">Section Assignment</th>
@@ -371,7 +919,7 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
           <tbody>
             {filteredStudents.length === 0 ? (
               <tr>
-                <td colSpan={9} className="text-center py-4 text-slate-500">No matching student profile logs available for this roster spreadsheet.</td>
+                <td colSpan={10} className="text-center py-4 text-slate-500">No matching student profile logs available for this roster spreadsheet.</td>
               </tr>
             ) : (
               filteredStudents.map(std => (
@@ -379,6 +927,7 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                   <td className="py-1 px-1 border border-slate-200 font-mono font-semibold">{std.id}</td>
                   <td className="py-1 px-1 border border-slate-200 font-semibold">{std.firstName} {std.middleName ? std.middleName + ' ' : ''}{std.lastName}</td>
                   <td className="py-1 px-1 border border-slate-200">{std.class}</td>
+                  <td className="py-1 px-1 border border-slate-200 font-semibold font-mono">{std.academicYear || '2026/2027'} - {std.term || 'Term 1'}</td>
                   <td className="py-1 px-1 border border-slate-200">{std.gender}</td>
                   <td className="py-1 px-1 border border-slate-200 font-mono">{std.dateOfBirth}</td>
                   <td className="py-1 px-1 border border-slate-200 font-medium">{std.section}</td>
@@ -559,6 +1108,36 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                     >
                       <option value="Male">Male</option>
                       <option value="Female">Female</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-600 font-medium mb-1">Academic Year *</label>
+                    <select
+                      value={formState.academicYear || '2026/2027'}
+                      onChange={(e) => setFormState(prev => ({ ...prev, academicYear: e.target.value as AcademicYearType }))}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-slate-400 font-medium"
+                      required
+                    >
+                      {ACADEMIC_YEARS.map(yr => (
+                        <option key={yr} value={yr}>{yr}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-600 font-medium mb-1">Academic Term *</label>
+                    <select
+                      value={formState.term || 'Term 1'}
+                      onChange={(e) => setFormState(prev => ({ ...prev, term: e.target.value as TermType }))}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-slate-400 font-medium"
+                      required
+                    >
+                      {TERMS.map(tm => (
+                        <option key={tm} value={tm}>{tm}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -754,6 +1333,7 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                       <th className="py-1 px-0.5 border border-stone-300 font-bold">ID</th>
                       <th className="py-1 px-0.5 border border-stone-300 font-bold">Full Name</th>
                       <th className="py-1 px-0.5 border border-stone-300 font-bold">Class</th>
+                      <th className="py-1 px-0.5 border border-stone-300 font-bold">Session</th>
                       <th className="py-1 px-0.5 border border-stone-300 font-bold">Gender</th>
                       <th className="py-1 px-0.5 border border-stone-300 font-bold">Birth Date</th>
                       <th className="py-1 px-0.5 border border-stone-300 font-bold">Section</th>
@@ -764,7 +1344,7 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                   <tbody>
                     {filteredStudents.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="text-center py-2 text-stone-400">No matching student profile logs available.</td>
+                        <td colSpan={9} className="text-center py-2 text-stone-400">No matching student profile logs available.</td>
                       </tr>
                     ) : (
                       filteredStudents.slice(0, 5).map(std => (
@@ -772,6 +1352,7 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                           <td className="py-1 px-0.5 border border-stone-200 font-mono font-semibold">{std.id}</td>
                           <td className="py-1 px-0.5 border border-stone-200 font-semibold">{std.firstName} {std.lastName}</td>
                           <td className="py-1 px-0.5 border border-stone-200">{std.class}</td>
+                          <td className="py-1 px-0.5 border border-stone-200 font-mono font-semibold">{std.academicYear || '2026/2027'} - {std.term || 'Term 1'}</td>
                           <td className="py-1 px-0.5 border border-stone-200">{std.gender}</td>
                           <td className="py-1 px-0.5 border border-stone-200 font-mono">{std.dateOfBirth}</td>
                           <td className="py-1 px-0.5 border border-stone-200 font-medium">{std.section}</td>
@@ -782,7 +1363,7 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                     )}
                     {filteredStudents.length > 5 && (
                       <tr>
-                        <td colSpan={8} className="text-center py-1 bg-stone-50 text-[7px] text-indigo-600 font-mono italic">
+                        <td colSpan={9} className="text-center py-1 bg-stone-50 text-[7px] text-indigo-600 font-mono italic">
                           ... and {filteredStudents.length - 5} more student entries rendered inside high-fidelity PDF output stream ...
                         </td>
                       </tr>
@@ -805,10 +1386,10 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
               <div className="space-y-4">
                 <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
                   <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0">
-                    <FileDown size={22} />
+                    <Eye size={22} />
                   </div>
                   <div>
-                    <h4 className="text-sm font-black text-slate-950">Save PDF & Print Controller</h4>
+                    <h4 className="text-sm font-black text-slate-950">Toggle Preview Mode & Print Controller</h4>
                     <p className="text-[10px] text-slate-400">Review class roster print parameters</p>
                   </div>
                 </div>
@@ -969,6 +1550,272 @@ export default function StudentsTab({ theme, students, onRefresh, isAutoSave, on
                     id="confirm-student-deletion"
                   >
                     Yes, Purge Permanently
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* CSV BULK IMPORT MODAL */}
+      <AnimatePresence>
+        {showImportModal && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setShowImportModal(false);
+                setImportFile(null);
+                setParsedStudents([]);
+                setImportError(null);
+              }
+            }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto no-print cursor-pointer"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl border border-slate-200 max-w-4xl w-full shadow-2xl max-h-[90vh] overflow-hidden flex flex-col cursor-default font-sans text-xs my-4"
+            >
+              {/* Header */}
+              <div className="p-6 pb-4 bg-white border-b border-slate-100 flex justify-between items-center">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5 leading-none">
+                    <FileSpreadsheet className="text-indigo-600" size={18} />
+                    Bulk Upload & Import Student Profiles
+                  </h3>
+                  <p className="text-[10px] text-slate-400 mt-1">Upload multiple student profiles at once using a formatted CSV spreadsheet</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowImportModal(false);
+                    setImportFile(null);
+                    setParsedStudents([]);
+                    setImportError(null);
+                  }}
+                  className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-650 transition cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-5">
+                {/* Instruction Banner */}
+                <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-indigo-50 text-[10px] text-indigo-700 font-bold">i</span>
+                      Formatting Instruction Guide:
+                    </h4>
+                    <p className="text-[10px] text-slate-500 leading-normal max-w-2xl">
+                      Make sure your spreadsheet includes headers such as: <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">First Name</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Last Name</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Class</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Gender</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Date of Birth</code> (formatted as YYYY-MM-DD), <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Section</code>, and <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Status</code> (Day/Boarder).
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDownloadTemplate}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-250 hover:bg-slate-100 rounded-lg text-[11px] font-bold text-slate-700 transition cursor-pointer self-start md:self-auto flex-shrink-0"
+                  >
+                    <FileDown size={14} className="text-slate-500" />
+                    Download CSV Template
+                  </button>
+                </div>
+
+                {/* Upload & Drag State */}
+                {!importFile ? (
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={() => importFileInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition flex flex-col items-center justify-center space-y-3 ${
+                      dragActive 
+                        ? 'border-indigo-505 bg-indigo-50/50' 
+                        : 'border-slate-300 hover:border-slate-400 bg-white hover:bg-slate-50/20'
+                    }`}
+                  >
+                    <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shadow-xs">
+                      <Upload size={22} className={dragActive ? 'animate-bounce text-indigo-600' : ''} />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-bold text-slate-700 text-xs">Drag and drop your roster CSV file here</p>
+                      <p className="text-[10px] text-slate-400">or click to browse your desktop storage library</p>
+                    </div>
+                    <input
+                      type="file"
+                      ref={importFileInputRef}
+                      onChange={handleFileChange}
+                      accept=".csv"
+                      className="hidden"
+                    />
+                    <div className="pt-2 text-[9px] text-slate-400 max-w-md mx-auto">
+                      Only structured <strong className="text-slate-600">CSV spreadsheet format files (.csv)</strong> are accepted. Maximum size 3MB.
+                    </div>
+                  </div>
+                ) : (
+                  /* File Info & Parsing Metrics Area */
+                  <div className="space-y-4">
+                    <div className="bg-slate-50 border border-slate-150 p-3 rounded-xl flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+                          <FileSpreadsheet size={16} />
+                        </div>
+                        <div>
+                          <strong className="block text-xs font-bold text-slate-800">{importFile.name}</strong>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {(importFile.size / 1024).toFixed(1)} KB • {parsedStudents.length} rows loaded
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImportFile(null);
+                          setParsedStudents([]);
+                          setImportError(null);
+                        }}
+                        className="px-2.5 py-1 text-red-650 hover:bg-red-50 hover:text-red-700 rounded font-bold transition text-[10px] cursor-pointer"
+                      >
+                        Reset / Choose Another
+                      </button>
+                    </div>
+
+                    {/* Parser Error Alert */}
+                    {importError && (
+                      <div className="bg-red-50 border border-red-150 p-4 rounded-xl text-red-900 space-y-1 text-xs">
+                        <h5 className="font-bold flex items-center gap-1.5 text-red-800">
+                          ⚠️ Parsing Failure Alert:
+                        </h5>
+                        <p>{importError}</p>
+                      </div>
+                    )}
+
+                    {/* Roster Spreadsheet Preview Table */}
+                    {!importError && parsedStudents.length > 0 && (
+                      <div className="space-y-2">
+                        {/* Summary metrics header */}
+                        <div className="flex items-center justify-between text-[11px] font-sans pb-1">
+                          <span className="text-slate-500">
+                            Spreadsheet breakdown preview summary:
+                          </span>
+                          <div className="flex gap-2.5">
+                            <span className="bg-indigo-50 text-indigo-750 font-bold px-2 py-0.5 rounded-full border border-indigo-100">
+                              Total: {parsedStudents.length} rows
+                            </span>
+                            <span className="bg-emerald-50 text-emerald-750 font-bold px-2 py-0.5 rounded-full border border-emerald-100">
+                              Ready: {parsedStudents.filter(p => p.errors.length === 0).length} valid
+                            </span>
+                            {parsedStudents.filter(p => p.errors.length > 0).length > 0 && (
+                              <span className="bg-rose-50 text-rose-750 font-bold px-2 py-0.5 rounded-full border border-rose-100">
+                                Issues: {parsedStudents.filter(p => p.errors.length > 0).length} flagged
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Scrolling scrollbar grid preview container */}
+                        <div className="border border-slate-200 rounded-xl overflow-hidden max-h-72 overflow-y-auto overflow-x-auto shadow-xs">
+                          <table className="w-full text-left border-collapse text-[11px] min-w-[900px]">
+                            <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                              <tr>
+                                <th className="py-2.5 px-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">Row</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Full Name</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Class</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Gender</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Date of Birth</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Section</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Type</th>
+                                <th className="py-2.5 px-3 font-semibold text-slate-700">Guardian Details</th>
+                                <th className="py-2.5 px-3 text-right font-semibold text-slate-700 pr-4">Status / Feedbacks</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 bg-white">
+                              {parsedStudents.map((rowVal, idx) => {
+                                const { student, errors } = rowVal;
+                                const hasErrors = errors.length > 0;
+                                return (
+                                  <tr key={idx} className={hasErrors ? 'bg-rose-50/20' : 'hover:bg-slate-50/30'}>
+                                    <td className="py-2 px-3 font-mono font-bold text-slate-400">{idx + 2}</td>
+                                    <td className="py-2 px-3 font-semibold text-slate-800">
+                                      {student.firstName || <span className="text-red-500 italic">[Empty]</span>} {student.middleName ? student.middleName + ' ' : ''}{student.lastName || <span className="text-red-500 italic">[Empty]</span>}
+                                    </td>
+                                    <td className="py-2 px-3">
+                                      <span className="font-medium">{student.class}</span>
+                                    </td>
+                                    <td className="py-2 px-3 text-slate-600">{student.gender}</td>
+                                    <td className="py-2 px-3 font-mono text-slate-500">{student.dateOfBirth || <span className="text-red-400 italic">None</span>}</td>
+                                    <td className="py-2 px-3 font-medium text-slate-700">{student.section}</td>
+                                    <td className="py-2 px-3">
+                                      <span className={`px-1 rounded-sm text-[9px] font-bold ${student.status === 'Boarder' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>{student.status}</span>
+                                    </td>
+                                    <td className="py-2 px-3 text-slate-500 truncate max-w-[120px]">
+                                      {student.guardianName || 'N/A'} {student.guardianTelephone ? `(${student.guardianTelephone})` : ''}
+                                    </td>
+                                    <td className="py-2 px-3 text-right pr-4">
+                                      {hasErrors ? (
+                                        <div className="inline-flex flex-col items-end gap-0.5">
+                                          {errors.map((err, eIdx) => (
+                                            <span key={eIdx} className="text-[9px] font-semibold text-red-600 bg-red-100/50 px-1.5 py-0.5 rounded">
+                                              ⚠️ {err}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100/50 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                                          <Check size={10} /> Ready
+                                        </span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Verification Notice warning/success footer */}
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150 flex items-center justify-between text-[10px] text-slate-400">
+                          <span>
+                            * Complete validation check: Rows with issues (⚠️) are skipped on execution. Correct your sheet and revalidate if necessary.
+                          </span>
+                          <span className="font-mono text-slate-500">
+                            Academic Session: {selectedYear || '2026/2027'} • {selectedTerm || 'Term 1'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 bg-slate-50 border-t border-slate-150 flex items-center justify-between">
+                <div className="text-[10px] text-slate-400 italic">
+                  * Dynamic auto ID codes will generate on successfully importing profiles.
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowImportModal(false);
+                      setImportFile(null);
+                      setParsedStudents([]);
+                      setImportError(null);
+                    }}
+                    className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-semibold rounded-xl cursor-pointer transition text-xs shadow-2xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExecuteImport}
+                    disabled={!importFile || parsedStudents.length === 0 || parsedStudents.filter(p => p.errors.length === 0).length === 0}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none text-white font-bold rounded-xl cursor-pointer transition text-xs shadow-md shadow-indigo-600/10 inline-flex items-center gap-1.5"
+                  >
+                    <Check size={14} /> Execute Import ({parsedStudents.filter(p => p.errors.length === 0).length} valid rosters)
                   </button>
                 </div>
               </div>

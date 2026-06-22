@@ -7,10 +7,13 @@ import {
   onAuthStateChanged,
   User as FirebaseUser,
   GoogleAuthProvider,
-  signInWithPopup
+  signInWithPopup,
+  sendPasswordResetEmail,
+  OAuthProvider
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
   doc,
   getDoc,
   setDoc,
@@ -19,13 +22,16 @@ import {
   deleteDoc,
   query,
   where,
-  getDocFromServer
+  getDocFromServer,
+  disableNetwork,
+  enableNetwork
 } from 'firebase/firestore';
 import {
   SchoolInfo,
   Student,
   Teacher,
   AttendanceRecord,
+  StaffAttendanceRecord,
   StudentAssessment,
   UserAccount,
   UserRole,
@@ -33,9 +39,13 @@ import {
   AcademicYearType,
   TermType,
   SubjectType,
+  SUBJECTS,
   ThemeType,
   StudentFeeBill,
-  FeePayment
+  FeePayment,
+  AcademicCalendarConfig,
+  EmisData,
+  PaystackPayment
 } from './types';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -88,7 +98,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.warn('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -97,7 +107,9 @@ try {
     firebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
     firebaseAuth = getAuth(firebaseApp);
     const dbId = (firebaseConfig as any).firestoreDatabaseId || "ai-studio-a2d8d304-855b-466a-8f1a-47e69bbb165b";
-    firestoreDb = getFirestore(firebaseApp, dbId);
+    firestoreDb = initializeFirestore(firebaseApp, {
+      experimentalForceLongPolling: true
+    }, dbId);
     isFirebaseActive = true;
     console.log("Firebase initialized successfully with live database ID:", dbId);
   }
@@ -109,10 +121,26 @@ try {
 async function testConnection() {
   if (isFirebaseActive && firestoreDb) {
     try {
-      await getDocFromServer(doc(firestoreDb, 'test', 'connection'));
+      const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+      if (!isOnline) {
+        console.warn("Device is offline. Placing Firestore in offline cache mode immediately.");
+        await disableNetwork(firestoreDb);
+        return;
+      }
+      
+      const connectionPromise = getDocFromServer(doc(firestoreDb, 'test', 'connection'));
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Firestore connection handshake timed out after 3000ms")), 3000)
+      );
+
+      await Promise.race([connectionPromise, timeoutPromise]);
+      console.log("Firestore connection check completed successfully. Online mode activated.");
     } catch (error) {
-      if (error instanceof Error && error.message.includes('the client is offline')) {
-        console.error("Please check your Firebase configuration.");
+      console.warn("Firestore connection check failed or timed out. Placing Firestore in offline mode immediately to prevent blocking/latency issues.", error);
+      try {
+        await disableNetwork(firestoreDb);
+      } catch (networkError) {
+        console.warn("Error disabling Firestore network mode:", networkError);
       }
     }
   }
@@ -135,7 +163,167 @@ const DEFAULT_SCHOOL_INFO: SchoolInfo = {
   qualifications: '',
   highestAcademicQualifications: '',
   district: '',
-  circuit: ''
+  circuit: '',
+  reopeningDate: '',
+  signatureUrl: '',
+  stampUrl: ''
+};
+
+export const DEFAULT_CALENDAR: AcademicCalendarConfig = {
+  activeAcademicYear: '2026/2027',
+  activeTerm: 'Term 1',
+  years: {
+    '2025/2026': {
+      academicYear: '2025/2026',
+      startDate: '2025-09-01',
+      endDate: '2026-07-31',
+      terms: {
+        'Term 1': { startDate: '2025-09-01', endDate: '2025-12-19' },
+        'Term 2': { startDate: '2026-01-08', endDate: '2026-04-10' },
+        'Term 3': { startDate: '2026-05-04', endDate: '2026-07-31' }
+      }
+    },
+    '2026/2027': {
+      academicYear: '2026/2027',
+      startDate: '2026-09-01',
+      endDate: '2027-07-31',
+      terms: {
+        'Term 1': { startDate: '2026-09-01', endDate: '2026-12-18' },
+        'Term 2': { startDate: '2027-01-07', endDate: '2027-04-09' },
+        'Term 3': { startDate: '2027-05-03', endDate: '2027-07-30' }
+      }
+    },
+    '2027/2028': {
+      academicYear: '2027/2028',
+      startDate: '2027-09-01',
+      endDate: '2028-07-31',
+      terms: {
+        'Term 1': { startDate: '2027-09-01', endDate: '2027-12-17' },
+        'Term 2': { startDate: '2028-01-06', endDate: '2028-04-07' },
+        'Term 3': { startDate: '2028-05-02', endDate: '2028-07-31' }
+      }
+    },
+    '2028/2029': {
+      academicYear: '2028/2029',
+      startDate: '2028-09-01',
+      endDate: '2029-07-31',
+      terms: {
+        'Term 1': { startDate: '2028-09-01', endDate: '2028-12-15' },
+        'Term 2': { startDate: '2029-01-05', endDate: '2029-04-06' },
+        'Term 3': { startDate: '2029-05-04', endDate: '2029-07-31' }
+      }
+    },
+    '2029/2030': {
+      academicYear: '2029/2030',
+      startDate: '2029-09-01',
+      endDate: '2030-07-31',
+      terms: {
+        'Term 1': { startDate: '2029-09-01', endDate: '2029-12-21' },
+        'Term 2': { startDate: '2030-01-07', endDate: '2030-04-12' },
+        'Term 3': { startDate: '2030-05-06', endDate: '2030-07-31' }
+      }
+    },
+    '2030/2031': {
+      academicYear: '2030/2031',
+      startDate: '2030-09-01',
+      endDate: '2031-07-31',
+      terms: {
+        'Term 1': { startDate: '2030-09-01', endDate: '2030-12-20' },
+        'Term 2': { startDate: '2031-01-07', endDate: '2031-04-11' },
+        'Term 3': { startDate: '2031-05-05', endDate: '2031-07-31' }
+      }
+    },
+    '2031/2032': {
+      academicYear: '2031/2032',
+      startDate: '2031-09-01',
+      endDate: '2032-07-31',
+      terms: {
+        'Term 1': { startDate: '2031-09-01', endDate: '2031-12-19' },
+        'Term 2': { startDate: '2032-01-08', endDate: '2032-04-09' },
+        'Term 3': { startDate: '2032-05-03', endDate: '2032-07-30' }
+      }
+    },
+    '2032/2033': {
+      academicYear: '2032/2033',
+      startDate: '2032-09-01',
+      endDate: '2033-07-31',
+      terms: {
+        'Term 1': { startDate: '2032-09-01', endDate: '2032-12-17' },
+        'Term 2': { startDate: '2033-01-07', endDate: '2033-04-08' },
+        'Term 3': { startDate: '2033-05-02', endDate: '2033-07-29' }
+      }
+    },
+    '2033/2034': {
+      academicYear: '2033/2034',
+      startDate: '2033-09-01',
+      endDate: '2034-07-31',
+      terms: {
+        'Term 1': { startDate: '2033-09-01', endDate: '2033-12-16' },
+        'Term 2': { startDate: '2034-01-06', endDate: '2034-04-07' },
+        'Term 3': { startDate: '2034-05-01', endDate: '2034-07-28' }
+      }
+    },
+    '2034/2035': {
+      academicYear: '2034/2035',
+      startDate: '2034-09-01',
+      endDate: '2035-07-31',
+      terms: {
+        'Term 1': { startDate: '2034-09-01', endDate: '2034-12-15' },
+        'Term 2': { startDate: '2035-01-05', endDate: '2035-04-06' },
+        'Term 3': { startDate: '2035-05-04', endDate: '2035-07-31' }
+      }
+    },
+    '2035/2036': {
+      academicYear: '2035/2036',
+      startDate: '2035-09-01',
+      endDate: '2036-07-31',
+      terms: {
+        'Term 1': { startDate: '2035-09-01', endDate: '2035-12-21' },
+        'Term 2': { startDate: '2036-01-04', endDate: '2036-04-11' },
+        'Term 3': { startDate: '2036-05-02', endDate: '2036-07-31' }
+      }
+    },
+    '2036/2037': {
+      academicYear: '2036/2037',
+      startDate: '2036-09-01',
+      endDate: '2037-07-31',
+      terms: {
+        'Term 1': { startDate: '2036-09-01', endDate: '2036-12-19' },
+        'Term 2': { startDate: '2037-01-08', endDate: '2037-04-10' },
+        'Term 3': { startDate: '2037-05-04', endDate: '2037-07-31' }
+      }
+    },
+    '2037/2038': {
+      academicYear: '2037/2038',
+      startDate: '2037-09-01',
+      endDate: '2038-07-31',
+      terms: {
+        'Term 1': { startDate: '2037-09-01', endDate: '2037-12-18' },
+        'Term 2': { startDate: '2038-01-07', endDate: '2038-04-09' },
+        'Term 3': { startDate: '2038-05-03', endDate: '2038-07-30' }
+      }
+    },
+    '2038/2039': {
+      academicYear: '2038/2039',
+      startDate: '2038-09-01',
+      endDate: '2039-07-31',
+      terms: {
+        'Term 1': { startDate: '2038-09-01', endDate: '2038-12-17' },
+        'Term 2': { startDate: '2039-01-06', endDate: '2039-04-08' },
+        'Term 3': { startDate: '2039-05-02', endDate: '2039-07-29' }
+      }
+    },
+    '2039/2040': {
+      academicYear: '2039/2040',
+      startDate: '2039-09-01',
+      endDate: '2040-07-31',
+      terms: {
+        'Term 1': { startDate: '2039-09-01', endDate: '2039-12-16' },
+        'Term 2': { startDate: '2040-01-05', endDate: '2040-04-12' },
+        'Term 3': { startDate: '2040-05-03', endDate: '2040-07-31' }
+      }
+    }
+  }
 };
 
 // Local storage key constants
@@ -146,9 +334,13 @@ const STORAGE_KEYS = {
   STUDENTS: 'sms_students',
   TEACHERS: 'sms_teachers',
   ATTENDANCE: 'sms_attendance',
+  STAFF_ATTENDANCE: 'sms_staff_attendance',
   ASSESSMENTS: 'sms_assessments',
   SETTINGS: 'sms_settings',
-  FEES: 'sms_fees'
+  FEES: 'sms_fees',
+  CALENDAR: 'sms_academic_calendar',
+  EMIS: 'sms_emis_reports',
+  PAYSTACK_LOGS: 'sms_paystack_logs'
 };
 
 // Help helper to deep copy or get storage
@@ -198,25 +390,32 @@ export class DbController {
   ): Promise<void> {
     if (!isFirebaseActive || !firestoreDb) return;
 
+    // Sanitize docId to prevent sub-collection routing issues (e.g., forward slashes in academic years)
+    const safeDocId = docId.replace(/\//g, '-');
+    let safeData = data;
+    if (safeData && safeData.id) {
+      safeData = { ...safeData, id: safeDocId };
+    }
+
     const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
     
     if (!isOnline) {
-      this.enqueueOfflineOperation(colName, docId, type, data);
+      this.enqueueOfflineOperation(colName, safeDocId, type, safeData);
       return;
     }
 
     try {
       if (type === 'set') {
-        const docRef = doc(firestoreDb, colName, docId);
-        await setDoc(docRef, data);
+        const docRef = doc(firestoreDb, colName, safeDocId);
+        await setDoc(docRef, safeData);
       } else if (type === 'delete') {
-        const docRef = doc(firestoreDb, colName, docId);
+        const docRef = doc(firestoreDb, colName, safeDocId);
         await deleteDoc(docRef);
       }
-      console.log(`[Offline Sync] Successfully synced ${type} on ${colName}/${docId} with Firestore.`);
+      console.log(`[Offline Sync] Successfully synced ${type} on ${colName}/${safeDocId} with Firestore.`);
     } catch (error) {
-      console.warn(`[Offline Sync] Firestore write failed for ${colName}/${docId}, queueing offline:`, error);
-      this.enqueueOfflineOperation(colName, docId, type, data);
+      console.warn(`[Offline Sync] Firestore write failed for ${colName}/${safeDocId}, queueing offline:`, error);
+      this.enqueueOfflineOperation(colName, safeDocId, type, safeData);
     }
   }
 
@@ -280,15 +479,21 @@ export class DbController {
 
     for (const item of queue) {
       try {
+        const safeDocId = item.docId.replace(/\//g, '-');
+        let safeData = item.data;
+        if (safeData && safeData.id) {
+          safeData = { ...safeData, id: safeDocId };
+        }
+
         if (item.type === 'set') {
-          const docRef = doc(firestoreDb, item.collection, item.docId);
-          await setDoc(docRef, item.data);
+          const docRef = doc(firestoreDb, item.collection, safeDocId);
+          await setDoc(docRef, safeData);
         } else if (item.type === 'delete') {
-          const docRef = doc(firestoreDb, item.collection, item.docId);
+          const docRef = doc(firestoreDb, item.collection, safeDocId);
           await deleteDoc(docRef);
         }
         syncedCount++;
-        console.log(`[Offline Sync] Replay success: ${item.type} on ${item.collection}/${item.docId}`);
+        console.log(`[Offline Sync] Replay success: ${item.type} on ${item.collection}/${safeDocId}`);
       } catch (e) {
         console.error(`[Offline Sync] Replay failed for item ${item.id}:`, e);
         remainingQueue.push(item);
@@ -320,7 +525,7 @@ export class DbController {
       const defaults: UserAccount[] = [
         {
           uid: 'admin_default',
-          email: 'admin@ges.edu',
+          email: 'pegyirenyi@gmail.com',
           name: 'Administrator',
           role: 'Admin',
           createdAt: new Date().toISOString()
@@ -336,21 +541,65 @@ export class DbController {
       setStorageItem(STORAGE_KEYS.USERS_LIST, defaults);
       return defaults;
     }
+    // Dynamic enforcement: ensure only pegyirenyi@gmail.com has Admin role, others have Headteacher
+    let changed = false;
+    const coerced = list.map(user => {
+      const targetRole: UserRole = user.email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      if (user.role !== targetRole) {
+        changed = true;
+        return { ...user, role: targetRole };
+      }
+      return user;
+    });
+    if (changed) {
+      setStorageItem(STORAGE_KEYS.USERS_LIST, coerced);
+      return coerced;
+    }
     return list;
   }
 
   static login(email: string, role: UserRole): UserAccount {
     // Find or bootstrap user account (for offline fallback)
     const users = this.getRegisteredUsers();
-    let user = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.role === role);
-    if (!user) {
+    const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+    
+    let user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (user) {
+      if (user.role !== assignedRole) {
+        user.role = assignedRole;
+        setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+      }
+      // Fill missing licensing info if existing
+      let changed = false;
+      if (!user.licenseType) {
+        user.licenseType = 'trial';
+        changed = true;
+      }
+      if (!user.registeredOn) {
+        user.registeredOn = user.createdAt;
+        changed = true;
+      }
+      if (!user.requestCode) {
+        const prefix = user.email.split('@')[0].substring(0, 4).toUpperCase();
+        user.requestCode = `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+        changed = true;
+      }
+      if (changed) {
+        setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+      }
+    } else {
       // Create user
+      const createdNow = new Date().toISOString();
+      const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
       user = {
         uid: 'user_' + Math.random().toString(36).substring(2, 9),
         email: email,
         name: email.split('@')[0].toUpperCase(),
-        role: role,
-        createdAt: new Date().toISOString()
+        role: assignedRole,
+        createdAt: createdNow,
+        licenseType: 'trial',
+        registeredOn: createdNow,
+        requestCode: `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`
       };
       users.push(user);
       setStorageItem(STORAGE_KEYS.USERS_LIST, users);
@@ -361,16 +610,63 @@ export class DbController {
 
   static register(name: string, email: string, role: UserRole): UserAccount {
     const users = this.getRegisteredUsers();
+    const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+    const createdNow = new Date().toISOString();
+    const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
     const newUser: UserAccount = {
       uid: 'user_' + Math.random().toString(36).substring(2, 9),
       email: email,
       name: name,
-      role: role,
-      createdAt: new Date().toISOString()
+      role: assignedRole,
+      createdAt: createdNow,
+      licenseType: 'trial',
+      registeredOn: createdNow,
+      requestCode: `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`
     };
     users.push(newUser);
     setStorageItem(STORAGE_KEYS.USERS_LIST, users);
     return newUser;
+  }
+
+  static async updateUserLicense(
+    uid: string, 
+    licenseType: 'trial' | 'activated', 
+    lastActivatedOn: string, 
+    activationCode: string, 
+    requestCode: string
+  ): Promise<UserAccount> {
+    const users = this.getRegisteredUsers();
+    const idx = users.findIndex(u => u.uid === uid);
+    if (idx < 0) {
+      throw new Error("User account not found");
+    }
+    
+    const updated = {
+      ...users[idx],
+      licenseType,
+      registeredOn: users[idx].registeredOn || users[idx].createdAt || new Date().toISOString(),
+      lastActivatedOn,
+      activationCode,
+      requestCode
+    };
+    
+    users[idx] = updated;
+    setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+    
+    const currentUser = this.getCurrentUser();
+    if (currentUser && currentUser.uid === uid) {
+      setStorageItem(STORAGE_KEYS.USER, updated);
+    }
+    
+    if (isFirebaseActive && firestoreDb) {
+      try {
+        await setDoc(doc(firestoreDb, 'users', uid), updated);
+      } catch (err) {
+        console.warn("Could not sync license status to firestore: ", err);
+      }
+    }
+    
+    return updated;
   }
 
   static logout() {
@@ -394,13 +690,19 @@ export class DbController {
     try {
       const userCredential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
       const uid = userCredential.user.uid;
+      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      const createdNow = new Date().toISOString();
+      const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
       
       const profile: UserAccount = {
         uid,
         email,
         name,
-        role,
-        createdAt: new Date().toISOString()
+        role: assignedRole,
+        createdAt: createdNow,
+        licenseType: 'trial',
+        registeredOn: createdNow,
+        requestCode: `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`
       };
 
       // Store in users collection
@@ -429,32 +731,77 @@ export class DbController {
     try {
       const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, password);
       const uid = userCredential.user.uid;
+      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
 
       // Retrieve user profile data
       const userDoc = await getDoc(doc(firestoreDb, 'users', uid));
       if (userDoc.exists()) {
         const profile = userDoc.data() as UserAccount;
+        let profileChanged = false;
+        
+        if (profile.role !== assignedRole) {
+          profile.role = assignedRole;
+          profileChanged = true;
+        }
+        if (!profile.licenseType) {
+          profile.licenseType = 'trial';
+          profileChanged = true;
+        }
+        if (!profile.registeredOn) {
+          profile.registeredOn = profile.createdAt || new Date().toISOString();
+          profileChanged = true;
+        }
+        if (!profile.requestCode) {
+          const prefix = profile.email.split('@')[0].substring(0, 4).toUpperCase();
+          profile.requestCode = `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+          profileChanged = true;
+        }
+        
+        if (profileChanged) {
+          await setDoc(doc(firestoreDb, 'users', uid), profile);
+        }
+        
         setStorageItem(STORAGE_KEYS.USER, profile);
         
         const users = this.getRegisteredUsers();
-        if (!users.some(u => u.uid === uid)) {
+        const existingIdx = users.findIndex(u => u.uid === uid);
+        if (existingIdx >= 0) {
+          users[existingIdx] = profile;
+        } else {
           users.push(profile);
-          setStorageItem(STORAGE_KEYS.USERS_LIST, users);
         }
+        setStorageItem(STORAGE_KEYS.USERS_LIST, users);
         return profile;
       } else {
         // Create user profile document if missing
+        const createdNow = new Date().toISOString();
+        const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
         const profile: UserAccount = {
           uid,
           email,
           name: email.split('@')[0].toUpperCase(),
-          role: 'Headteacher', // Default fallback
-          createdAt: new Date().toISOString()
+          role: assignedRole,
+          createdAt: createdNow,
+          licenseType: 'trial',
+          registeredOn: createdNow,
+          requestCode: `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`
         };
         await setDoc(doc(firestoreDb, 'users', uid), profile);
         setStorageItem(STORAGE_KEYS.USER, profile);
         return profile;
       }
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  // Real full-stack Firebase sendPasswordResetEmail method
+  static async firebaseSendPasswordResetEmail(email: string): Promise<void> {
+    if (!isFirebaseActive || !firebaseAuth) {
+      throw new Error("Firebase Authentication is offline. Please verify config or use Local bypass mode.");
+    }
+    try {
+      await sendPasswordResetEmail(firebaseAuth, email);
     } catch (e) {
       throw e;
     }
@@ -472,19 +819,99 @@ export class DbController {
     try {
       const result = await signInWithPopup(firebaseAuth, provider);
       const user = result.user;
+      const email = user.email || '';
+      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
       
       // Check if user profile already exists in Firestore
       const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
       if (userDocSnapshot.exists()) {
         const profile = userDocSnapshot.data() as UserAccount;
+        if (profile.role !== assignedRole) {
+          profile.role = assignedRole;
+          await setDoc(doc(firestoreDb, 'users', user.uid), profile);
+        }
         setStorageItem(STORAGE_KEYS.USER, profile);
         return { user: profile, isNew: false };
       } else {
         const tempProfile: UserAccount = {
           uid: user.uid,
-          email: user.email || '',
-          name: user.displayName || user.email?.split('@')[0] || 'Google User',
-          role: 'Headteacher', // placeholder, will confirm in UI
+          email: email,
+          name: user.displayName || email.split('@')[0] || 'Google User',
+          role: assignedRole,
+          createdAt: new Date().toISOString()
+        };
+        return { user: tempProfile, isNew: true };
+      }
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  // Real full-stack Firebase Microsoft Login method
+  static async firebaseMicrosoftLogin(): Promise<{ user: UserAccount; isNew: boolean }> {
+    if (!isFirebaseActive || !firebaseAuth || !firestoreDb) {
+      throw new Error("Firebase is offline. Microsoft sign in requires an active Firebase instance.");
+    }
+
+    try {
+      const provider = new OAuthProvider('microsoft.com');
+      const result = await signInWithPopup(firebaseAuth, provider);
+      const user = result.user;
+      const email = user.email || '';
+      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      
+      const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
+      if (userDocSnapshot.exists()) {
+        const profile = userDocSnapshot.data() as UserAccount;
+        if (profile.role !== assignedRole) {
+          profile.role = assignedRole;
+          await setDoc(doc(firestoreDb, 'users', user.uid), profile);
+        }
+        setStorageItem(STORAGE_KEYS.USER, profile);
+        return { user: profile, isNew: false };
+      } else {
+        const tempProfile: UserAccount = {
+          uid: user.uid,
+          email: email,
+          name: user.displayName || email.split('@')[0] || 'Microsoft User',
+          role: assignedRole,
+          createdAt: new Date().toISOString()
+        };
+        return { user: tempProfile, isNew: true };
+      }
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  // Real full-stack Firebase Apple Login method
+  static async firebaseAppleLogin(): Promise<{ user: UserAccount; isNew: boolean }> {
+    if (!isFirebaseActive || !firebaseAuth || !firestoreDb) {
+      throw new Error("Firebase is offline. Apple sign in requires an active Firebase instance.");
+    }
+
+    try {
+      const provider = new OAuthProvider('apple.com');
+      const result = await signInWithPopup(firebaseAuth, provider);
+      const user = result.user;
+      const email = user.email || '';
+      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      
+      const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
+      if (userDocSnapshot.exists()) {
+        const profile = userDocSnapshot.data() as UserAccount;
+        if (profile.role !== assignedRole) {
+          profile.role = assignedRole;
+          await setDoc(doc(firestoreDb, 'users', user.uid), profile);
+        }
+        setStorageItem(STORAGE_KEYS.USER, profile);
+        return { user: profile, isNew: false };
+      } else {
+        const tempProfile: UserAccount = {
+          uid: user.uid,
+          email: email,
+          name: user.displayName || email.split('@')[0] || 'Apple User',
+          role: assignedRole,
           createdAt: new Date().toISOString()
         };
         return { user: tempProfile, isNew: true };
@@ -496,16 +923,34 @@ export class DbController {
 
   // Create or confirm Google User Profile
   static async saveGoogleProfile(profile: UserAccount): Promise<UserAccount> {
+    const assignedRole: UserRole = profile.email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+    const createdNow = profile.createdAt || new Date().toISOString();
+    const prefix = profile.email.split('@')[0].substring(0, 4).toUpperCase();
+    const updatedProfile = {
+      ...profile,
+      role: assignedRole,
+      licenseType: profile.licenseType || 'trial',
+      registeredOn: profile.registeredOn || createdNow,
+      requestCode: profile.requestCode || `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`
+    };
     if (isFirebaseActive && firestoreDb) {
-      await setDoc(doc(firestoreDb, 'users', profile.uid), profile);
+      try {
+        await setDoc(doc(firestoreDb, 'users', updatedProfile.uid), updatedProfile);
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `users/${updatedProfile.uid}`);
+        throw e;
+      }
     }
-    setStorageItem(STORAGE_KEYS.USER, profile);
+    setStorageItem(STORAGE_KEYS.USER, updatedProfile);
     const users = this.getRegisteredUsers();
-    if (!users.some(u => u.uid === profile.uid)) {
-      users.push(profile);
-      setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+    const existingIdx = users.findIndex(u => u.uid === updatedProfile.uid);
+    if (existingIdx >= 0) {
+      users[existingIdx] = updatedProfile;
+    } else {
+      users.push(updatedProfile);
     }
-    return profile;
+    setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+    return updatedProfile;
   }
 
   // Retrieve user profile data by UID directly
@@ -517,7 +962,8 @@ export class DbController {
         return userDoc.data() as UserAccount;
       }
     } catch (e) {
-      console.error("Error in getFirebaseUserProfile:", e);
+      handleFirestoreError(e, OperationType.GET, `users/${uid}`);
+      throw e;
     }
     return null;
   }
@@ -533,7 +979,13 @@ export class DbController {
       console.log("Beginning full database sync from Firestore...");
       
       // 1. School Profile Info
-      const schoolsSnap = await getDocs(collection(firestoreDb, 'schools'));
+      let schoolsSnap;
+      try {
+        schoolsSnap = await getDocs(collection(firestoreDb, 'schools'));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.LIST, 'schools');
+        throw e;
+      }
       if (!schoolsSnap.empty) {
         const schoolDoc = schoolsSnap.docs[0];
         if (schoolDoc) {
@@ -542,33 +994,82 @@ export class DbController {
       }
 
       // 2. Students
-      const studentsSnap = await getDocs(collection(firestoreDb, 'students'));
+      let studentsSnap;
+      try {
+        studentsSnap = await getDocs(collection(firestoreDb, 'students'));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.LIST, 'students');
+        throw e;
+      }
       const studentsList = studentsSnap.docs.map(d => d.data() as Student);
       setStorageItem(STORAGE_KEYS.STUDENTS, studentsList);
 
       // 3. Teachers
-      const teachersSnap = await getDocs(collection(firestoreDb, 'teachers'));
+      let teachersSnap;
+      try {
+        teachersSnap = await getDocs(collection(firestoreDb, 'teachers'));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.LIST, 'teachers');
+        throw e;
+      }
       const teachersList = teachersSnap.docs.map(d => d.data() as Teacher);
       setStorageItem(STORAGE_KEYS.TEACHERS, teachersList);
 
       // 4. Attendance Registers
-      const attendanceSnap = await getDocs(collection(firestoreDb, 'attendance'));
+      let attendanceSnap;
+      try {
+        attendanceSnap = await getDocs(collection(firestoreDb, 'attendance'));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.LIST, 'attendance');
+        throw e;
+      }
       const attendanceList = attendanceSnap.docs.map(d => d.data() as AttendanceRecord);
       setStorageItem(STORAGE_KEYS.ATTENDANCE, attendanceList);
 
       // 5. Assessments Registers
-      const assessmentsSnap = await getDocs(collection(firestoreDb, 'assessments'));
+      let assessmentsSnap;
+      try {
+        assessmentsSnap = await getDocs(collection(firestoreDb, 'assessments'));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.LIST, 'assessments');
+        throw e;
+      }
       const assessmentsList = assessmentsSnap.docs.map(d => d.data() as StudentAssessment);
       setStorageItem(STORAGE_KEYS.ASSESSMENTS, assessmentsList);
 
       // 6. Fees Bills
-      const feesSnap = await getDocs(collection(firestoreDb, 'fees'));
+      let feesSnap;
+      try {
+        feesSnap = await getDocs(collection(firestoreDb, 'fees'));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.LIST, 'fees');
+        throw e;
+      }
       const feesList = feesSnap.docs.map(d => d.data() as StudentFeeBill);
       setStorageItem(STORAGE_KEYS.FEES, feesList);
 
+      // 7. Academic Calendar Settings
+      try {
+        const settingsSnap = await getDoc(doc(firestoreDb, 'settings', 'academic_calendar'));
+        if (settingsSnap.exists()) {
+          setStorageItem(STORAGE_KEYS.CALENDAR, settingsSnap.data() as AcademicCalendarConfig);
+        }
+      } catch (e) {
+        console.warn("Could not sync academic calendar settings:", e);
+      }
+
+      // 8. EMIS Reports (GES aligned)
+      try {
+        const emisSnap = await getDocs(collection(firestoreDb, 'emis'));
+        const emisList = emisSnap.docs.map(d => d.data() as EmisData);
+        setStorageItem(STORAGE_KEYS.EMIS, emisList);
+      } catch (e) {
+        console.warn("Could not sync EMIS reports:", e);
+      }
+
       console.log("Database sync from Firestore successfully synced.");
     } catch (e) {
-      console.error("Database sync from Firestore aborted:", e);
+      console.warn("Database sync from Firestore aborted (running in offline LocalStorage backup mode):", e);
     }
   }
 
@@ -582,6 +1083,49 @@ export class DbController {
   static saveSchoolInfo(info: SchoolInfo): void {
     setStorageItem(STORAGE_KEYS.SCHOOL, info);
     this.performFirestoreWrite('schools', info.id, 'set', info);
+  }
+
+  // -------------------------
+  // ACADEMIC CALENDAR MANAGEMENT
+  // -------------------------
+  static getAcademicCalendar(): AcademicCalendarConfig {
+    return getStorageItem<AcademicCalendarConfig>(STORAGE_KEYS.CALENDAR, DEFAULT_CALENDAR);
+  }
+
+  static saveAcademicCalendar(calendar: AcademicCalendarConfig): void {
+    setStorageItem(STORAGE_KEYS.CALENDAR, calendar);
+    this.performFirestoreWrite('settings', 'academic_calendar', 'set', calendar);
+  }
+
+  // -------------------------
+  // EMIS DATA MANAGEMENT (Ghana Education Service aligned)
+  // -------------------------
+  static getEmisReports(): EmisData[] {
+    return getStorageItem<EmisData[]>(STORAGE_KEYS.EMIS, []);
+  }
+
+  static getEmisReportByYear(year: AcademicYearType): EmisData | null {
+    const list = this.getEmisReports();
+    return list.find(r => r.academicYear === year) || null;
+  }
+
+  static saveEmisReport(report: EmisData): void {
+    const list = this.getEmisReports();
+    const idx = list.findIndex(r => r.academicYear === report.academicYear);
+    if (idx >= 0) {
+      list[idx] = report;
+    } else {
+      list.push(report);
+    }
+    setStorageItem(STORAGE_KEYS.EMIS, list);
+    this.performFirestoreWrite('emis', report.id, 'set', report);
+  }
+
+  static deleteEmisReport(year: AcademicYearType): void {
+    const list = this.getEmisReports();
+    const filtered = list.filter(r => r.academicYear !== year);
+    setStorageItem(STORAGE_KEYS.EMIS, filtered);
+    this.performFirestoreWrite('emis', year, 'delete');
   }
 
   // -------------------------
@@ -667,7 +1211,7 @@ export class DbController {
           studentId: student.id,
           studentName: `${student.firstName} ${student.middleName ? student.middleName + ' ' : ''}${student.lastName}`,
           class: className,
-          status: 'Present' // Default status
+          status: 'Unmarked' // Default status
         };
       }
     });
@@ -702,6 +1246,65 @@ export class DbController {
       absent,
       totalMarked: classRecords.length
     };
+  }
+
+  static getStudentAttendanceStats(studentId: string) {
+    const records = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+    const studentRecords = records.filter(r => r.studentId === studentId);
+    
+    const present = studentRecords.filter(r => r.status === 'Present').length;
+    const absent = studentRecords.filter(r => r.status === 'Absent').length;
+    const schoolOpen = present + absent;
+    
+    return {
+      present,
+      schoolOpen
+    };
+  }
+
+  // -------------------------
+  // STAFF ATTENDANCE MANAGEMENT
+  // -------------------------
+  static getStaffAttendance(date: string): StaffAttendanceRecord[] {
+    const list = getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+    const teachers = this.getTeachers();
+
+    return teachers.map(teacher => {
+      const idKey = `${date}_${teacher.id}`;
+      const existing = list.find(r => r.id === idKey);
+      if (existing) {
+        return existing;
+      } else {
+        return {
+          id: idKey,
+          date,
+          teacherId: teacher.id,
+          teacherName: `${teacher.firstName} ${teacher.middleName ? teacher.middleName + ' ' : ''}${teacher.lastName}`,
+          status: 'Unmarked',
+          arrivalTime: '',
+          departureTime: '',
+          remarks: ''
+        };
+      }
+    });
+  }
+
+  static saveStaffAttendanceBatch(records: StaffAttendanceRecord[]): void {
+    const list = getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+    records.forEach(rec => {
+      const idx = list.findIndex(r => r.id === rec.id);
+      if (idx >= 0) {
+        list[idx] = rec;
+      } else {
+        list.push(rec);
+      }
+      this.performFirestoreWrite('staff_attendance', rec.id, 'set', rec);
+    });
+    setStorageItem(STORAGE_KEYS.STAFF_ATTENDANCE, list);
+  }
+
+  static getAllStaffAttendance(): StaffAttendanceRecord[] {
+    return getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
   }
 
   // -------------------------
@@ -743,7 +1346,11 @@ export class DbController {
         found.studentName = `${st.firstName} ${st.middleName ? st.middleName + ' ' : ''}${st.lastName}`;
         return found;
       } else {
-        // Construct clean template
+        // Empty default template with no automatically input/pre-populated scores or values
+        const getSimScore = (type: 'ex1' | 'ex2' | 'ex3' | 'ex4' | 't1' | 't2' | 'proj' | 'group' | 'exam') => {
+          return 0;
+        };
+
         const emptyAssessment: StudentAssessment = {
           id: compoundId,
           studentId: st.id,
@@ -752,19 +1359,19 @@ export class DbController {
           academicYear,
           term,
           subject,
-          exercises: [0, 0, 0, 0], // 4 exercises (0-10)
-          tests: [0, 0], // 2 tests (0-20)
-          projectWork: 0, // 0-10
-          groupWork: 0, // 0-10
+          exercises: [getSimScore('ex1'), getSimScore('ex2'), getSimScore('ex3'), getSimScore('ex4')],
+          tests: [getSimScore('t1'), getSimScore('t2')],
+          projectWork: getSimScore('proj'),
+          groupWork: getSimScore('group'),
           classScoreTotal: 0,
           classScore50: 0,
-          examScore100: 0,
+          examScore100: getSimScore('exam'),
           examScore50: 0,
           totalScore: 0,
           gradeLevel: 'L5',
           remarks: 'Emerging'
         };
-        return emptyAssessment;
+        return this.calculateScoreDetails(emptyAssessment);
       }
     });
 
@@ -882,9 +1489,12 @@ export class DbController {
     if (!student) return null;
 
     // Find all assessment entries for this student, year, and term
-    const studentGrades = assessments.filter(
+    const explicitGrades = assessments.filter(
       a => a.studentId === studentId && a.academicYear === academicYear && a.term === term
     );
+
+    // We only use explicit assessment grades entered with data
+    const studentGrades = explicitGrades;
 
     // Calculate general average score
     const totalScoreSum = studentGrades.reduce((sum, item) => sum + item.totalScore, 0);
@@ -892,11 +1502,42 @@ export class DbController {
       ? parseFloat((totalScoreSum / studentGrades.length).toFixed(2)) 
       : 0;
 
+    const attStats = this.getStudentAttendanceStats(studentId);
+
+    // Compute dynamic rank inside the student's primary academic class
+    const targetClass = student.class;
+    const classStudents = this.getStudents().filter(s => s.class === targetClass);
+    const rankings = classStudents.map(cs => {
+      const gList = assessments.filter(
+        a => a.studentId === cs.id && a.academicYear === academicYear && a.term === term
+      );
+      const sum = gList.reduce((acc, item) => acc + item.totalScore, 0);
+      const avg = gList.length > 0 ? parseFloat((sum / gList.length).toFixed(2)) : 0;
+      return {
+        studentId: cs.id,
+        average: avg,
+        hasGrades: gList.length > 0
+      };
+    });
+
+    const studentMetric = rankings.find(r => r.studentId === studentId);
+    let classRankStr = "N/A";
+    let gradedClassCount = 0;
+    if (studentMetric && studentMetric.hasGrades) {
+      const strictlyHigherCount = rankings.filter(r => r.hasGrades && r.average > studentMetric.average).length;
+      gradedClassCount = rankings.filter(r => r.hasGrades).length;
+      classRankStr = `${strictlyHigherCount + 1} of ${gradedClassCount}`;
+    }
+
     return {
       student,
       grades: studentGrades,
       averageScore,
-      totalSubjects: studentGrades.length
+      totalSubjects: studentGrades.length,
+      attendancePresent: attStats.present,
+      schoolOpenDays: attStats.schoolOpen,
+      classRank: classRankStr,
+      gradedCount: gradedClassCount
     };
   }
 
@@ -927,12 +1568,76 @@ export class DbController {
   }
 
   static clearAllStudentFeeBills(): void {
+    const bills = this.getStudentFeeBills();
+    bills.forEach(b => {
+      if (b.id) this.performFirestoreWrite('fees', b.id, 'delete');
+    });
     setStorageItem(STORAGE_KEYS.FEES, []);
-    
-    // Deleting from Firebase if accessible
+    localStorage.removeItem('school_fees_bills');
+  }
+
+  // -------------------------
+  // PAYSTACK TRANSACTIONS MANAGEMENT
+  // -------------------------
+  static async getPaystackPaymentsAsync(): Promise<PaystackPayment[]> {
     if (isFirebaseActive && firestoreDb) {
-      // Best-effort local cleanup, for mass-delete they can clear local.
+      try {
+        const qSnap = await getDocs(collection(firestoreDb, 'paystack_payments'));
+        const list = qSnap.docs.map(doc => {
+          const d = doc.data();
+          return {
+            id: d.id || doc.id,
+            reference: d.reference || d.id || doc.id,
+            studentId: d.studentId || '',
+            studentName: d.studentName || '',
+            billId: d.billId || '',
+            component: d.component || 'School Fees',
+            amount: typeof d.amount === 'number' ? d.amount : (d.amount?.doubleValue || Number(d.amount) || 0),
+            academicYear: d.academicYear || '',
+            term: d.term || '',
+            status: d.status || 'ongoing',
+            paidAt: d.paidAt || '',
+            createdAt: d.createdAt || ''
+          } as PaystackPayment;
+        });
+        setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, list);
+        return list;
+      } catch (error) {
+        console.warn("Could not fetch Paystack logs from Firestore:", error);
+      }
     }
+    return getStorageItem<PaystackPayment[]>(STORAGE_KEYS.PAYSTACK_LOGS, []);
+  }
+
+  static getLocalPaystackPayments(): PaystackPayment[] {
+    return getStorageItem<PaystackPayment[]>(STORAGE_KEYS.PAYSTACK_LOGS, []);
+  }
+
+  static savePaystackPayment(payment: PaystackPayment): void {
+    const list = this.getLocalPaystackPayments();
+    const idx = list.findIndex(p => p.id === payment.id);
+    if (idx >= 0) {
+      list[idx] = payment;
+    } else {
+      list.push(payment);
+    }
+    setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, list);
+    this.performFirestoreWrite('paystack_payments', payment.id, 'set', payment);
+  }
+
+  static deletePaystackPayment(paymentId: string): void {
+    const list = this.getLocalPaystackPayments();
+    const filtered = list.filter(p => p.id !== paymentId);
+    setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, filtered);
+    this.performFirestoreWrite('paystack_payments', paymentId, 'delete');
+  }
+
+  static clearAllPaystackPayments(): void {
+    const payments = this.getLocalPaystackPayments();
+    payments.forEach(p => {
+      if (p.id) this.performFirestoreWrite('paystack_payments', p.id, 'delete');
+    });
+    setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, []);
   }
 
   // System settings customization
@@ -941,7 +1646,7 @@ export class DbController {
       theme: 'Classic' as ThemeType,
       autoSave: true,
       term: 'Term 1' as TermType,
-      academicYear: '2025/2026' as AcademicYearType,
+      academicYear: '2026/2027' as AcademicYearType,
       schoolSystemName: 'GEETECH SMS & ASSESSMENT CENTER'
     });
   }
@@ -964,6 +1669,8 @@ export class DbController {
       assessments: getStorageItem<StudentAssessment[]>(STORAGE_KEYS.ASSESSMENTS, []),
       fees: getStorageItem<StudentFeeBill[]>(STORAGE_KEYS.FEES, []),
       settings: getStorageItem<any>(STORAGE_KEYS.SETTINGS, null),
+      calendar: getStorageItem<any>(STORAGE_KEYS.CALENDAR, null),
+      emis_reports: getStorageItem<EmisData[]>(STORAGE_KEYS.EMIS, []),
       users_list: getStorageItem<UserAccount[]>(STORAGE_KEYS.USERS_LIST, [])
     };
     return JSON.stringify(backup, null, 2);
@@ -982,9 +1689,10 @@ export class DbController {
       const hasAttendance = Array.isArray(data.attendance);
       const hasAssessments = Array.isArray(data.assessments);
       const hasFees = Array.isArray(data.fees);
+      const hasEmis = Array.isArray(data.emis_reports);
       const hasSchool = typeof data.school_info === 'object' && data.school_info !== null;
 
-      if (!hasStudents && !hasTeachers && !hasAttendance && !hasAssessments && !hasFees && !hasSchool) {
+      if (!hasStudents && !hasTeachers && !hasAttendance && !hasAssessments && !hasFees && !hasSchool && !hasEmis) {
         throw new Error("The selected file is not a valid backup of this application system database.");
       }
 
@@ -995,11 +1703,16 @@ export class DbController {
       if (hasAttendance) setStorageItem(STORAGE_KEYS.ATTENDANCE, data.attendance);
       if (hasAssessments) setStorageItem(STORAGE_KEYS.ASSESSMENTS, data.assessments);
       if (hasFees) setStorageItem(STORAGE_KEYS.FEES, data.fees);
+      if (hasEmis) setStorageItem(STORAGE_KEYS.EMIS, data.emis_reports);
       if (data.settings) setStorageItem(STORAGE_KEYS.SETTINGS, data.settings);
+      if (data.calendar) setStorageItem(STORAGE_KEYS.CALENDAR, data.calendar);
       if (Array.isArray(data.users_list)) setStorageItem(STORAGE_KEYS.USERS_LIST, data.users_list);
 
       // Perform selective background replication to Firebase if active
       if (isFirebaseActive && firestoreDb) {
+        if (data.calendar) {
+          setDoc(doc(firestoreDb, 'settings', 'academic_calendar'), data.calendar).catch(e => console.error("Firebase Sync settings error:", e));
+        }
         if (hasSchool && data.school_info.id) {
           setDoc(doc(firestoreDb, 'schools', data.school_info.id), data.school_info).catch(e => console.error("Firebase Sync error:", e));
         }
@@ -1033,6 +1746,13 @@ export class DbController {
             }
           });
         }
+        if (hasEmis) {
+          data.emis_reports.forEach((e: EmisData) => {
+            if (e.id) {
+              setDoc(doc(firestoreDb, 'emis', e.id), e).catch(err => console.error("Firebase Sync EMIS error:", err));
+            }
+          });
+        }
       }
 
       return { success: true };
@@ -1041,15 +1761,118 @@ export class DbController {
     }
   }
 
+  static clearAllStudents(): void {
+    const students = this.getStudents();
+    students.forEach(s => {
+      this.performFirestoreWrite('students', s.id, 'delete');
+    });
+    setStorageItem(STORAGE_KEYS.STUDENTS, []);
+    localStorage.removeItem('school_students');
+  }
+
+  static clearAllTeachers(): void {
+    const teachers = this.getTeachers();
+    teachers.forEach(t => {
+      this.performFirestoreWrite('teachers', t.id, 'delete');
+    });
+    setStorageItem(STORAGE_KEYS.TEACHERS, []);
+    localStorage.removeItem('school_teachers');
+  }
+
+  static clearAllAssessments(): void {
+    const assessments = this.getAssessments();
+    assessments.forEach(a => {
+      if (a.id) this.performFirestoreWrite('assessments', a.id, 'delete');
+    });
+    setStorageItem(STORAGE_KEYS.ASSESSMENTS, []);
+    localStorage.removeItem('school_assessments');
+  }
+
   static clearAllData(): void {
+    // 1. If Firebase is active, cleanly clear active Firestore records
+    if (isFirebaseActive && firestoreDb) {
+      try {
+        const students = this.getStudents();
+        students.forEach(s => {
+          deleteDoc(doc(firestoreDb, 'students', s.id)).catch(e => console.error(e));
+        });
+
+        const teachers = this.getTeachers();
+        teachers.forEach(t => {
+          deleteDoc(doc(firestoreDb, 'teachers', t.id)).catch(e => console.error(e));
+        });
+
+        const attendance = getStorageItem<any[]>(STORAGE_KEYS.ATTENDANCE, []);
+        attendance.forEach(a => {
+          if (a.id) deleteDoc(doc(firestoreDb, 'attendance', a.id)).catch(e => console.error(e));
+        });
+
+        const staffAttendance = getStorageItem<any[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+        staffAttendance.forEach(sa => {
+          if (sa.id) deleteDoc(doc(firestoreDb, 'staff_attendance', sa.id)).catch(e => console.error(e));
+        });
+
+        const assessments = getStorageItem<any[]>(STORAGE_KEYS.ASSESSMENTS, []);
+        assessments.forEach(ass => {
+          if (ass.id) deleteDoc(doc(firestoreDb, 'assessments', ass.id)).catch(e => console.error(e));
+        });
+
+        const fees = getStorageItem<any[]>(STORAGE_KEYS.FEES, []);
+        fees.forEach(f => {
+          if (f.id) deleteDoc(doc(firestoreDb, 'fees', f.id)).catch(e => console.error(e));
+        });
+
+        const emis = getStorageItem<any[]>(STORAGE_KEYS.EMIS, []);
+        emis.forEach(e => {
+          if (e.id) deleteDoc(doc(firestoreDb, 'emis', e.id)).catch(err => console.error(err));
+        });
+
+        // Format/clear school doc on firestore as well
+        const defaultSchool: SchoolInfo = {
+          id: 'school_default',
+          name: '',
+          motto: '',
+          logoUrl: '',
+          schoolNumber: '',
+          emisCode: '',
+          gpsAddress: '',
+          schoolType: 'Public',
+          headteacherName: '',
+          telephone: '',
+          email: '',
+          qualifications: '',
+          highestAcademicQualifications: '',
+          district: '',
+          circuit: '',
+          reopeningDate: '',
+          signatureUrl: '',
+          stampUrl: ''
+        };
+        setDoc(doc(firestoreDb, 'schools', 'school_default'), defaultSchool).catch(e => console.error(e));
+      } catch (err) {
+        console.error("Error clearing Cloud Firestore data during format:", err);
+      }
+    }
+
+    // 2. Erase all cache & registry records from LocalStorage
     localStorage.removeItem(STORAGE_KEYS.USER);
     localStorage.removeItem(STORAGE_KEYS.USERS_LIST);
     localStorage.removeItem(STORAGE_KEYS.STUDENTS);
     localStorage.removeItem(STORAGE_KEYS.TEACHERS);
     localStorage.removeItem(STORAGE_KEYS.ATTENDANCE);
+    localStorage.removeItem(STORAGE_KEYS.STAFF_ATTENDANCE);
     localStorage.removeItem(STORAGE_KEYS.ASSESSMENTS);
     localStorage.removeItem(STORAGE_KEYS.SETTINGS);
     localStorage.removeItem(STORAGE_KEYS.FEES);
+    localStorage.removeItem(STORAGE_KEYS.EMIS);
+    localStorage.removeItem(STORAGE_KEYS.CALENDAR);
+    localStorage.removeItem('sms_offline_queue');
+
+    // Make sure we purge legacy keys that some old client tab code might read/write
+    localStorage.removeItem('school_students');
+    localStorage.removeItem('school_teachers');
+    localStorage.removeItem('school_assessments');
+    localStorage.removeItem('school_fees_bills');
 
     // Write a fully blank SchoolInfo template so that any new login starts with completely blank input data
     const blankSchool: SchoolInfo = {
@@ -1067,7 +1890,10 @@ export class DbController {
       qualifications: '',
       highestAcademicQualifications: '',
       district: '',
-      circuit: ''
+      circuit: '',
+      reopeningDate: '',
+      signatureUrl: '',
+      stampUrl: ''
     };
     localStorage.setItem(STORAGE_KEYS.SCHOOL, JSON.stringify(blankSchool));
   }

@@ -153,6 +153,25 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["id", "studentId", "class", "academicYear", "term"]
+    },
+    "PaystackPayment": {
+      "title": "PaystackPayment",
+      "description": "Log of successful online transactions processed via the Paystack gateway",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "reference": { "type": "string" },
+        "studentId": { "type": "string" },
+        "billId": { "type": "string" },
+        "component": { "type": "string" },
+        "amount": { "type": "number" },
+        "academicYear": { "type": "string" },
+        "term": { "type": "string" },
+        "status": { "type": "string" },
+        "paidAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "reference", "amount", "status"]
     }
   },
   "firestore": {
@@ -183,6 +202,10 @@
     "/fees/{feeId}": {
       "schema": "StudentFeeBill",
       "description": "Student fee bills and historical payment installments details"
+    },
+    "/paystack_payments/{paymentId}": {
+      "schema": "PaystackPayment",
+      "description": "Log of verified webhook and client transactions initiated via Paystack"
     }
   }
 }
