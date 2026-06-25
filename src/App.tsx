@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent, useMemo } from 'react';
+import { useState, useEffect, FormEvent, useMemo, ReactNode } from 'react';
 import { 
   SchoolInfo, Student, Teacher, UserAccount, UserRole, ThemeType,
   AcademicYearType, TermType, WebAuthnCredential
@@ -128,7 +128,7 @@ export default function App() {
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [regRole, setRegRole] = useState<UserRole>('Headteacher');
-  const [authError, setAuthError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<ReactNode | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [googleNewUser, setGoogleNewUser] = useState<UserAccount | null>(null);
   const [googleSelectedRole, setGoogleSelectedRole] = useState<UserRole>('Headteacher');
@@ -583,6 +583,37 @@ export default function App() {
     }
   };
 
+  const renderUnauthorizedDomainError = () => {
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'your-domain.run.app';
+    return (
+      <div className="space-y-3 mt-1 text-xs text-slate-300 font-sans">
+        <p className="font-semibold text-amber-400">
+          ⚠️ Firebase Unauthorized Domain Error Detected!
+        </p>
+        <p>
+          Firebase blocks third-party popups on domains that have not been explicitly authorized in your Firebase console.
+        </p>
+        <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg font-mono text-[11px] text-indigo-300 select-all leading-tight break-all">
+          {hostname}
+        </div>
+        <div className="space-y-1.5 pl-4 list-decimal text-slate-400">
+          <div>
+            1. Visit the <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline font-bold">Firebase Console</a>.
+          </div>
+          <div>
+            2. Go to <strong className="text-slate-200">Authentication</strong> &gt; <strong className="text-slate-200">Settings</strong> &gt; <strong className="text-slate-200">Authorized domains</strong>.
+          </div>
+          <div>
+            3. Click <strong className="text-slate-200">Add Domain</strong> and copy-paste the domain above.
+          </div>
+        </div>
+        <p className="text-[11px] text-amber-500/90 font-medium">
+          💡 Quick Alternative: Sign up or Sign in using the <strong className="text-amber-400">Standard Email & Password</strong> form above, which works instantly without any domain authorization!
+        </p>
+      </div>
+    );
+  };
+
   const handleGoogleLogin = async () => {
     setAuthError(null);
     setAuthLoading(true);
@@ -600,10 +631,14 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
-      setAuthError(
-        err.message || 
-        "Sign in with Google cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
-      );
+      if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
+        setAuthError(renderUnauthorizedDomainError());
+      } else {
+        setAuthError(
+          err.message || 
+          "Sign in with Google cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
+        );
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -626,10 +661,14 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
-      setAuthError(
-        err.message || 
-        "Sign in with Microsoft cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
-      );
+      if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
+        setAuthError(renderUnauthorizedDomainError());
+      } else {
+        setAuthError(
+          err.message || 
+          "Sign in with Microsoft cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
+        );
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -652,10 +691,14 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
-      setAuthError(
-        err.message || 
-        "Sign in with Apple cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
-      );
+      if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
+        setAuthError(renderUnauthorizedDomainError());
+      } else {
+        setAuthError(
+          err.message || 
+          "Sign in with Apple cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
+        );
+      }
     } finally {
       setAuthLoading(false);
     }
