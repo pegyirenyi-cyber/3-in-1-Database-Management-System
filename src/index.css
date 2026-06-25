@@ -232,7 +232,6 @@
 .theme-sophisticated-dark .border-blue-100,
 .theme-sophisticated-dark .border-emerald-100,
 .theme-sophisticated-dark .border-rose-100,
-.theme-sophisticated-dark .border-[#e2e8f0],
 .theme-sophisticated-dark .border-t,
 .theme-sophisticated-dark .border-b,
 .theme-sophisticated-dark .border-r,
@@ -409,7 +408,10 @@
   div:has(#assessment-roster-preview-landscape),
   div:has(#fee-receipt-print-area),
   div:has(#fee-ledger-print-area),
-  div:has(#fees-reminder-notice-canvas) {
+  div:has(#fees-reminder-notice-canvas),
+  div:has(#school-profile-print-area),
+  div:has(#school-profile-preview-card),
+  div:has(#student-id-card-print-area) {
     display: block !important;
     visibility: visible !important;
     opacity: 1 !important;
@@ -433,7 +435,13 @@
   #fee-ledger-print-area,
   #fee-ledger-print-area *,
   #fees-reminder-notice-canvas,
-  #fees-reminder-notice-canvas * {
+  #fees-reminder-notice-canvas *,
+  #school-profile-print-area,
+  #school-profile-print-area *,
+  #school-profile-preview-card,
+  #school-profile-preview-card *,
+  #student-id-card-print-area,
+  #student-id-card-print-area * {
     visibility: visible !important;
   }
 
@@ -443,7 +451,9 @@
   #assessment-roster-preview-landscape,
   #fee-receipt-print-area,
   #fee-ledger-print-area,
-  #fees-reminder-notice-canvas {
+  #fees-reminder-notice-canvas,
+  #school-profile-print-area,
+  #school-profile-preview-card {
     position: absolute !important;
     left: 0 !important;
     top: 0 !important;
@@ -457,6 +467,23 @@
     z-index: 999999 !important;
     page-break-after: avoid !important;
     page-break-inside: avoid !important;
+  }
+
+  #student-id-card-print-area {
+    position: absolute !important;
+    left: 50% !important;
+    top: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    width: 300px !important;
+    height: 460px !important;
+    box-shadow: none !important;
+    border: 1px solid #1e293b !important;
+    border-radius: 12px !important;
+    background: #ffffff !important;
+    page-break-after: avoid !important;
+    page-break-inside: avoid !important;
+    z-index: 999999 !important;
+    overflow: hidden !important;
   }
 
   .bulk-report-card-print-page {

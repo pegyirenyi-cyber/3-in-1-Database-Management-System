@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AttendanceRecord, ClassType, CLASSES, AttendanceStatus, StaffAttendanceRecord, StaffAttendanceStatus } from '../types';
+import { AttendanceRecord, ClassType, CLASSES, AttendanceStatus, StaffAttendanceRecord, StaffAttendanceStatus, UserRole } from '../types';
 import { DbController } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
-import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser, Eye, Clock, LogIn, LogOut, MessageSquare, Briefcase } from 'lucide-react';
+import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser, Eye, Clock, LogIn, LogOut, MessageSquare, Briefcase, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DefaultCrest } from './SchoolProfileTab';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
@@ -32,9 +32,16 @@ interface Props {
   theme: ThemeStyles;
   isAutoSave: boolean;
   onManualSave: () => void;
+  assignedClass?: ClassType | null;
+  userRole?: UserRole;
+  teacherPermissions?: {
+    canEditGrades?: boolean;
+    canApproveAttendance?: boolean;
+    canExportReports?: boolean;
+  } | null;
 }
 
-export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props) {
+export default function AttendanceTab({ theme, isAutoSave, onManualSave, assignedClass, userRole, teacherPermissions }: Props) {
   const schoolInfo = DbController.getSchoolInfo();
   const [printBlocked, setPrintBlocked] = useState(false);
   const [showPdfGuide, setShowPdfGuide] = useState(false);
@@ -52,8 +59,107 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
     // Default to current system date (2026-06-12 as per context)
     return '2026-06-12';
   });
-  const [selectedClass, setSelectedClass] = useState<ClassType>('Class 1');
-  const [attendanceView, setAttendanceView] = useState<'student' | 'staff'>('student');
+
+  const [termStartDate, setTermStartDate] = useState<string>(() => {
+    return localStorage.getItem('sms_term_start_date') || '2026-05-20';
+  });
+  const [termEndDate, setTermEndDate] = useState<string>(() => {
+    return localStorage.getItem('sms_term_end_date') || '2026-07-04';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('sms_term_start_date', termStartDate);
+  }, [termStartDate]);
+
+  useEffect(() => {
+    localStorage.setItem('sms_term_end_date', termEndDate);
+  }, [termEndDate]);
+
+  const allRangeDates = useMemo(() => {
+    const dates: { dateStr: string; dayNum: string; dayName: string; monthKey: string; monthName: string; isWeekend: boolean }[] = [];
+    const start = new Date(termStartDate);
+    const end = new Date(termEndDate);
+    
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) {
+      return [];
+    }
+    
+    const current = new Date(start);
+    // Limit to reasonable duration (e.g. 1 year max to prevent crashes)
+    let limit = 0;
+    while (current <= end && limit < 400) {
+      limit++;
+      const year = current.getFullYear();
+      const month = String(current.getMonth() + 1).padStart(2, '0');
+      const day = String(current.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
+      
+      const dayName = current.toLocaleDateString('en-US', { weekday: 'short' });
+      const dayNum = String(current.getDate());
+      const monthKey = `${year}-${month}`;
+      const monthName = current.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      const isWeekend = current.getDay() === 0 || current.getDay() === 6;
+      
+      dates.push({
+        dateStr,
+        dayNum,
+        dayName,
+        monthKey,
+        monthName,
+        isWeekend
+      });
+      
+      current.setDate(current.getDate() + 1);
+    }
+    return dates;
+  }, [termStartDate, termEndDate]);
+
+  const uniqueMonths = useMemo(() => {
+    const monthsMap = new Map<string, string>();
+    allRangeDates.forEach(d => {
+      monthsMap.set(d.monthKey, d.monthName);
+    });
+    return Array.from(monthsMap.entries()).map(([monthKey, monthName]) => ({
+      monthKey,
+      monthName
+    }));
+  }, [allRangeDates]);
+
+  const [activeMonthTab, setActiveMonthTab] = useState<string>('');
+
+  // Sync activeMonthTab to selectedDate's month if it changes
+  useEffect(() => {
+    if (selectedDate) {
+      const parts = selectedDate.split('-');
+      if (parts[0] && parts[1]) {
+        setActiveMonthTab(`${parts[0]}-${parts[1]}`);
+      }
+    }
+  }, [selectedDate]);
+
+  // Adjust selectedDate if it falls outside the active range
+  useEffect(() => {
+    if (allRangeDates.length > 0) {
+      const isWithinRange = allRangeDates.some(d => d.dateStr === selectedDate);
+      if (!isWithinRange) {
+        setSelectedDate(allRangeDates[0].dateStr);
+      }
+    }
+  }, [allRangeDates, selectedDate]);
+
+  const visibleDates = useMemo(() => {
+    return allRangeDates.filter(d => d.monthKey === activeMonthTab);
+  }, [allRangeDates, activeMonthTab]);
+  const [selectedClass, setSelectedClass] = useState<ClassType>(() => {
+    return userRole === 'Teacher' && assignedClass ? assignedClass : 'Basic 1';
+  });
+
+  useEffect(() => {
+    if (userRole === 'Teacher' && assignedClass) {
+      setSelectedClass(assignedClass);
+    }
+  }, [assignedClass, userRole]);
+  const [attendanceView, setAttendanceView] = useState<'student' | 'staff' | 'roster'>('student');
   const [attendanceSheet, setAttendanceSheet] = useState<AttendanceRecord[]>([]);
   const [staffAttendanceSheet, setStaffAttendanceSheet] = useState<StaffAttendanceRecord[]>([]);
   const [saveStatus, setSaveStatus] = useState<string>('');
@@ -113,6 +219,10 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
   }, [selectedDate, selectedClass, attendanceView]);
 
   const handleStatusChange = (studentId: string, newStatus: AttendanceStatus) => {
+    if (teacherPermissions?.canApproveAttendance === false) {
+      alert("Permission to approve/modify attendance has been suspended by the Headteacher.");
+      return;
+    }
     const updated = attendanceSheet.map(item => {
       if (item.studentId === studentId) {
         return { ...item, status: newStatus };
@@ -131,6 +241,10 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
   };
 
   const handleSaveAll = () => {
+    if (teacherPermissions?.canApproveAttendance === false) {
+      alert("Permission to approve/modify attendance has been suspended by the Headteacher.");
+      return;
+    }
     DbController.saveAttendanceBatch(attendanceSheet);
     onManualSave();
     setSaveStatus('Session saved successfully!');
@@ -138,6 +252,10 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
   };
 
   const markAllStatus = (status: AttendanceStatus) => {
+    if (teacherPermissions?.canApproveAttendance === false) {
+      alert("Permission to approve/modify attendance has been suspended by the Headteacher.");
+      return;
+    }
     const updated = attendanceSheet.map(item => ({ ...item, status }));
     setAttendanceSheet(updated);
 
@@ -333,8 +451,44 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
     }
   };
 
+  if (userRole === 'Teacher' && !assignedClass) {
+    return (
+      <div className="bg-amber-50/50 border border-amber-200 text-amber-800 p-8 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-12 shadow-sm">
+        <ShieldAlert size={48} className="text-amber-500 mx-auto animate-bounce" />
+        <h3 className="font-bold text-lg">No Class Level Assigned</h3>
+        <p className="text-sm text-amber-700 leading-relaxed">
+          You are authenticated as a school educator, but you have not yet been assigned to a specific class level by the Headteacher.
+        </p>
+        <p className="text-xs text-amber-600 font-mono">
+          Please contact your Headteacher to assign you to a specific class level (e.g. Basic 2 or Basic 8) in the "Teacher Profiles" directory.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 fade-in text-xs">
+      
+      {/* PERMISSION BANNER */}
+      {userRole === 'Teacher' && (teacherPermissions?.canApproveAttendance === false || teacherPermissions?.canExportReports === false) && (
+        <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-900 space-y-1.5 text-left shadow-sm">
+          <div className="flex items-center gap-2">
+            <ShieldAlert size={16} className="text-rose-500 animate-pulse" />
+            <span className="font-bold text-xs uppercase tracking-wider font-mono">Administrative Restriction Notice</span>
+          </div>
+          <p className="text-[11px] font-medium text-rose-800 leading-relaxed">
+            Your Headteacher has applied granular restrictions on your educator account:
+          </p>
+          <ul className="list-disc pl-5 text-[11px] text-rose-700 space-y-0.5 font-semibold">
+            {teacherPermissions?.canApproveAttendance === false && (
+              <li><strong>Attendance Privileges Suspended:</strong> You cannot modify, save, or mark daily student logs.</li>
+            )}
+            {teacherPermissions?.canExportReports === false && (
+              <li><strong>Exporting Privileges Suspended:</strong> Register printing and PDF downloading features are disabled.</li>
+            )}
+          </ul>
+        </div>
+      )}
       
       {/* Dynamic Navigation Mode Selector Switch (no-print) */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 no-print border-b border-slate-200 pb-4">
@@ -364,7 +518,154 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
           >
             <Clock size={14} /> Staff Attendance
           </button>
+          <button
+            onClick={() => setAttendanceView('roster')}
+            className={`px-4 py-2 font-black transition rounded-lg cursor-pointer text-xs flex items-center gap-1.5 ${
+              attendanceView === 'roster' ? `${theme.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-250'
+            }`}
+          >
+            <Printer size={14} /> Exportable Roster
+          </button>
         </div>
+      </div>
+
+      {/* Academic Term Date Range Selector & Month Horizontal Date Strip (no-print) */}
+      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs space-y-4 no-print">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-3 border-b border-slate-100">
+          <div className="space-y-1">
+            <span className="text-[10px] uppercase font-mono tracking-wider font-bold text-indigo-600 block">Navigation Helper</span>
+            <h3 className="text-xs font-black text-slate-900 tracking-tight flex items-center gap-1.5">
+              <CalendarDays className="text-indigo-600" size={16} />
+              Academic Term Date Range & Horizontal Register Selector
+            </h3>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Define the academic term boundaries. Select months and scroll horizontally to instantly mark or audit registers.
+            </p>
+          </div>
+
+          {/* Date range inputs */}
+          <div className="flex flex-wrap items-center gap-3 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-slate-400 font-bold">Term Start:</span>
+              <input 
+                type="date" 
+                value={termStartDate}
+                onChange={(e) => setTermStartDate(e.target.value)}
+                className="px-2 py-1 border border-slate-200 rounded-md bg-white font-mono font-bold text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="text-slate-300">to</div>
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-slate-400 font-bold">Term End:</span>
+              <input 
+                type="date" 
+                value={termEndDate}
+                onChange={(e) => setTermEndDate(e.target.value)}
+                className="px-2 py-1 border border-slate-200 rounded-md bg-white font-mono font-bold text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+            
+            <button
+              onClick={() => {
+                setTermStartDate('2026-05-20');
+                setTermEndDate('2026-07-04');
+              }}
+              className="text-[10px] px-2 py-1 font-bold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-md transition border border-indigo-100 bg-white cursor-pointer"
+              title="Reset to 20th May 2026 - 4th July 2026"
+            >
+              Reset Default
+            </button>
+          </div>
+        </div>
+
+        {/* Month Selector Tabs */}
+        {uniqueMonths.length > 0 ? (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] uppercase font-mono font-bold text-slate-400 mr-2">Select Month:</span>
+              {uniqueMonths.map(({ monthKey, monthName }) => (
+                <button
+                  key={monthKey}
+                  onClick={() => {
+                    setActiveMonthTab(monthKey);
+                    // Find first date of this month in range and select it
+                    const firstDateInMonth = allRangeDates.find(d => d.monthKey === monthKey);
+                    if (firstDateInMonth) {
+                      setSelectedDate(firstDateInMonth.dateStr);
+                    }
+                  }}
+                  className={`px-3 py-1 rounded-full font-bold transition text-[11px] cursor-pointer ${
+                    activeMonthTab === monthKey 
+                      ? 'bg-indigo-600 text-white shadow-xs' 
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {monthName}
+                </button>
+              ))}
+            </div>
+
+            {/* Horizontal Date Slider strip */}
+            <div className="relative group">
+              {/* Left Scroll Button */}
+              <button
+                onClick={() => {
+                  const el = document.getElementById('horizontal-date-slider-strip');
+                  if (el) el.scrollBy({ left: -160, behavior: 'smooth' });
+                }}
+                className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 bg-white/90 hover:bg-white rounded-full border border-slate-200 shadow-sm flex items-center justify-center text-slate-500 hover:text-slate-800 transition -left-3 cursor-pointer opacity-0 group-hover:opacity-100"
+              >
+                <ChevronLeft size={16} />
+              </button>
+
+              {/* Scroll Container */}
+              <div 
+                id="horizontal-date-slider-strip"
+                className="flex gap-2 overflow-x-auto pb-2 scrollbar-none snap-x"
+                style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+              >
+                {visibleDates.map((item) => {
+                  const isSelected = item.dateStr === selectedDate;
+                  return (
+                    <button
+                      key={item.dateStr}
+                      onClick={() => setSelectedDate(item.dateStr)}
+                      className={`flex-none snap-start w-14 py-2 rounded-xl border text-center transition duration-150 cursor-pointer ${
+                        isSelected 
+                          ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-100 scale-105' 
+                          : item.isWeekend 
+                            ? 'bg-slate-50 border-slate-150 text-slate-400 hover:bg-slate-100 hover:text-slate-600'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="block text-[9px] font-mono uppercase tracking-tight opacity-75">
+                        {item.dayName}
+                      </span>
+                      <span className="block text-base font-extrabold font-mono mt-0.5">
+                        {item.dayNum}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Right Scroll Button */}
+              <button
+                onClick={() => {
+                  const el = document.getElementById('horizontal-date-slider-strip');
+                  if (el) el.scrollBy({ left: 160, behavior: 'smooth' });
+                }}
+                className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-7 h-7 bg-white/90 hover:bg-white rounded-full border border-slate-200 shadow-sm flex items-center justify-center text-slate-500 hover:text-slate-800 transition -right-3 cursor-pointer opacity-0 group-hover:opacity-100"
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 text-center text-slate-400 italic bg-slate-50 rounded-xl border border-dashed border-slate-200 text-[11px]">
+            Please enter a valid Academic Term Date Range.
+          </div>
+        )}
       </div>
 
       {/* Configuration Header Control Panel */}
@@ -390,11 +691,16 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
               <select
                 value={selectedClass}
                 onChange={(e) => setSelectedClass(e.target.value as ClassType)}
-                className="px-3 py-1.5 border border-slate-200 rounded-lg bg-slate-50 font-semibold text-xs focus:outline-none"
+                disabled={userRole === 'Teacher'}
+                className="px-3 py-1.5 border border-slate-200 rounded-lg bg-slate-50 font-semibold text-xs focus:outline-none disabled:opacity-75 disabled:cursor-not-allowed"
               >
-                {CLASSES.map(cls => (
-                  <option key={cls} value={cls}>{cls}</option>
-                ))}
+                {userRole === 'Teacher' ? (
+                  <option value={assignedClass || 'None'}>{assignedClass || 'None'}</option>
+                ) : (
+                  CLASSES.map(cls => (
+                    <option key={cls} value={cls}>{cls}</option>
+                  ))
+                )}
               </select>
             </div>
           )}
@@ -907,7 +1213,51 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
             </div>
 
             <div className="divide-y divide-slate-100">
-              {attendanceView === 'student' ? (
+              {attendanceView === 'roster' ? (
+                <div className="p-6">
+                  <div className="flex justify-between items-center mb-6">
+                    <div>
+                      <h4 className="font-extrabold text-slate-850 text-sm uppercase tracking-wider">
+                        Exportable Class Roster: {selectedClass}
+                      </h4>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Class roster for {selectedDate}. Print this grid to manually record daily attendance.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => window.print()}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white font-bold text-xs rounded-lg cursor-pointer hover:bg-slate-800 transition"
+                    >
+                      <Printer size={14} /> Print Grid
+                    </button>
+                  </div>
+                  
+                  <table className="w-full border-collapse border border-slate-300">
+                    <thead>
+                      <tr className="bg-slate-50">
+                        <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-12">No.</th>
+                        <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-32">Student ID</th>
+                        <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600">Full Name</th>
+                        <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-48">Signature / Remarks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {attendanceSheet.length === 0 ? (
+                        <tr><td colSpan={4} className="p-4 text-center text-slate-400">No students found.</td></tr>
+                      ) : (
+                        attendanceSheet.map((item, index) => (
+                          <tr key={item.studentId}>
+                            <td className="border border-slate-300 p-2 text-xs font-mono text-slate-500">{index + 1}</td>
+                            <td className="border border-slate-300 p-2 text-xs font-mono text-slate-700">{item.studentId}</td>
+                            <td className="border border-slate-300 p-2 text-xs font-semibold text-slate-800">{item.studentName}</td>
+                            <td className="border border-slate-300 p-2 h-10"></td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              ) : attendanceView === 'student' ? (
                 attendanceSheet.length === 0 ? (
                   <div className="p-12 text-center text-slate-400 space-y-2">
                     <CalendarCheck size={32} className="text-slate-300 mx-auto" />
@@ -1447,10 +1797,19 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave }: Props
                 </button>
                 <button
                   type="button"
+                  disabled={teacherPermissions?.canExportReports === false}
                   onClick={() => {
+                    if (teacherPermissions?.canExportReports === false) {
+                      alert("Permission to export reports has been suspended by the Headteacher.");
+                      return;
+                    }
                     handlePrintRegister();
                   }}
-                  className="flex-1 px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px] text-center flex items-center justify-center gap-1.5 active:translate-y-0.5"
+                  className={`flex-1 px-5 py-2.5 ${
+                    teacherPermissions?.canExportReports === false
+                      ? 'bg-slate-350 text-slate-500 cursor-not-allowed opacity-65'
+                      : 'bg-[#059669] hover:bg-[#047857] text-white cursor-pointer active:translate-y-0.5'
+                  } font-semibold rounded-xl shadow-xs transition text-[12px] text-center flex items-center justify-center gap-1.5`}
                 >
                   <Printer size={14} /> Trigger Print Engine
                 </button>

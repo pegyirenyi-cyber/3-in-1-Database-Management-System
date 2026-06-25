@@ -1,14 +1,14 @@
 import React, { useState, useRef, ChangeEvent, FormEvent, useMemo } from 'react';
 import { 
   Student, ClassType, CLASSES, SectionType, SECTIONS, 
-  AcademicYearType, ACADEMIC_YEARS, TermType, TERMS 
+  AcademicYearType, ACADEMIC_YEARS, TermType, TERMS, UserRole 
 } from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, User, MapPin, PhoneCall, ShieldAlert, BadgeCheck, FileDown, RotateCcw, Eraser, Eye, FileSpreadsheet,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, IdCard
 } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { motion, AnimatePresence } from 'motion/react';
@@ -23,6 +23,8 @@ interface Props {
   setSelectedYear?: (yr: AcademicYearType) => void;
   selectedTerm?: TermType;
   setSelectedTerm?: (tm: TermType) => void;
+  assignedClass?: ClassType | null;
+  userRole?: UserRole;
 }
 
 const INITIAL_FORM: Partial<Student> = {
@@ -34,7 +36,7 @@ const INITIAL_FORM: Partial<Student> = {
   dateOfBirth: '',
   placeOfBirth: '',
   status: 'Day',
-  section: 'Faith',
+  section: 'None',
   nationality: 'Ghanaian',
   guardianName: '',
   guardianTelephone: '',
@@ -54,11 +56,21 @@ export default function StudentsTab({
   selectedYear,
   setSelectedYear,
   selectedTerm,
-  setSelectedTerm
+  setSelectedTerm,
+  assignedClass,
+  userRole
 }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedClass, setSelectedClass] = useState<string>('All');
+  const [selectedClass, setSelectedClass] = useState<string>(() => {
+    return userRole === 'Teacher' ? (assignedClass || 'None') : 'All';
+  });
   const [selectedSection, setSelectedSection] = useState<string>('All');
+
+  React.useEffect(() => {
+    if (userRole === 'Teacher') {
+      setSelectedClass(assignedClass || 'None');
+    }
+  }, [assignedClass, userRole]);
   
   // Pagination states
   const [studentPage, setStudentPage] = useState(1);
@@ -76,6 +88,10 @@ export default function StudentsTab({
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ID Card states
+  const [selectedIdCardStudent, setSelectedIdCardStudent] = useState<Student | null>(null);
+  const [showIdCardModal, setShowIdCardModal] = useState(false);
 
   // Bulk import states
   const [showImportModal, setShowImportModal] = useState(false);
@@ -241,7 +257,7 @@ export default function StudentsTab({
       }
 
       // Admin house/section selection
-      let section: SectionType = 'Faith';
+      let section: SectionType = 'None';
       const rawSection = getValue(sectionIdx);
       if (rawSection) {
         const foundSec = SECTIONS.find(s => s.toLowerCase() === rawSection.toLowerCase());
@@ -397,13 +413,20 @@ export default function StudentsTab({
     return students.filter(std => {
       const fullName = `${std.firstName} ${std.middleName || ''} ${std.lastName}`.toLowerCase();
       const matchesSearch = fullName.includes(searchTerm.toLowerCase()) || std.id.includes(searchTerm);
-      const matchesClass = selectedClass === 'All' || std.class === selectedClass;
+      
+      let matchesClass = false;
+      if (userRole === 'Teacher') {
+        matchesClass = std.class === assignedClass;
+      } else {
+        matchesClass = selectedClass === 'All' || std.class === selectedClass;
+      }
+
       const matchesSection = selectedSection === 'All' || std.section === selectedSection;
       const matchesYear = !selectedYear || (std.academicYear || '2026/2027') === selectedYear;
       const matchesTerm = !selectedTerm || (std.term || 'Term 1') === selectedTerm;
       return matchesSearch && matchesClass && matchesSection && matchesYear && matchesTerm;
     });
-  }, [students, searchTerm, selectedClass, selectedSection, selectedYear, selectedTerm]);
+  }, [students, searchTerm, selectedClass, selectedSection, selectedYear, selectedTerm, userRole, assignedClass]);
 
   // Paginated students slice for desktop UI performance with high-performance memoization
   const totalStudentsCount = filteredStudents.length;
@@ -465,6 +488,7 @@ export default function StudentsTab({
     setFormState({ 
       ...INITIAL_FORM, 
       id: 'ST' + Math.floor(100000 + Math.random() * 90000),
+      class: userRole === 'Teacher' && assignedClass ? assignedClass : 'Basic 1',
       academicYear: selectedYear || '2026/2027',
       term: selectedTerm || 'Term 1'
     });
@@ -476,6 +500,11 @@ export default function StudentsTab({
     setFormState({ ...student });
     setIsEditing(true);
     setShowFormModal(true);
+  };
+
+  const handleOpenIdCard = (student: Student) => {
+    setSelectedIdCardStudent(student);
+    setShowIdCardModal(true);
   };
 
   const handleDelete = (studentId: string) => {
@@ -609,6 +638,30 @@ export default function StudentsTab({
     }
   };
 
+  const handlePrintIdCard = () => {
+    try {
+      window.print();
+    } catch (e) {
+      console.warn("Direct print restricted inside sandbox iframe:", e);
+      setPrintBlocked(true);
+    }
+  };
+
+  if (userRole === 'Teacher' && !assignedClass) {
+    return (
+      <div className="bg-amber-50/50 border border-amber-200 text-amber-800 p-8 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-12 shadow-sm">
+        <ShieldAlert size={48} className="text-amber-500 mx-auto animate-bounce" />
+        <h3 className="font-bold text-lg">No Class Level Assigned</h3>
+        <p className="text-sm text-amber-700 leading-relaxed">
+          You are authenticated as a school educator, but you have not yet been assigned to a specific class level by the Headteacher.
+        </p>
+        <p className="text-xs text-amber-600 font-mono">
+          Please contact your Headteacher to assign you to a specific class level (e.g. Basic 2 or Basic 8) in the "Teacher Profiles" directory.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 fade-in">
       
@@ -629,12 +682,19 @@ export default function StudentsTab({
           <select
             value={selectedClass}
             onChange={(e) => setSelectedClass(e.target.value)}
-            className="text-xs px-2.5 py-2 border border-slate-200 rounded-lg bg-white"
+            disabled={userRole === 'Teacher'}
+            className="text-xs px-2.5 py-2 border border-slate-200 rounded-lg bg-white disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed"
           >
-            <option value="All">All Classes</option>
-            {CLASSES.map(cls => (
-              <option key={cls} value={cls}>{cls}</option>
-            ))}
+            {userRole === 'Teacher' ? (
+              <option value={assignedClass || 'None'}>{assignedClass || 'None'}</option>
+            ) : (
+              <>
+                <option value="All">All Classes</option>
+                {CLASSES.map(cls => (
+                  <option key={cls} value={cls}>{cls}</option>
+                ))}
+              </>
+            )}
           </select>
 
           <select
@@ -767,6 +827,13 @@ export default function StudentsTab({
                   <span className="truncate">{std.guardianName || 'Guardian'}: {std.guardianTelephone}</span>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleOpenIdCard(std)}
+                    className="p-1 hover:bg-indigo-50 hover:text-indigo-600 rounded text-slate-600 cursor-pointer transition"
+                    title="Generate ID Card"
+                  >
+                    <IdCard size={12} />
+                  </button>
                   <button
                     onClick={() => handleOpenEdit(std)}
                     className="p-1 hover:bg-slate-200 rounded text-slate-600 cursor-pointer transition"
@@ -1078,7 +1145,8 @@ export default function StudentsTab({
                     <select
                       value={formState.class}
                       onChange={(e) => setFormState(prev => ({ ...prev, class: e.target.value as ClassType }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white bg-no-repeat focus:outline-none focus:ring-1 focus:ring-slate-400"
+                      disabled={userRole === 'Teacher'}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white bg-no-repeat focus:outline-none focus:ring-1 focus:ring-slate-400 disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed"
                     >
                       {CLASSES.map(cls => (
                         <option key={cls} value={cls}>{cls}</option>
@@ -1819,6 +1887,271 @@ export default function StudentsTab({
                   </button>
                 </div>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* STUDENT ID CARD GENERATION MODAL */}
+      <AnimatePresence>
+        {showIdCardModal && selectedIdCardStudent && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowIdCardModal(false);
+            }}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print overflow-y-auto cursor-pointer font-sans"
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-slate-100 rounded-[24px] border border-slate-200/50 shadow-2xl max-w-4xl w-full flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200/80 overflow-hidden my-8 max-h-[90vh] cursor-default"
+            >
+              
+              {/* Left Column: ID Card Live Preview */}
+              <div className="flex-1 p-6 overflow-y-auto bg-slate-700 flex flex-col justify-between items-center space-y-4">
+                <span className="text-white text-xs font-mono tracking-widest uppercase opacity-70">Student ID Card Print Preview</span>
+                
+                {/* ID CARD PORTRAIT COMPONENT WITH STANDARD CR80 PROPORTIONS */}
+                <div 
+                  id="student-id-card-print-area" 
+                  className="w-[300px] h-[460px] bg-white text-slate-950 rounded-2xl border border-slate-350 shadow-2xl relative overflow-hidden flex flex-col justify-between font-sans select-none"
+                >
+                  {/* Card Header Wave / Banner */}
+                  <div className="bg-indigo-900 text-white p-3 pt-4 text-center relative overflow-hidden flex flex-col items-center justify-center min-h-[75px]">
+                    {/* Background visual highlight */}
+                    <div className="absolute inset-0 bg-gradient-to-tr from-indigo-950 to-indigo-800 opacity-90"></div>
+                    
+                    <div className="relative z-10 flex items-center gap-2 max-w-[90%] justify-center">
+                      {DbController.getSchoolInfo().logoUrl ? (
+                        <img 
+                          src={DbController.getSchoolInfo().logoUrl} 
+                          alt="School Logo" 
+                          className="w-7 h-7 object-contain rounded-full bg-white p-0.5"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold text-white">SCH</div>
+                      )}
+                      
+                      <div className="text-left flex-1 min-w-0">
+                        <h4 className="text-[9px] font-black uppercase tracking-wide truncate leading-tight">
+                          {DbController.getSchoolInfo().name}
+                        </h4>
+                        <p className="text-[6.5px] italic font-mono text-indigo-200 truncate leading-none mt-0.5">
+                          "{DbController.getSchoolInfo().motto}"
+                        </p>
+                      </div>
+                    </div>
+                    
+                    {/* ID Card label tab */}
+                    <div className="absolute bottom-0 right-0 left-0 bg-amber-500 text-[6.5px] font-extrabold uppercase tracking-widest py-0.5 text-center text-slate-950 z-10">
+                      Student Identity Card
+                    </div>
+                  </div>
+
+                  {/* Card Body - Photo & Bio details */}
+                  <div className="flex-1 p-4 flex flex-col items-center justify-center space-y-3.5 relative z-10 bg-radial from-white to-slate-50/50">
+                    {/* Watermark Logo/Badge */}
+                    {DbController.getSchoolInfo().logoUrl && (
+                      <img 
+                        src={DbController.getSchoolInfo().logoUrl} 
+                        alt="Watermark" 
+                        className="absolute inset-0 m-auto w-32 h-32 object-contain opacity-[0.04] pointer-events-none select-none"
+                        referrerPolicy="no-referrer"
+                      />
+                    )}
+
+                    {/* Student Photo */}
+                    <div className="relative">
+                      <div className="w-24 h-24 rounded-full border-2 border-indigo-900 overflow-hidden bg-slate-100 flex items-center justify-center shadow-md">
+                        {selectedIdCardStudent.photoUrl ? (
+                          <img 
+                            src={selectedIdCardStudent.photoUrl} 
+                            alt={`${selectedIdCardStudent.firstName} Photo`} 
+                            className="w-full h-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <User size={48} className="text-slate-350" />
+                        )}
+                      </div>
+                      
+                      {/* Active student check status tag */}
+                      <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-[#059669] text-white text-[6.5px] font-extrabold px-2 py-0.5 rounded-full border border-white shadow-xs tracking-wide whitespace-nowrap uppercase">
+                        {selectedIdCardStudent.status === 'Boarder' ? 'BOARDER' : 'DAY STUDENT'}
+                      </span>
+                    </div>
+
+                    {/* Student Identity Information */}
+                    <div className="text-center space-y-2.5 w-full">
+                      <div>
+                        <h3 className="text-sm font-black text-slate-900 tracking-tight leading-tight uppercase font-display">
+                          {selectedIdCardStudent.firstName} {selectedIdCardStudent.middleName ? selectedIdCardStudent.middleName + ' ' : ''}{selectedIdCardStudent.lastName}
+                        </h3>
+                        <p className="text-[7.5px] font-mono font-bold text-indigo-700 tracking-widest mt-0.5">
+                          ID: {selectedIdCardStudent.id}
+                        </p>
+                      </div>
+
+                      {/* Particulars Grid */}
+                      <div className="grid grid-cols-2 gap-x-2 gap-y-1.5 bg-white/70 border border-slate-150 rounded-xl p-2.5 text-left text-[9px] font-medium shadow-2xs">
+                        <div>
+                          <span className="text-[6.5px] text-slate-400 block font-bold uppercase leading-none mb-0.5">CLASS LEVEL</span>
+                          <strong className="text-slate-800 font-bold">{selectedIdCardStudent.class}</strong>
+                        </div>
+                        <div>
+                          <span className="text-[6.5px] text-slate-400 block font-bold uppercase leading-none mb-0.5">SECTION</span>
+                          <strong className="text-slate-800 font-bold">{selectedIdCardStudent.section}</strong>
+                        </div>
+                        <div className="col-span-2 border-t border-slate-100 pt-1 mt-0.5">
+                          <span className="text-[6.5px] text-slate-400 block font-bold uppercase leading-none mb-0.5">GUARDIAN CONTACT</span>
+                          <strong className="text-slate-800 font-bold truncate block">
+                            {selectedIdCardStudent.guardianTelephone || 'N/A'}
+                          </strong>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card Footer - QR Code and Authorized Signature */}
+                  <div className="p-3 bg-slate-50 border-t border-slate-150 flex items-center justify-between min-h-[85px] relative z-10">
+                    {/* QR Code */}
+                    <div className="flex flex-col items-center gap-1">
+                      <img 
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(
+                          `Student ID: ${selectedIdCardStudent.id}\nName: ${selectedIdCardStudent.firstName} ${selectedIdCardStudent.lastName}\nClass: ${selectedIdCardStudent.class}\nSchool: ${DbController.getSchoolInfo().name}`
+                        )}`} 
+                        alt="Profile QR Code" 
+                        className="w-14 h-14 object-contain border border-slate-200 bg-white p-0.5 rounded-lg shadow-2xs"
+                        referrerPolicy="no-referrer"
+                      />
+                      <span className="text-[5.5px] font-mono text-slate-400 font-bold uppercase tracking-wider">PROFILE LINK</span>
+                    </div>
+
+                    {/* Authorized Signature Box */}
+                    <div className="text-right flex flex-col items-end justify-end space-y-1 self-stretch min-w-[110px]">
+                      <div className="relative w-28 h-8 flex items-center justify-center">
+                        {/* Stamp overlay if available */}
+                        {DbController.getSchoolInfo().stampUrl && (
+                          <img 
+                            src={DbController.getSchoolInfo().stampUrl} 
+                            alt="Stamp" 
+                            className="absolute -left-2 w-10 h-10 object-contain opacity-50 pointer-events-none rotate-12 z-0"
+                            referrerPolicy="no-referrer"
+                          />
+                        )}
+                        {/* Signature overlay */}
+                        {DbController.getSchoolInfo().signatureUrl ? (
+                          <img 
+                            src={DbController.getSchoolInfo().signatureUrl} 
+                            alt="Signature" 
+                            className="absolute w-20 h-7 object-contain z-10 bottom-0 select-none pointer-events-none"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="absolute text-[8px] italic text-slate-350 z-10 bottom-1">Headteacher</div>
+                        )}
+                      </div>
+                      
+                      <div className="h-[1px] w-24 bg-slate-300"></div>
+                      
+                      <span className="text-[6px] font-black text-slate-800 uppercase tracking-wider block font-sans text-right leading-none">
+                        {DbController.getSchoolInfo().headteacherName || 'Headteacher Sign'}
+                      </span>
+                      <span className="text-[5px] font-bold text-slate-400 block tracking-widest uppercase text-right leading-none">
+                        AUTHORIZED SIGNATURE
+                      </span>
+                    </div>
+                  </div>
+
+                </div>
+
+                <span className="text-[10px] text-slate-300 font-mono tracking-wide">Standard Portrait Credit Card Badge Proportions</span>
+              </div>
+
+              {/* Right Column: Setup Manual & Control */}
+              <div className="w-full md:w-[400px] p-6 bg-white flex flex-col justify-between overflow-y-auto max-h-none md:max-h-[90vh]">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
+                    <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0">
+                      <IdCard size={22} />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-black text-slate-950">Identity Card Generator</h4>
+                      <p className="text-[10px] text-slate-400">Generate, export or print student badges</p>
+                    </div>
+                  </div>
+
+                  {/* Cloud Drive PDF Export Trigger Integration */}
+                  <GoogleDriveExportControl 
+                    elementId="student-id-card-print-area" 
+                    defaultFilename={`${selectedIdCardStudent.firstName}_${selectedIdCardStudent.lastName}_ID_Card.pdf`}
+                    isLandscape={false} 
+                  />
+
+                  <div className="p-3 bg-indigo-50 border border-indigo-100/70 rounded-xl space-y-1 text-indigo-950 text-[11px]">
+                    <span className="font-bold">🖨️ Professional Printing Checklist</span>
+                    <p className="text-[10px] text-indigo-800/90 leading-relaxed">
+                      To achieve standard physical ID badge dimensions, ensure your printing settings conform to the parameters detailed below.
+                    </p>
+                  </div>
+
+                  <div className="space-y-3 text-xs text-slate-700 font-sans">
+                    <span className="font-bold text-slate-900 border-b border-slate-100 pb-1 block">Setup Instructions Checklist:</span>
+                    
+                    <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <div className="font-bold text-[10px] text-slate-600 bg-slate-100 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">1</div>
+                        <p className="text-[11px] leading-relaxed">
+                          Click the <strong className="text-indigo-600 font-bold">Trigger Badge Printer</strong> button to open printer controls.
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <div className="font-bold text-[10px] text-slate-600 bg-slate-100 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">2</div>
+                        <p className="text-[11px] leading-relaxed">
+                          Set <strong>Destination</strong> to <strong className="text-slate-900 font-bold">Save as PDF</strong> or select your connected desktop card printer.
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <div className="font-bold text-[10px] text-slate-600 bg-slate-100 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">3</div>
+                        <p className="text-[11px] leading-relaxed">
+                          Verify page layout is set to <strong>Portrait</strong>. Toggle on <strong className="text-indigo-600 font-bold">Background Graphics</strong>, and disable default headers & footers.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-200/60 text-[10px] text-amber-800 leading-relaxed space-y-1">
+                    <strong>💡 Sandbox Printing Tip:</strong>
+                    <p className="leading-normal">
+                      Direct printing can be blocked inside preview iframes. If clicking the trigger displays an alert, use the <strong className="font-bold">"Open in a new tab" ↗</strong> button at the top right of the application first.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6 font-sans">
+                  <button
+                    type="button"
+                    onClick={() => setShowIdCardModal(false)}
+                    className="px-5 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-500 font-semibold rounded-xl transition cursor-pointer text-[12px] flex-shrink-0"
+                  >
+                    Close Preview
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handlePrintIdCard();
+                    }}
+                    className="flex-1 px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px] text-center flex items-center justify-center gap-1.5 active:translate-y-0.5"
+                  >
+                    <Printer size={14} /> Trigger Badge Printer
+                  </button>
+                </div>
+              </div>
+
             </motion.div>
           </div>
         )}

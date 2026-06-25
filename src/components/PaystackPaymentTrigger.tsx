@@ -57,8 +57,21 @@ export default function PaystackPaymentTrigger({
   const [paymentVerified, setPaymentVerified] = useState(false);
   const [manualReference, setManualReference] = useState('');
   const [manualVerifying, setManualVerifying] = useState(false);
+  const [gatewayConfig, setGatewayConfig] = useState<{ mode: 'test' | 'live'; publicKey: string } | null>(null);
 
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Load gateway config on mount to verify environment mode (Sandbox vs Live)
+  useEffect(() => {
+    fetch('/api/payments/config')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setGatewayConfig({ mode: data.mode, publicKey: data.publicKey });
+        }
+      })
+      .catch(err => console.error("[Checkout Config] Could not load active Paystack mode config.", err));
+  }, []);
 
   // Clear any timers on unmount
   useEffect(() => {
@@ -192,9 +205,18 @@ export default function PaystackPaymentTrigger({
             <p className="text-[10px] text-slate-400">Settle invoices instantly with card, mobile money (MoMo), or bank transfers</p>
           </div>
         </div>
-        <span className="text-[9px] uppercase tracking-wider bg-emerald-100 font-black text-emerald-700 px-2 py-0.5 rounded">
-          Ghana / West Africa
-        </span>
+        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+          <span className="text-[9px] uppercase tracking-wider bg-emerald-50 border border-emerald-200/50 font-bold text-emerald-700 px-1.5 py-0.5 rounded-sm">
+            Ghana / West Africa
+          </span>
+          <span className={`text-[8px] uppercase tracking-wider font-extrabold px-1.5 py-0.5 rounded-sm border ${
+            gatewayConfig?.mode === 'live'
+              ? 'bg-emerald-50 border-emerald-250 text-emerald-700 font-black'
+              : 'bg-amber-50 border-amber-250 text-amber-700 font-black'
+          }`}>
+            {gatewayConfig?.mode === 'live' ? '● Live' : '⌛ Sandbox'}
+          </span>
+        </div>
       </div>
 
       <div className="bg-white border border-slate-150 p-4 rounded-lg space-y-2.5">

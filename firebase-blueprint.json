@@ -19,7 +19,16 @@
         "qualifications": { "type": "string" },
         "highestAcademicQualifications": { "type": "string" },
         "district": { "type": "string" },
-        "circuit": { "type": "string" }
+        "circuit": { "type": "string" },
+        "paystackPublicKey": { "type": "string" },
+        "paystackSecretKey": { "type": "string" },
+        "paystackMode": { "type": "string" },
+        "twilioAccountSid": { "type": "string" },
+        "twilioAuthToken": { "type": "string" },
+        "twilioFromNumber": { "type": "string" },
+        "twilioEnabled": { "type": "boolean" },
+        "smsBalance": { "type": "number" },
+        "smsSenderId": { "type": "string" }
       },
       "required": ["id", "name", "schoolType", "headteacherName"]
     },
@@ -172,6 +181,96 @@
         "createdAt": { "type": "string" }
       },
       "required": ["id", "reference", "amount", "status"]
+    },
+    "StaffAttendanceRecord": {
+      "title": "StaffAttendanceRecord",
+      "description": "Daily attendance mark and times for a teacher/staff member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "status": { "type": "string", "enum": ["Present", "Absent", "On Leave", "Unmarked"] },
+        "arrivalTime": { "type": "string" },
+        "departureTime": { "type": "string" },
+        "remarks": { "type": "string" }
+      },
+      "required": ["id", "date", "teacherId", "teacherName", "status"]
+    },
+    "AcademicCalendarConfig": {
+      "title": "AcademicCalendarConfig",
+      "description": "System-wide academic calendar active configuration",
+      "type": "object",
+      "properties": {
+        "activeAcademicYear": { "type": "string" },
+        "activeTerm": { "type": "string" },
+        "years": { "type": "object" }
+      },
+      "required": ["activeAcademicYear", "activeTerm"]
+    },
+    "EmisData": {
+      "title": "EmisData",
+      "description": "Ministry of Education / GES standard aligned EMIS school census metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "censusDate": { "type": "string" },
+        "emisCode": { "type": "string" },
+        "circuitName": { "type": "string" },
+        "districtName": { "type": "string" },
+        "regionName": { "type": "string" },
+        "schoolType": { "type": "string", "enum": ["Public", "Private"] },
+        "religiousAffiliation": { "type": "string" },
+        "dayBoarding": { "type": "string" },
+        "multiGradeTeaching": { "type": "boolean" },
+        "boysEnrolled": { "type": "object" },
+        "girlsEnrolled": { "type": "object" },
+        "repeatersBoys": { "type": "object" },
+        "repeatersGirls": { "type": "object" },
+        "disabledBoys": { "type": "object" },
+        "disabledGirls": { "type": "object" },
+        "permanentClassrooms": { "type": "number" },
+        "temporaryClassrooms": { "type": "number" },
+        "classroomsUnderTrees": { "type": "number" },
+        "drinkingWaterSource": { "type": "string" },
+        "toiletType": { "type": "string" },
+        "toiletBoothsBoys": { "type": "number" },
+        "toiletBoothsGirls": { "type": "number" },
+        "hasElectricity": { "type": "boolean" },
+        "electricitySource": { "type": "string" },
+        "hasFunctionalIctLab": { "type": "boolean" },
+        "totalWorkingComputers": { "type": "number" },
+        "englishTextbooks": { "type": "number" },
+        "mathTextbooks": { "type": "number" },
+        "scienceTextbooks": { "type": "number" },
+        "socialStudiesTextbooks": { "type": "number" },
+        "trainedMaleTeachers": { "type": "number" },
+        "trainedFemaleTeachers": { "type": "number" },
+        "untrainedMaleTeachers": { "type": "number" },
+        "untrainedFemaleTeachers": { "type": "number" },
+        "nonTeachingMaleStaff": { "type": "number" },
+        "nonTeachingFemaleStaff": { "type": "number" },
+        "locationType": { "type": "string" },
+        "yearFounded": { "type": "number" },
+        "isSchoolFeedingBeneficiary": { "type": "boolean" },
+        "studentsFedDailyCount": { "type": "number" },
+        "hasSeparateStaffToilets": { "type": "boolean" },
+        "hasHandwashingStations": { "type": "boolean" },
+        "hasFunctionalSickBay": { "type": "boolean" },
+        "hasActiveSmc": { "type": "boolean" },
+        "hasActivePta": { "type": "boolean" },
+        "ptaMeetingsHeldCount": { "type": "number" },
+        "hasFunctionalLibrary": { "type": "boolean" },
+        "totalLibraryBooks": { "type": "number" },
+        "hasScienceKit": { "type": "boolean" },
+        "isCompoundFenced": { "type": "boolean" },
+        "hasSecurityGuard": { "type": "boolean" },
+        "targetCommunityPopulation": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "academicYear", "censusDate", "emisCode"]
     }
   },
   "firestore": {
@@ -206,6 +305,18 @@
     "/paystack_payments/{paymentId}": {
       "schema": "PaystackPayment",
       "description": "Log of verified webhook and client transactions initiated via Paystack"
+    },
+    "/staff_attendance/{recordId}": {
+      "schema": "StaffAttendanceRecord",
+      "description": "Daily attendance mark and times for a teacher/staff member"
+    },
+    "/settings/{settingId}": {
+      "schema": "AcademicCalendarConfig",
+      "description": "System-wide academic configurations including active year and terms"
+    },
+    "/emis/{emisId}": {
+      "schema": "EmisData",
+      "description": "Ministry of Education / GES standard aligned EMIS school census documents"
     }
   }
 }

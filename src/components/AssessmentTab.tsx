@@ -2,13 +2,13 @@ import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   StudentAssessment, ClassType, CLASSES, AcademicYearType, ACADEMIC_YEARS, 
-  TermType, TERMS, SubjectType, SUBJECTS, Student 
+  TermType, TERMS, SubjectType, SUBJECTS, Student, UserRole 
 } from '../types';
 import { DbController } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  LineChart, Line
+  LineChart, Line, Cell
 } from 'recharts';
 import { 
   Printer, Save, CheckSquare, RefreshCw, Layers, Award, FileText, LayoutGrid, BarChart3, HelpCircle, AlertCircle, Sparkles, FileDown,
@@ -28,6 +28,13 @@ interface Props {
   setSelectedYear?: (yr: AcademicYearType) => void;
   selectedTerm?: TermType;
   setSelectedTerm?: (tm: TermType) => void;
+  assignedClass?: ClassType | null;
+  userRole?: UserRole;
+  teacherPermissions?: {
+    canEditGrades?: boolean;
+    canApproveAttendance?: boolean;
+    canExportReports?: boolean;
+  } | null;
 }
 
 type AssessmentSubMode = 'Worksheet' | 'IndividualReport' | 'Broadsheet' | 'PerformanceAnalytics';
@@ -40,10 +47,21 @@ export default function AssessmentTab({
   selectedYear: propYear,
   setSelectedYear: propSetYear,
   selectedTerm: propTerm,
-  setSelectedTerm: propSetTerm
+  setSelectedTerm: propSetTerm,
+  assignedClass,
+  userRole,
+  teacherPermissions
 }: Props) {
   // Top selector ribbon states
-  const [selectedClass, setSelectedClass] = useState<ClassType>('Class 1');
+  const [selectedClass, setSelectedClass] = useState<ClassType>(() => {
+    return userRole === 'Teacher' && assignedClass ? assignedClass : 'Basic 1';
+  });
+
+  useEffect(() => {
+    if (userRole === 'Teacher' && assignedClass) {
+      setSelectedClass(assignedClass);
+    }
+  }, [assignedClass, userRole]);
   
   const [localYear, setLocalYear] = useState<AcademicYearType>('2026/2027');
   const [localTerm, setLocalTerm] = useState<TermType>('Term 1');
@@ -147,33 +165,41 @@ export default function AssessmentTab({
     setSendingSms(true);
     setSmsSuccessMessage(null);
 
-    // Load Twilio config from localStorage
-    let twilioConfig = { accountSid: '', authToken: '', fromNumber: '', enabled: false };
-    const savedTwilio = localStorage.getItem('geetech_twilio_config');
-    if (savedTwilio) {
-      try { twilioConfig = JSON.parse(savedTwilio); } catch (e) { /* ignore */ }
+    // Load Twilio config from database first, fallback to localStorage
+    const school = DbController.getSchoolInfo();
+    let twilioConfig = {
+      accountSid: school.twilioAccountSid || '',
+      authToken: school.twilioAuthToken || '',
+      fromNumber: school.twilioFromNumber || '',
+      enabled: school.twilioEnabled || false
+    };
+    if (!twilioConfig.accountSid) {
+      const savedTwilio = localStorage.getItem('geetech_twilio_config');
+      if (savedTwilio) {
+        try {
+          const parsed = JSON.parse(savedTwilio); 
+          twilioConfig.accountSid = parsed.accountSid || '';
+          twilioConfig.authToken = parsed.authToken || '';
+          twilioConfig.fromNumber = parsed.fromNumber || '';
+          twilioConfig.enabled = parsed.enabled || false;
+        } catch (e) { /* ignore */ }
+      }
     }
 
     let isRealSuccess = true;
     let errDetail = '';
 
-    if (twilioConfig.enabled && twilioConfig.accountSid && twilioConfig.authToken && twilioConfig.fromNumber) {
+    if (twilioConfig.enabled) {
       try {
-        const url = `https://api.twilio.com/2010-04-01/Accounts/${twilioConfig.accountSid}/Messages.json`;
-        const basicAuth = btoa(`${twilioConfig.accountSid}:${twilioConfig.authToken}`);
-
-        const requestBody = new URLSearchParams();
-        requestBody.append('To', smsGuardianPhone.trim());
-        requestBody.append('From', twilioConfig.fromNumber.trim());
-        requestBody.append('Body', smsCustomMessage);
-
-        const res = await fetch(url, {
+        const res = await fetch('/api/communications/send-sms', {
           method: 'POST',
           headers: {
-            'Authorization': `Basic ${basicAuth}`,
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'Content-Type': 'application/json'
           },
-          body: requestBody.toString()
+          body: JSON.stringify({
+            to: smsGuardianPhone.trim(),
+            body: smsCustomMessage
+          })
         });
 
         if (!res.ok) {
@@ -183,7 +209,7 @@ export default function AssessmentTab({
         }
       } catch (err: any) {
         isRealSuccess = false;
-        errDetail = err.message || 'Network Timeout';
+        errDetail = err.message || 'Server connection failed';
       }
     } else {
       // Simulate delivery success for mocking
@@ -264,6 +290,10 @@ export default function AssessmentTab({
     index: number, 
     valueStr: string
   ) => {
+    if (teacherPermissions?.canEditGrades === false) {
+      alert("Permission to edit grades has been suspended by the Headteacher.");
+      return;
+    }
     const valueNum = valueStr === '' ? 0 : parseFloat(valueStr);
     
     // Define boundary checks according to prompt constraints:
@@ -321,6 +351,10 @@ export default function AssessmentTab({
   };
 
   const handleClearInputs = () => {
+    if (teacherPermissions?.canEditGrades === false) {
+      alert("Permission to edit grades has been suspended by the Headteacher.");
+      return;
+    }
     const cleared = activeWorksheet.map(row => {
       const resetRow = {
         ...row,
@@ -351,6 +385,10 @@ export default function AssessmentTab({
   };
 
   const handleDeleteActiveSelection = () => {
+    if (teacherPermissions?.canEditGrades === false) {
+      alert("Permission to edit grades has been suspended by the Headteacher.");
+      return;
+    }
     if (selectedStudentId) {
       if (window.confirm("Are you sure you want to reset and delete grades for the currently selected student?")) {
         const cleared = activeWorksheet.map(row => {
@@ -493,6 +531,7 @@ export default function AssessmentTab({
 
   const executeNativePrint = () => {
     setShowPrintPreviewModal(false);
+    DbController.writeActivityLog('Print Report Generated', `Printed individual report card for student ID ${selectedStudentId} (Class: ${selectedClass}).`, 'low');
     setTimeout(() => {
       try {
         window.print();
@@ -884,8 +923,52 @@ export default function AssessmentTab({
     });
   }, [selectedClass, selectedYear, selectedTerm, students, activeWorksheet]);
 
+  const inputtedSubjects = useMemo(() => {
+    const subjectsSet = new Set<string>();
+    broadsheetData.forEach(row => {
+      Object.keys(row.subjectScores).forEach(sub => subjectsSet.add(sub));
+    });
+    return SUBJECTS.filter(sub => subjectsSet.has(sub));
+  }, [broadsheetData]);
+
+  if (userRole === 'Teacher' && !assignedClass) {
+    return (
+      <div className="bg-amber-50/50 border border-amber-200 text-amber-800 p-8 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-12 shadow-sm">
+        <ShieldAlert size={48} className="text-amber-500 mx-auto animate-bounce" />
+        <h3 className="font-bold text-lg">No Class Level Assigned</h3>
+        <p className="text-sm text-amber-700 leading-relaxed">
+          You are authenticated as a school educator, but you have not yet been assigned to a specific class level by the Headteacher.
+        </p>
+        <p className="text-xs text-amber-600 font-mono">
+          Please contact your Headteacher to assign you to a specific class level (e.g. Basic 2 or Basic 8) in the "Teacher Profiles" directory.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 fade-in text-xs">
+      
+      {/* PERMISSION BANNER */}
+      {userRole === 'Teacher' && (teacherPermissions?.canEditGrades === false || teacherPermissions?.canExportReports === false) && (
+        <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-900 space-y-1.5 text-left shadow-sm">
+          <div className="flex items-center gap-2">
+            <ShieldAlert size={16} className="text-rose-500 animate-pulse" />
+            <span className="font-bold text-xs uppercase tracking-wider font-mono">Administrative Restriction Notice</span>
+          </div>
+          <p className="text-[11px] font-medium text-rose-800 leading-relaxed">
+            Your Headteacher has applied granular restrictions on your educator account:
+          </p>
+          <ul className="list-disc pl-5 text-[11px] text-rose-700 space-y-0.5 font-semibold">
+            {teacherPermissions?.canEditGrades === false && (
+              <li><strong>Grading Privileges Suspended:</strong> You can view student grades but cannot modify, import, or clear them.</li>
+            )}
+            {teacherPermissions?.canExportReports === false && (
+              <li><strong>Exporting Privileges Suspended:</strong> PDF downloading, bulk terminal printing, and badge printing features are disabled.</li>
+            )}
+          </ul>
+        </div>
+      )}
       
       {/* 1. FILTERING RIBBON CONTROL & NAVIGATION TABS */}
       <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4 no-print">
@@ -923,11 +1006,16 @@ export default function AssessmentTab({
             <select
               value={selectedClass}
               onChange={(e) => setSelectedClass(e.target.value as ClassType)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-slate-50 font-semibold"
+              disabled={userRole === 'Teacher'}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-slate-50 font-semibold disabled:opacity-75 disabled:cursor-not-allowed"
             >
-              {CLASSES.map(cls => (
-                <option key={cls} value={cls}>{cls}</option>
-              ))}
+              {userRole === 'Teacher' ? (
+                <option value={assignedClass || 'None'}>{assignedClass || 'None'}</option>
+              ) : (
+                CLASSES.map(cls => (
+                  <option key={cls} value={cls}>{cls}</option>
+                ))
+              )}
             </select>
           </div>
 
@@ -1261,8 +1349,19 @@ export default function AssessmentTab({
               {students.filter(s => s.class === selectedClass).length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setBulkReportMode(true)}
-                  className="py-1.5 px-3.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5"
+                  disabled={teacherPermissions?.canExportReports === false}
+                  onClick={() => {
+                    if (teacherPermissions?.canExportReports === false) {
+                      alert("Permission to export reports has been suspended by the Headteacher.");
+                      return;
+                    }
+                    setBulkReportMode(true);
+                  }}
+                  className={`py-1.5 px-3.5 ${
+                    teacherPermissions?.canExportReports === false 
+                      ? 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60' 
+                      : 'bg-sky-600 hover:bg-sky-700 text-white cursor-pointer active:translate-y-0.5'
+                  } rounded-lg text-xs font-black shadow-xs transition flex items-center justify-center gap-1.5`}
                 >
                   <Printer size={14} /> Print Bulk (Class {selectedClass})
                 </button>
@@ -1512,7 +1611,7 @@ export default function AssessmentTab({
                 <p className="text-[10px] text-slate-400 leading-relaxed">Comparative distribution of subject totals out of 100%.</p>
                 
                 <div className="h-64 bg-white rounded-lg border border-slate-100 p-2">
-                  <ResponsiveContainer width="100%" height="100%" aspect={undefined}>
+                  <ResponsiveContainer width="100%" height="100%" aspect={1.5}>
                     <BarChart data={compiledReport.grades} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="subject" tick={{ fontSize: 8 }} />
@@ -1556,6 +1655,7 @@ export default function AssessmentTab({
                     <button
                       type="button"
                       onClick={() => {
+                        DbController.writeActivityLog('Batch Print Report Generated', `Printed batch report cards for ${bulkClassReports.length} students in ${selectedClass}.`, 'medium');
                         try {
                           window.print();
                         } catch (err) {
@@ -1826,7 +1926,10 @@ export default function AssessmentTab({
             </div>
           )}
 
-          {/* Immersive Fullscreen Preview Mode for Report Card */}
+        </div>
+      )}
+
+      {/* Immersive Fullscreen Preview Mode for Report Card */}
           {reportCardPreviewMode && compiledReport && (
             <div 
               onClick={(e) => {
@@ -1866,8 +1969,19 @@ export default function AssessmentTab({
                 <div className="flex items-center gap-2.5">
                   <button
                     type="button"
-                    onClick={() => setShowPdfGuide(!showPdfGuide)}
-                    className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center"
+                    disabled={teacherPermissions?.canExportReports === false}
+                    onClick={() => {
+                      if (teacherPermissions?.canExportReports === false) {
+                        alert("Permission to export reports has been suspended by the Headteacher.");
+                        return;
+                      }
+                      setShowPdfGuide(!showPdfGuide);
+                    }}
+                    className={`flex items-center gap-1.5 px-3.5 py-1.5 ${
+                      teacherPermissions?.canExportReports === false
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-65'
+                        : 'bg-slate-900 hover:bg-slate-800 text-white cursor-pointer active:translate-y-0.5'
+                    } transition font-bold rounded-lg text-xs text-center`}
                   >
                     <Printer size={14} /> PDF & Cloud Export Options
                   </button>
@@ -1882,8 +1996,19 @@ export default function AssessmentTab({
 
                   <button
                     type="button"
-                    onClick={handlePrint}
-                    className="flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center shadow-md"
+                    disabled={teacherPermissions?.canExportReports === false}
+                    onClick={() => {
+                      if (teacherPermissions?.canExportReports === false) {
+                        alert("Permission to export reports has been suspended by the Headteacher.");
+                        return;
+                      }
+                      handlePrint();
+                    }}
+                    className={`flex items-center gap-1.5 px-3.5 py-1.5 ${
+                      teacherPermissions?.canExportReports === false
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-65'
+                        : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer active:translate-y-0.5'
+                    } transition font-bold rounded-lg text-xs text-center shadow-md`}
                   >
                     <Printer size={14} /> Direct Print
                   </button>
@@ -2335,13 +2460,13 @@ export default function AssessmentTab({
                     <span>No cumulative grades establishing broadsheet fields.</span>
                   </div>
                 ) : (
-                  <table className="w-full text-left border-collapse text-[11px] min-w-[800px]">
+                  <table className="w-full text-left border-collapse text-[11px] min-w-max">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
                         <th className="py-2.5 px-3 text-center w-12 font-black">Rank</th>
                         <th className="py-2.5 px-2 w-48 font-black">Student Full Name</th>
-                        {SUBJECTS.slice(0, 5).map(sub => (
-                          <th key={sub} className="py-2.5 px-1 text-center truncate font-bold">{sub.substring(0, 10)}...</th>
+                        {inputtedSubjects.map(sub => (
+                          <th key={sub} className="py-2.5 px-1 text-center truncate font-bold">{sub.substring(0, 12)}...</th>
                         ))}
                         <th className="py-2.5 px-2 text-center bg-slate-100 font-bold">Subjects Graded</th>
                         <th className="py-2.5 px-2 text-center bg-indigo-50 font-black">Mean Term Avg</th>
@@ -2358,7 +2483,7 @@ export default function AssessmentTab({
                         >
                           <td className="py-2 px-3 text-center font-bold font-mono text-purple-700 bg-purple-50">{index + 1}</td>
                           <td className="py-2 px-2 font-semibold text-slate-800 font-sans">{row.student.firstName} {row.student.lastName}</td>
-                          {SUBJECTS.slice(0, 5).map(sub => {
+                          {inputtedSubjects.map(sub => {
                             const score = row.subjectScores[sub];
                             return (
                               <td key={sub} className="py-2 px-1 text-center font-mono font-semibold border-l border-slate-100">
@@ -2459,13 +2584,17 @@ export default function AssessmentTab({
                       📊 Class Mastery Performance Distribution
                     </h3>
                     <div className="h-72 font-sans text-[10px]">
-                      <ResponsiveContainer width="100%" height="100%" aspect={undefined}>
+                      <ResponsiveContainer width="100%" height="100%" aspect={1.8}>
                         <BarChart data={gradeLevelsStats}>
                           <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                          <XAxis dataKey="name" />
+                          <XAxis dataKey="name" interval={0} tick={{ fontSize: 9, fill: '#64748b' }} tickMargin={10} />
                           <YAxis />
                           <Tooltip wrapperStyle={{ fontSize: '10px' }} />
-                          <Bar dataKey="value" fill="#4f46e5" name="Total Students" radius={[3, 3, 0, 0]} />
+                          <Bar dataKey="value" name="Total Students" radius={[3, 3, 0, 0]}>
+                            {gradeLevelsStats.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.fill} />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -2520,9 +2649,6 @@ export default function AssessmentTab({
           </div>
         )}
 
-        </div>
-      )}
-
       {/* SUBMODE C: CLASS BROADSHEET */}
       {subMode === 'Broadsheet' && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden no-print">
@@ -2550,14 +2676,14 @@ export default function AssessmentTab({
                 <span>No grades found in class. Write curriculum scores to establish the roster broadsheet.</span>
               </div>
             ) : (
-              <table className="w-full text-left border-collapse text-[11px] min-w-[800px]">
+              <table className="w-full text-left border-collapse text-[11px] min-w-max">
                 <thead>
                   <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600">
                     <th className="py-2 px-3 font-bold text-center w-12">Rank</th>
                     <th className="py-2 px-2 font-bold w-48">Student Name</th>
                     {/* List Subjects */}
-                    {SUBJECTS.slice(0, 5).map(sub => (
-                      <th key={sub} className="py-2 px-1 font-semibold text-center truncate" text-align="center">{sub.substring(0, 10)}...</th>
+                    {inputtedSubjects.map(sub => (
+                      <th key={sub} className="py-2 px-2 font-semibold text-center truncate">{sub.substring(0, 12)}...</th>
                     ))}
                     <th className="py-2 px-2 font-bold text-center bg-slate-100">Subjects</th>
                     <th className="py-2 px-2 font-bold text-center bg-indigo-50">Avg Score</th>
@@ -2574,7 +2700,7 @@ export default function AssessmentTab({
                     >
                       <td className="py-2 px-3 text-center font-bold font-mono text-purple-700 bg-purple-50">{index + 1}</td>
                       <td className="py-2 px-2 font-semibold text-slate-800 font-sans">{row.student.firstName} {row.student.lastName}</td>
-                      {SUBJECTS.slice(0, 5).map(sub => {
+                      {inputtedSubjects.map(sub => {
                         const score = row.subjectScores[sub];
                         return (
                           <td key={sub} className="py-2 px-1 text-center font-mono font-medium border-l border-slate-100">
@@ -2678,13 +2804,17 @@ export default function AssessmentTab({
               <p className="text-[10px] text-slate-400">Aggregated student counts grouped by GES cognitive performance levels (L1 - L5) for {selectedSubject}.</p>
               
               <div className="h-64 font-sans text-[10px]">
-                <ResponsiveContainer width="100%" height="100%" aspect={undefined}>
+                <ResponsiveContainer width="100%" height="100%" aspect={1.8}>
                   <BarChart data={gradeLevelsStats}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="name" />
+                    <XAxis dataKey="name" interval={0} tick={{ fontSize: 9, fill: '#64748b' }} tickMargin={10} />
                     <YAxis />
                     <Tooltip wrapperStyle={{ fontSize: '10px' }} />
-                    <Bar dataKey="value" name="Total Students" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="value" name="Total Students" radius={[3, 3, 0, 0]}>
+                      {gradeLevelsStats.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.fill} />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -3004,7 +3134,7 @@ export default function AssessmentTab({
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-center">
                 {/* Chart container */}
                 <div className="lg:col-span-3 h-80 font-sans text-[10px]">
-                  <ResponsiveContainer width="100%" height="100%" aspect={undefined}>
+                  <ResponsiveContainer width="100%" height="100%" aspect={2.2}>
                     <LineChart data={studentTrendData} margin={{ top: 10, right: 30, left: 0, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                       <XAxis dataKey="period" stroke="#94a3b8" />

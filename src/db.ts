@@ -45,7 +45,9 @@ import {
   FeePayment,
   AcademicCalendarConfig,
   EmisData,
-  PaystackPayment
+  PaystackPayment,
+  WebAuthnCredential,
+  ActivityLog
 } from './types';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -166,7 +168,20 @@ const DEFAULT_SCHOOL_INFO: SchoolInfo = {
   circuit: '',
   reopeningDate: '',
   signatureUrl: '',
-  stampUrl: ''
+  stampUrl: '',
+  paystackPublicKey: '',
+  paystackSecretKey: '',
+  paystackMode: 'test',
+  twilioAccountSid: '',
+  twilioAuthToken: '',
+  twilioFromNumber: '',
+  twilioEnabled: false,
+  smsBalance: 0,
+  smsSenderId: 'GEETECH',
+  licensePrice1Year: 350,
+  licensePrice2Year: 600,
+  licensePrice3Year: 800,
+  licensePrice5Year: 1200
 };
 
 export const DEFAULT_CALENDAR: AcademicCalendarConfig = {
@@ -340,7 +355,9 @@ const STORAGE_KEYS = {
   FEES: 'sms_fees',
   CALENDAR: 'sms_academic_calendar',
   EMIS: 'sms_emis_reports',
-  PAYSTACK_LOGS: 'sms_paystack_logs'
+  PAYSTACK_LOGS: 'sms_paystack_logs',
+  WEBAUTHN_CREDENTIALS: 'sms_webauthn_credentials',
+  ACTIVITY_LOGS: 'sms_activity_logs'
 };
 
 // Help helper to deep copy or get storage
@@ -372,6 +389,15 @@ export interface OfflineQueueItem {
 // -----------------------------------------------------------------------------
 export class DbController {
   private static _isSyncing = false;
+  private static _cache: Record<string, any> = {};
+  private static _assessmentsByStudent: Map<string, StudentAssessment[]> = new Map();
+  private static _studentsByClass: Map<ClassType | string, Student[]> = new Map();
+
+  private static clearCache() {
+    this._cache = {};
+    this._assessmentsByStudent = new Map();
+    this._studentsByClass = new Map();
+  }
 
   static isFirebaseEnabled(): boolean {
     return isFirebaseActive;
@@ -558,10 +584,44 @@ export class DbController {
     return list;
   }
 
+  static async saveRegisteredUsers(users: UserAccount[]): Promise<void> {
+    setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+    
+    const currentUser = this.getCurrentUser();
+    if (currentUser) {
+      const match = users.find(u => u.uid === currentUser.uid);
+      if (match) {
+        setStorageItem(STORAGE_KEYS.USER, match);
+      }
+    }
+
+    if (isFirebaseActive && firestoreDb) {
+      try {
+        for (const user of users) {
+          await setDoc(doc(firestoreDb, 'users', user.uid), user);
+        }
+      } catch (err) {
+        console.warn("Could not sync user list to firestore: ", err);
+      }
+    }
+  }
+
+  static determineRole(email: string): UserRole {
+    if (email.toLowerCase().trim() === 'pegyirenyi@gmail.com') {
+      return 'Admin';
+    }
+    const teachers = this.getTeachers();
+    const hasTeacherEmail = teachers.some(t => t.email?.toLowerCase().trim() === email.toLowerCase().trim());
+    if (hasTeacherEmail) {
+      return 'Teacher';
+    }
+    return 'Headteacher';
+  }
+
   static login(email: string, role: UserRole): UserAccount {
     // Find or bootstrap user account (for offline fallback)
     const users = this.getRegisteredUsers();
-    const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+    const assignedRole: UserRole = this.determineRole(email);
     
     let user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
     if (user) {
@@ -610,7 +670,7 @@ export class DbController {
 
   static register(name: string, email: string, role: UserRole): UserAccount {
     const users = this.getRegisteredUsers();
-    const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+    const assignedRole: UserRole = this.determineRole(email);
     const createdNow = new Date().toISOString();
     const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
     const newUser: UserAccount = {
@@ -626,6 +686,71 @@ export class DbController {
     users.push(newUser);
     setStorageItem(STORAGE_KEYS.USERS_LIST, users);
     return newUser;
+  }
+
+  // === WEBAUTHN BIOMETRICS CONTROLLERS ===
+  static getWebAuthnCredentials(): WebAuthnCredential[] {
+    return getStorageItem<WebAuthnCredential[]>(STORAGE_KEYS.WEBAUTHN_CREDENTIALS, []);
+  }
+
+  static registerWebAuthnCredential(cred: WebAuthnCredential): void {
+    const list = this.getWebAuthnCredentials();
+    const filtered = list.filter(c => c.id !== cred.id);
+    filtered.push(cred);
+    setStorageItem(STORAGE_KEYS.WEBAUTHN_CREDENTIALS, filtered);
+  }
+
+  static deleteWebAuthnCredential(id: string): void {
+    const list = this.getWebAuthnCredentials();
+    const filtered = list.filter(c => c.id !== id);
+    setStorageItem(STORAGE_KEYS.WEBAUTHN_CREDENTIALS, filtered);
+  }
+
+  static loginWithWebAuthn(id: string): UserAccount {
+    const creds = this.getWebAuthnCredentials();
+    const cred = creds.find(c => c.id === id);
+    if (!cred) {
+      throw new Error("Specified biometric credential is not registered on this device.");
+    }
+    const email = cred.userEmail.toLowerCase();
+    const assignedRole: UserRole = this.determineRole(email);
+    const account = this.login(cred.userEmail, assignedRole);
+    return account;
+  }
+
+  // === ACTIVITY LOGS MANAGEMENT ===
+  static getActivityLogs(): ActivityLog[] {
+    return getStorageItem<ActivityLog[]>(STORAGE_KEYS.ACTIVITY_LOGS, []);
+  }
+
+  static writeActivityLog(
+    action: string,
+    details: string,
+    severity: 'info' | 'low' | 'medium' | 'high' | 'critical' = 'info'
+  ): void {
+    const logs = this.getActivityLogs();
+    const currentUser = this.getCurrentUser();
+    
+    const newLog: ActivityLog = {
+      id: `log_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userEmail: currentUser?.email || 'system@geetech.com',
+      userName: currentUser?.name || 'System / Guest',
+      userRole: currentUser?.role || 'Headteacher',
+      action,
+      details,
+      severity
+    };
+    
+    logs.unshift(newLog);
+    if (logs.length > 1000) {
+      logs.pop();
+    }
+    setStorageItem(STORAGE_KEYS.ACTIVITY_LOGS, logs);
+  }
+
+  static clearActivityLogs(): void {
+    setStorageItem(STORAGE_KEYS.ACTIVITY_LOGS, []);
   }
 
   static async updateUserLicense(
@@ -690,7 +815,7 @@ export class DbController {
     try {
       const userCredential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
       const uid = userCredential.user.uid;
-      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      const assignedRole: UserRole = this.determineRole(email);
       const createdNow = new Date().toISOString();
       const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
       
@@ -731,7 +856,7 @@ export class DbController {
     try {
       const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, password);
       const uid = userCredential.user.uid;
-      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      const assignedRole: UserRole = this.determineRole(email);
 
       // Retrieve user profile data
       const userDoc = await getDoc(doc(firestoreDb, 'users', uid));
@@ -820,7 +945,7 @@ export class DbController {
       const result = await signInWithPopup(firebaseAuth, provider);
       const user = result.user;
       const email = user.email || '';
-      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      const assignedRole: UserRole = this.determineRole(email);
       
       // Check if user profile already exists in Firestore
       const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
@@ -858,7 +983,7 @@ export class DbController {
       const result = await signInWithPopup(firebaseAuth, provider);
       const user = result.user;
       const email = user.email || '';
-      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      const assignedRole: UserRole = this.determineRole(email);
       
       const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
       if (userDocSnapshot.exists()) {
@@ -895,7 +1020,7 @@ export class DbController {
       const result = await signInWithPopup(firebaseAuth, provider);
       const user = result.user;
       const email = user.email || '';
-      const assignedRole: UserRole = email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+      const assignedRole: UserRole = this.determineRole(email);
       
       const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
       if (userDocSnapshot.exists()) {
@@ -923,7 +1048,7 @@ export class DbController {
 
   // Create or confirm Google User Profile
   static async saveGoogleProfile(profile: UserAccount): Promise<UserAccount> {
-    const assignedRole: UserRole = profile.email.toLowerCase() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+    const assignedRole: UserRole = this.determineRole(profile.email);
     const createdNow = profile.createdAt || new Date().toISOString();
     const prefix = profile.email.split('@')[0].substring(0, 4).toUpperCase();
     const updatedProfile = {
@@ -936,9 +1061,15 @@ export class DbController {
     if (isFirebaseActive && firestoreDb) {
       try {
         await setDoc(doc(firestoreDb, 'users', updatedProfile.uid), updatedProfile);
-      } catch (e) {
-        handleFirestoreError(e, OperationType.WRITE, `users/${updatedProfile.uid}`);
-        throw e;
+      } catch (e: any) {
+        const errMsg = e?.message || String(e);
+        if (errMsg.includes("offline") || errMsg.includes("Failed to get document because the client is offline")) {
+          console.warn("Firestore client is offline. Enqueueing user profile save for later offline sync.");
+          this.enqueueOfflineOperation('users', updatedProfile.uid, 'set', updatedProfile);
+        } else {
+          handleFirestoreError(e, OperationType.WRITE, `users/${updatedProfile.uid}`);
+          throw e;
+        }
       }
     }
     setStorageItem(STORAGE_KEYS.USER, updatedProfile);
@@ -961,7 +1092,25 @@ export class DbController {
       if (userDoc.exists()) {
         return userDoc.data() as UserAccount;
       }
-    } catch (e) {
+    } catch (e: any) {
+      const errMsg = e?.message || String(e);
+      if (errMsg.includes("offline") || errMsg.includes("Failed to get document because the client is offline") || errMsg.includes("client is offline")) {
+        console.warn("Firestore client is offline. Resolving user profile from cache/localStorage instead of failing.");
+        
+        // 1. Try to get from local users list
+        const cachedUsers = getStorageItem<UserAccount[]>(STORAGE_KEYS.USERS_LIST, []);
+        const localUser = cachedUsers.find(u => u.uid === uid);
+        if (localUser) {
+          return localUser;
+        }
+        
+        // 2. Try the current user fallback
+        const curr = this.getCurrentUser();
+        if (curr && curr.uid === uid) {
+          return curr;
+        }
+        return null;
+      }
       handleFirestoreError(e, OperationType.GET, `users/${uid}`);
       throw e;
     }
@@ -977,6 +1126,7 @@ export class DbController {
     }
     try {
       console.log("Beginning full database sync from Firestore...");
+      this.clearCache();
       
       // 1. School Profile Info
       let schoolsSnap;
@@ -1068,7 +1218,9 @@ export class DbController {
       }
 
       console.log("Database sync from Firestore successfully synced.");
+      this.clearCache();
     } catch (e) {
+      this.clearCache();
       console.warn("Database sync from Firestore aborted (running in offline LocalStorage backup mode):", e);
     }
   }
@@ -1077,11 +1229,17 @@ export class DbController {
   // SCHOOL PROFILE
   // -------------------------
   static getSchoolInfo(): SchoolInfo {
-    return getStorageItem<SchoolInfo>(STORAGE_KEYS.SCHOOL, DEFAULT_SCHOOL_INFO);
+    if (this._cache[STORAGE_KEYS.SCHOOL]) {
+      return this._cache[STORAGE_KEYS.SCHOOL];
+    }
+    const info = getStorageItem<SchoolInfo>(STORAGE_KEYS.SCHOOL, DEFAULT_SCHOOL_INFO);
+    this._cache[STORAGE_KEYS.SCHOOL] = info;
+    return info;
   }
 
   static saveSchoolInfo(info: SchoolInfo): void {
     setStorageItem(STORAGE_KEYS.SCHOOL, info);
+    this._cache[STORAGE_KEYS.SCHOOL] = info;
     this.performFirestoreWrite('schools', info.id, 'set', info);
   }
 
@@ -1089,11 +1247,17 @@ export class DbController {
   // ACADEMIC CALENDAR MANAGEMENT
   // -------------------------
   static getAcademicCalendar(): AcademicCalendarConfig {
-    return getStorageItem<AcademicCalendarConfig>(STORAGE_KEYS.CALENDAR, DEFAULT_CALENDAR);
+    if (this._cache[STORAGE_KEYS.CALENDAR]) {
+      return this._cache[STORAGE_KEYS.CALENDAR];
+    }
+    const calendar = getStorageItem<AcademicCalendarConfig>(STORAGE_KEYS.CALENDAR, DEFAULT_CALENDAR);
+    this._cache[STORAGE_KEYS.CALENDAR] = calendar;
+    return calendar;
   }
 
   static saveAcademicCalendar(calendar: AcademicCalendarConfig): void {
     setStorageItem(STORAGE_KEYS.CALENDAR, calendar);
+    this._cache[STORAGE_KEYS.CALENDAR] = calendar;
     this.performFirestoreWrite('settings', 'academic_calendar', 'set', calendar);
   }
 
@@ -1101,7 +1265,12 @@ export class DbController {
   // EMIS DATA MANAGEMENT (Ghana Education Service aligned)
   // -------------------------
   static getEmisReports(): EmisData[] {
-    return getStorageItem<EmisData[]>(STORAGE_KEYS.EMIS, []);
+    if (this._cache[STORAGE_KEYS.EMIS]) {
+      return this._cache[STORAGE_KEYS.EMIS];
+    }
+    const list = getStorageItem<EmisData[]>(STORAGE_KEYS.EMIS, []);
+    this._cache[STORAGE_KEYS.EMIS] = list;
+    return list;
   }
 
   static getEmisReportByYear(year: AcademicYearType): EmisData | null {
@@ -1118,6 +1287,7 @@ export class DbController {
       list.push(report);
     }
     setStorageItem(STORAGE_KEYS.EMIS, list);
+    this._cache[STORAGE_KEYS.EMIS] = list;
     this.performFirestoreWrite('emis', report.id, 'set', report);
   }
 
@@ -1125,6 +1295,7 @@ export class DbController {
     const list = this.getEmisReports();
     const filtered = list.filter(r => r.academicYear !== year);
     setStorageItem(STORAGE_KEYS.EMIS, filtered);
+    this._cache[STORAGE_KEYS.EMIS] = filtered;
     this.performFirestoreWrite('emis', year, 'delete');
   }
 
@@ -1132,7 +1303,24 @@ export class DbController {
   // STUDENTS PROFILE REGISTRY
   // -------------------------
   static getStudents(): Student[] {
-    return getStorageItem<Student[]>(STORAGE_KEYS.STUDENTS, []);
+    if (this._cache[STORAGE_KEYS.STUDENTS]) {
+      return this._cache[STORAGE_KEYS.STUDENTS];
+    }
+    const list = getStorageItem<Student[]>(STORAGE_KEYS.STUDENTS, []);
+    this._cache[STORAGE_KEYS.STUDENTS] = list;
+
+    // Build class index
+    const index = new Map<string, Student[]>();
+    list.forEach(student => {
+      const cls = student.class;
+      if (!index.has(cls)) {
+        index.set(cls, []);
+      }
+      index.get(cls)!.push(student);
+    });
+    this._studentsByClass = index;
+
+    return list;
   }
 
   static saveStudent(student: Student): void {
@@ -1144,31 +1332,133 @@ export class DbController {
       students.push(student);
     }
     setStorageItem(STORAGE_KEYS.STUDENTS, students);
+    this._cache[STORAGE_KEYS.STUDENTS] = students;
+
+    // Update index
+    const index = new Map<string, Student[]>();
+    students.forEach(s => {
+      const cls = s.class;
+      if (!index.has(cls)) {
+        index.set(cls, []);
+      }
+      index.get(cls)!.push(s);
+    });
+    this._studentsByClass = index;
+
     this.performFirestoreWrite('students', student.id, 'set', student);
   }
 
   static deleteStudent(studentId: string): void {
     const students = this.getStudents();
+    const student = students.find(s => s.id === studentId);
+    if (student) {
+      this.writeActivityLog(
+        'Student Profile Deletion',
+        `Deleted student profile: ${student.firstName} ${student.lastName} (ID: ${studentId}, Class: ${student.class}) with cascaded assessments and attendance records.`,
+        'high'
+      );
+    }
     const filtered = students.filter(s => s.id !== studentId);
     setStorageItem(STORAGE_KEYS.STUDENTS, filtered);
+    this._cache[STORAGE_KEYS.STUDENTS] = filtered;
+
+    // Rebuild index
+    const index = new Map<string, Student[]>();
+    filtered.forEach(s => {
+      const cls = s.class;
+      if (!index.has(cls)) {
+        index.set(cls, []);
+      }
+      index.get(cls)!.push(s);
+    });
+    this._studentsByClass = index;
 
     // Also cascade delete assessments and attendance for this student locally
     const assessments = this.getAssessments();
     const filteredAssessments = assessments.filter(a => a.studentId !== studentId);
     setStorageItem(STORAGE_KEYS.ASSESSMENTS, filteredAssessments);
+    this._cache[STORAGE_KEYS.ASSESSMENTS] = filteredAssessments;
+
+    // Rebuild assessments index
+    const aIndex = new Map<string, StudentAssessment[]>();
+    filteredAssessments.forEach(item => {
+      const sid = item.studentId;
+      if (!aIndex.has(sid)) {
+        aIndex.set(sid, []);
+      }
+      aIndex.get(sid)!.push(item);
+    });
+    this._assessmentsByStudent = aIndex;
 
     const attendanceList = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
     const filteredAttendance = attendanceList.filter(a => a.studentId !== studentId);
     setStorageItem(STORAGE_KEYS.ATTENDANCE, filteredAttendance);
+    this._cache[STORAGE_KEYS.ATTENDANCE] = filteredAttendance;
 
     this.performFirestoreWrite('students', studentId, 'delete');
+  }
+
+  static promoteClassBulk(sourceClass: ClassType, targetClass: ClassType | 'Graduated'): number {
+    const students = this.getStudents();
+    let count = 0;
+    
+    const updatedStudents = students.map(student => {
+      if (student.class === sourceClass) {
+        count++;
+        return {
+          ...student,
+          class: targetClass === 'Graduated' ? student.class : targetClass,
+          status: (targetClass === 'Graduated' ? 'Graduated' : (student.status || 'Active')) as any
+        };
+      }
+      return student;
+    });
+
+    setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents);
+    this._cache[STORAGE_KEYS.STUDENTS] = updatedStudents;
+
+    // Rebuild index
+    const index = new Map<string, Student[]>();
+    updatedStudents.forEach(s => {
+      const cls = s.class;
+      if (!index.has(cls)) {
+        index.set(cls, []);
+      }
+      index.get(cls)!.push(s);
+    });
+    this._studentsByClass = index;
+    
+    // Perform Firestore updates if Firebase is active
+    students.forEach(student => {
+      if (student.class === sourceClass) {
+        const payload = {
+          ...student,
+          class: targetClass === 'Graduated' ? student.class : targetClass,
+          status: (targetClass === 'Graduated' ? 'Graduated' : (student.status || 'Active')) as any
+        };
+        this.performFirestoreWrite('students', student.id, 'set', payload);
+      }
+    });
+
+    this.writeActivityLog(
+      'Bulk Student Promotion',
+      `Promoted all ${count} students of class level '${sourceClass}' to '${targetClass}'.`,
+      'high'
+    );
+    
+    return count;
   }
 
   // -------------------------
   // TEACHERS PROFILE REGISTRY
   // -------------------------
   static getTeachers(): Teacher[] {
-    return getStorageItem<Teacher[]>(STORAGE_KEYS.TEACHERS, []);
+    if (this._cache[STORAGE_KEYS.TEACHERS]) {
+      return this._cache[STORAGE_KEYS.TEACHERS];
+    }
+    const list = getStorageItem<Teacher[]>(STORAGE_KEYS.TEACHERS, []);
+    this._cache[STORAGE_KEYS.TEACHERS] = list;
+    return list;
   }
 
   static saveTeacher(teacher: Teacher): void {
@@ -1180,13 +1470,23 @@ export class DbController {
       teachers.push(teacher);
     }
     setStorageItem(STORAGE_KEYS.TEACHERS, teachers);
+    this._cache[STORAGE_KEYS.TEACHERS] = teachers;
     this.performFirestoreWrite('teachers', teacher.id, 'set', teacher);
   }
 
   static deleteTeacher(teacherId: string): void {
     const teachers = this.getTeachers();
+    const teacher = teachers.find(t => t.id === teacherId);
+    if (teacher) {
+      this.writeActivityLog(
+        'Teacher Account Deletion', 
+        `Permanently deleted teacher account record: ${teacher.firstName} ${teacher.lastName} (ID: ${teacherId}, Staff ID: ${teacher.staffId || 'N/A'}, NTC Number: ${teacher.ntcNumber || 'N/A'})`,
+        'critical'
+      );
+    }
     const filtered = teachers.filter(t => t.id !== teacherId);
     setStorageItem(STORAGE_KEYS.TEACHERS, filtered);
+    this._cache[STORAGE_KEYS.TEACHERS] = filtered;
     this.performFirestoreWrite('teachers', teacherId, 'delete');
   }
 
@@ -1194,9 +1494,16 @@ export class DbController {
   // ATTENDANCE MANAGEMENT
   // -------------------------
   static getAttendance(date: string, className: ClassType): AttendanceRecord[] {
-    const list = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+    let list: AttendanceRecord[];
+    if (this._cache[STORAGE_KEYS.ATTENDANCE]) {
+      list = this._cache[STORAGE_KEYS.ATTENDANCE];
+    } else {
+      list = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+      this._cache[STORAGE_KEYS.ATTENDANCE] = list;
+    }
     // Get all students enrolled in this class
-    const students = this.getStudents().filter(s => s.class === className);
+    this.getStudents();
+    const students = this._studentsByClass.get(className) || [];
     
     // Build attendance records ensuring every currently enrolled student has an entry for this class/date
     return students.map(student => {
@@ -1218,7 +1525,12 @@ export class DbController {
   }
 
   static saveAttendanceBatch(records: AttendanceRecord[]): void {
-    const list = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+    let list: AttendanceRecord[];
+    if (this._cache[STORAGE_KEYS.ATTENDANCE]) {
+      list = this._cache[STORAGE_KEYS.ATTENDANCE];
+    } else {
+      list = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+    }
     records.forEach(rec => {
       const idx = list.findIndex(r => r.id === rec.id);
       if (idx >= 0) {
@@ -1229,18 +1541,36 @@ export class DbController {
       this.performFirestoreWrite('attendance', rec.id, 'set', rec);
     });
     setStorageItem(STORAGE_KEYS.ATTENDANCE, list);
+    this._cache[STORAGE_KEYS.ATTENDANCE] = list;
+
+    if (records.length > 0) {
+      const dateStr = records[0].date;
+      const classLevel = records[0].class;
+      this.writeActivityLog(
+        'Class Attendance Marked',
+        `Attendance log submitted for ${classLevel} on ${dateStr} (${records.length} students updated).`,
+        'low'
+      );
+    }
   }
 
   static getAttendanceStats(className: ClassType, date: string) {
-    const records = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+    let records: AttendanceRecord[];
+    if (this._cache[STORAGE_KEYS.ATTENDANCE]) {
+      records = this._cache[STORAGE_KEYS.ATTENDANCE];
+    } else {
+      records = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+      this._cache[STORAGE_KEYS.ATTENDANCE] = records;
+    }
     const classRecords = records.filter(r => r.class === className && r.date === date);
     
     const present = classRecords.filter(r => r.status === 'Present').length;
     const holiday = classRecords.filter(r => r.status === 'Holiday').length;
     const absent = classRecords.filter(r => r.status === 'Absent').length;
     
+    this.getStudents();
     return {
-      totalEnrolled: this.getStudents().filter(s => s.class === className).length,
+      totalEnrolled: (this._studentsByClass.get(className) || []).length || this.getStudents().filter(s => s.class === className).length,
       present,
       holiday,
       absent,
@@ -1249,7 +1579,13 @@ export class DbController {
   }
 
   static getStudentAttendanceStats(studentId: string) {
-    const records = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+    let records: AttendanceRecord[];
+    if (this._cache[STORAGE_KEYS.ATTENDANCE]) {
+      records = this._cache[STORAGE_KEYS.ATTENDANCE];
+    } else {
+      records = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+      this._cache[STORAGE_KEYS.ATTENDANCE] = records;
+    }
     const studentRecords = records.filter(r => r.studentId === studentId);
     
     const present = studentRecords.filter(r => r.status === 'Present').length;
@@ -1266,7 +1602,13 @@ export class DbController {
   // STAFF ATTENDANCE MANAGEMENT
   // -------------------------
   static getStaffAttendance(date: string): StaffAttendanceRecord[] {
-    const list = getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+    let list: StaffAttendanceRecord[];
+    if (this._cache[STORAGE_KEYS.STAFF_ATTENDANCE]) {
+      list = this._cache[STORAGE_KEYS.STAFF_ATTENDANCE];
+    } else {
+      list = getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+      this._cache[STORAGE_KEYS.STAFF_ATTENDANCE] = list;
+    }
     const teachers = this.getTeachers();
 
     return teachers.map(teacher => {
@@ -1290,7 +1632,12 @@ export class DbController {
   }
 
   static saveStaffAttendanceBatch(records: StaffAttendanceRecord[]): void {
-    const list = getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+    let list: StaffAttendanceRecord[];
+    if (this._cache[STORAGE_KEYS.STAFF_ATTENDANCE]) {
+      list = this._cache[STORAGE_KEYS.STAFF_ATTENDANCE];
+    } else {
+      list = getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+    }
     records.forEach(rec => {
       const idx = list.findIndex(r => r.id === rec.id);
       if (idx >= 0) {
@@ -1301,16 +1648,25 @@ export class DbController {
       this.performFirestoreWrite('staff_attendance', rec.id, 'set', rec);
     });
     setStorageItem(STORAGE_KEYS.STAFF_ATTENDANCE, list);
+    this._cache[STORAGE_KEYS.STAFF_ATTENDANCE] = list;
   }
 
   static getAllStaffAttendance(): StaffAttendanceRecord[] {
-    return getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+    if (this._cache[STORAGE_KEYS.STAFF_ATTENDANCE]) {
+      return this._cache[STORAGE_KEYS.STAFF_ATTENDANCE];
+    }
+    const list = getStorageItem<StaffAttendanceRecord[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
+    this._cache[STORAGE_KEYS.STAFF_ATTENDANCE] = list;
+    return list;
   }
 
   // -------------------------
   // SCHOOL ASSESSMENT SYSTEM
   // -------------------------
   static getAssessments(): StudentAssessment[] {
+    if (this._cache[STORAGE_KEYS.ASSESSMENTS]) {
+      return this._cache[STORAGE_KEYS.ASSESSMENTS];
+    }
     const list = getStorageItem<StudentAssessment[]>(STORAGE_KEYS.ASSESSMENTS, []);
     let updated = false;
     const sanitized = list.map(item => {
@@ -1323,6 +1679,19 @@ export class DbController {
     if (updated) {
       setStorageItem(STORAGE_KEYS.ASSESSMENTS, sanitized);
     }
+    this._cache[STORAGE_KEYS.ASSESSMENTS] = sanitized;
+
+    // Build assessment look up index
+    const index = new Map<string, StudentAssessment[]>();
+    sanitized.forEach(item => {
+      const studentId = item.studentId;
+      if (!index.has(studentId)) {
+        index.set(studentId, []);
+      }
+      index.get(studentId)!.push(item);
+    });
+    this._assessmentsByStudent = index;
+
     return sanitized;
   }
 
@@ -1333,13 +1702,15 @@ export class DbController {
     term: TermType,
     subject: SubjectType
   ): StudentAssessment[] {
-    const allAssessments = this.getAssessments();
-    const students = this.getStudents().filter(s => s.class === className);
+    const allAssessments = this.getAssessments(); // guaranteed to populate _assessmentsByStudent
+    this.getStudents(); // guaranteed to populate _studentsByClass
+    const students = this._studentsByClass.get(className) || [];
 
     // Build assessment row for each student
     const sheet = students.map(st => {
       const compoundId = `${st.id}_${academicYear}_${term}_${subject.replace(/\s+/g, '')}`.replace(/\//g, '-');
-      const found = allAssessments.find(a => a.id === compoundId);
+      const studentAssessments = this._assessmentsByStudent.get(st.id) || [];
+      const found = studentAssessments.find(a => a.id === compoundId);
       
       if (found) {
         // Enforce the student name check in case it was renamed in database
@@ -1465,9 +1836,26 @@ export class DbController {
     const allAssessments = this.getAssessments();
     const updatedSheet = this.calculatePositions(sheet);
 
+    let loggedChangesCount = 0;
+    const changeDetails: string[] = [];
+
     updatedSheet.forEach(item => {
       const idx = allAssessments.findIndex(a => a.id === item.id);
       if (idx >= 0) {
+        const olditem = allAssessments[idx];
+        const oldExam = olditem.examScore100;
+        const newExam = item.examScore100;
+        const oldTotal = olditem.totalScore;
+        const newTotal = item.totalScore;
+
+        if (oldExam !== newExam || oldTotal !== newTotal) {
+          loggedChangesCount++;
+          if (changeDetails.length < 5) {
+            changeDetails.push(
+              `${item.studentName} (${item.class}, ${item.subject}): Exam ${oldExam}% → ${newExam}%, Total ${oldTotal.toFixed(1)}% → ${newTotal.toFixed(1)}%`
+            );
+          }
+        }
         allAssessments[idx] = item;
       } else {
         allAssessments.push(item);
@@ -1475,7 +1863,34 @@ export class DbController {
       this.performFirestoreWrite('assessments', item.id, 'set', item);
     });
 
+    if (loggedChangesCount > 0) {
+      let detailsMessage = `Modified grades for ${loggedChangesCount} student assessment records.`;
+      if (changeDetails.length > 0) {
+        detailsMessage += ` Highlights: ${changeDetails.join(' | ')}`;
+      }
+      if (loggedChangesCount > 5) {
+        detailsMessage += ` (+${loggedChangesCount - 5} more)`;
+      }
+      this.writeActivityLog(
+        'Assessment Grade Changes',
+        detailsMessage,
+        'high'
+      );
+    }
+
     setStorageItem(STORAGE_KEYS.ASSESSMENTS, allAssessments);
+    this._cache[STORAGE_KEYS.ASSESSMENTS] = allAssessments;
+
+    // Rebuild assessment lookup index
+    const index = new Map<string, StudentAssessment[]>();
+    allAssessments.forEach(item => {
+      const studentId = item.studentId;
+      if (!index.has(studentId)) {
+        index.set(studentId, []);
+      }
+      index.get(studentId)!.push(item);
+    });
+    this._assessmentsByStudent = index;
   }
 
   // Get report cards for an individual student across multiple subjects for a given term
@@ -1484,13 +1899,16 @@ export class DbController {
     academicYear: AcademicYearType,
     term: TermType
   ) {
-    const assessments = this.getAssessments();
+    this.getAssessments(); // ensures _assessmentsByStudent is populated
+    this.getStudents(); // ensures _studentsByClass is populated
+    
     const student = this.getStudents().find(s => s.id === studentId);
     if (!student) return null;
 
-    // Find all assessment entries for this student, year, and term
-    const explicitGrades = assessments.filter(
-      a => a.studentId === studentId && a.academicYear === academicYear && a.term === term
+    // Find all assessment entries for this student, year, and term using index
+    const studentAssessments = this._assessmentsByStudent.get(studentId) || [];
+    const explicitGrades = studentAssessments.filter(
+      a => a.academicYear === academicYear && a.term === term
     );
 
     // We only use explicit assessment grades entered with data
@@ -1504,12 +1922,13 @@ export class DbController {
 
     const attStats = this.getStudentAttendanceStats(studentId);
 
-    // Compute dynamic rank inside the student's primary academic class
+    // Compute dynamic rank inside the student's primary academic class using index
     const targetClass = student.class;
-    const classStudents = this.getStudents().filter(s => s.class === targetClass);
+    const classStudents = this._studentsByClass.get(targetClass) || [];
     const rankings = classStudents.map(cs => {
-      const gList = assessments.filter(
-        a => a.studentId === cs.id && a.academicYear === academicYear && a.term === term
+      const csAssessments = this._assessmentsByStudent.get(cs.id) || [];
+      const gList = csAssessments.filter(
+        a => a.academicYear === academicYear && a.term === term
       );
       const sum = gList.reduce((acc, item) => acc + item.totalScore, 0);
       const avg = gList.length > 0 ? parseFloat((sum / gList.length).toFixed(2)) : 0;
@@ -1545,7 +1964,12 @@ export class DbController {
   // SCHOOL FEES MANAGEMENT
   // -------------------------
   static getStudentFeeBills(): StudentFeeBill[] {
-    return getStorageItem<StudentFeeBill[]>(STORAGE_KEYS.FEES, []);
+    if (this._cache[STORAGE_KEYS.FEES]) {
+      return this._cache[STORAGE_KEYS.FEES];
+    }
+    const list = getStorageItem<StudentFeeBill[]>(STORAGE_KEYS.FEES, []);
+    this._cache[STORAGE_KEYS.FEES] = list;
+    return list;
   }
 
   static saveStudentFeeBill(bill: StudentFeeBill): void {
@@ -1557,6 +1981,7 @@ export class DbController {
       bills.push(bill);
     }
     setStorageItem(STORAGE_KEYS.FEES, bills);
+    this._cache[STORAGE_KEYS.FEES] = bills;
     this.performFirestoreWrite('fees', bill.id, 'set', bill);
   }
 
@@ -1564,6 +1989,7 @@ export class DbController {
     const bills = this.getStudentFeeBills();
     const filtered = bills.filter(b => b.id !== billId);
     setStorageItem(STORAGE_KEYS.FEES, filtered);
+    this._cache[STORAGE_KEYS.FEES] = filtered;
     this.performFirestoreWrite('fees', billId, 'delete');
   }
 
@@ -1573,6 +1999,7 @@ export class DbController {
       if (b.id) this.performFirestoreWrite('fees', b.id, 'delete');
     });
     setStorageItem(STORAGE_KEYS.FEES, []);
+    this._cache[STORAGE_KEYS.FEES] = [];
     localStorage.removeItem('school_fees_bills');
   }
 
@@ -1601,16 +2028,22 @@ export class DbController {
           } as PaystackPayment;
         });
         setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, list);
+        this._cache[STORAGE_KEYS.PAYSTACK_LOGS] = list;
         return list;
       } catch (error) {
         console.warn("Could not fetch Paystack logs from Firestore:", error);
       }
     }
-    return getStorageItem<PaystackPayment[]>(STORAGE_KEYS.PAYSTACK_LOGS, []);
+    return this.getLocalPaystackPayments();
   }
 
   static getLocalPaystackPayments(): PaystackPayment[] {
-    return getStorageItem<PaystackPayment[]>(STORAGE_KEYS.PAYSTACK_LOGS, []);
+    if (this._cache[STORAGE_KEYS.PAYSTACK_LOGS]) {
+      return this._cache[STORAGE_KEYS.PAYSTACK_LOGS];
+    }
+    const list = getStorageItem<PaystackPayment[]>(STORAGE_KEYS.PAYSTACK_LOGS, []);
+    this._cache[STORAGE_KEYS.PAYSTACK_LOGS] = list;
+    return list;
   }
 
   static savePaystackPayment(payment: PaystackPayment): void {
@@ -1622,6 +2055,7 @@ export class DbController {
       list.push(payment);
     }
     setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, list);
+    this._cache[STORAGE_KEYS.PAYSTACK_LOGS] = list;
     this.performFirestoreWrite('paystack_payments', payment.id, 'set', payment);
   }
 
@@ -1629,6 +2063,7 @@ export class DbController {
     const list = this.getLocalPaystackPayments();
     const filtered = list.filter(p => p.id !== paymentId);
     setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, filtered);
+    this._cache[STORAGE_KEYS.PAYSTACK_LOGS] = filtered;
     this.performFirestoreWrite('paystack_payments', paymentId, 'delete');
   }
 
@@ -1638,21 +2073,28 @@ export class DbController {
       if (p.id) this.performFirestoreWrite('paystack_payments', p.id, 'delete');
     });
     setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, []);
+    this._cache[STORAGE_KEYS.PAYSTACK_LOGS] = [];
   }
 
   // System settings customization
   static getSystemSettings() {
-    return getStorageItem(STORAGE_KEYS.SETTINGS, {
+    if (this._cache[STORAGE_KEYS.SETTINGS]) {
+      return this._cache[STORAGE_KEYS.SETTINGS];
+    }
+    const settings = getStorageItem(STORAGE_KEYS.SETTINGS, {
       theme: 'Classic' as ThemeType,
       autoSave: true,
       term: 'Term 1' as TermType,
       academicYear: '2026/2027' as AcademicYearType,
       schoolSystemName: 'GEETECH SMS & ASSESSMENT CENTER'
     });
+    this._cache[STORAGE_KEYS.SETTINGS] = settings;
+    return settings;
   }
 
   static saveSystemSettings(settings: any) {
     setStorageItem(STORAGE_KEYS.SETTINGS, settings);
+    this._cache[STORAGE_KEYS.SETTINGS] = settings;
   }
 
   // -------------------------
@@ -1678,6 +2120,7 @@ export class DbController {
 
   static importAllData(jsonString: string): { success: boolean; error?: string } {
     try {
+      this.clearCache();
       const data = JSON.parse(jsonString);
       if (!data) {
         throw new Error("Invalid or empty backup data file.");
@@ -1755,8 +2198,10 @@ export class DbController {
         }
       }
 
+      this.clearCache();
       return { success: true };
     } catch (e: any) {
+      this.clearCache();
       return { success: false, error: e.message || String(e) };
     }
   }
@@ -1767,6 +2212,8 @@ export class DbController {
       this.performFirestoreWrite('students', s.id, 'delete');
     });
     setStorageItem(STORAGE_KEYS.STUDENTS, []);
+    this._cache[STORAGE_KEYS.STUDENTS] = [];
+    this._studentsByClass.clear();
     localStorage.removeItem('school_students');
   }
 
@@ -1776,6 +2223,7 @@ export class DbController {
       this.performFirestoreWrite('teachers', t.id, 'delete');
     });
     setStorageItem(STORAGE_KEYS.TEACHERS, []);
+    this._cache[STORAGE_KEYS.TEACHERS] = [];
     localStorage.removeItem('school_teachers');
   }
 
@@ -1785,6 +2233,8 @@ export class DbController {
       if (a.id) this.performFirestoreWrite('assessments', a.id, 'delete');
     });
     setStorageItem(STORAGE_KEYS.ASSESSMENTS, []);
+    this._cache[STORAGE_KEYS.ASSESSMENTS] = [];
+    this._assessmentsByStudent.clear();
     localStorage.removeItem('school_assessments');
   }
 
@@ -1866,6 +2316,7 @@ export class DbController {
     localStorage.removeItem(STORAGE_KEYS.FEES);
     localStorage.removeItem(STORAGE_KEYS.EMIS);
     localStorage.removeItem(STORAGE_KEYS.CALENDAR);
+    localStorage.removeItem(STORAGE_KEYS.ACTIVITY_LOGS);
     localStorage.removeItem('sms_offline_queue');
 
     // Make sure we purge legacy keys that some old client tab code might read/write
@@ -1896,5 +2347,6 @@ export class DbController {
       stampUrl: ''
     };
     localStorage.setItem(STORAGE_KEYS.SCHOOL, JSON.stringify(blankSchool));
+    this.clearCache();
   }
 }

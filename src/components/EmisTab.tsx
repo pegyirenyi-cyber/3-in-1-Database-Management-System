@@ -450,9 +450,9 @@ export default function EmisTab({ theme }: Props) {
       </div>
 
       {/* CORE INPUT NAVIGATION SHEET */}
-      <div className="flex flex-col lg:flex-row gap-6 no-print">
+      <div className="flex flex-col lg:flex-row gap-6">
                {/* Left column: Sub-tab checklist navigation */}
-        <div className="w-full lg:w-64 shrink-0 flex flex-row lg:flex-col overflow-x-auto lg:overflow-visible gap-2 pb-3 lg:pb-0 scrollbar-none select-none">
+        <div className="w-full lg:w-64 shrink-0 flex flex-row lg:flex-col overflow-x-auto lg:overflow-visible gap-2 pb-3 lg:pb-0 scrollbar-none select-none no-print">
           <button
             onClick={() => setActiveSubTab('admin')}
             className={`flex-shrink-0 whitespace-nowrap font-bold text-xs px-4 py-2.5 lg:py-3 rounded-xl transition flex items-center gap-2.5 cursor-pointer lg:w-full lg:text-left ${
@@ -1653,7 +1653,7 @@ export default function EmisTab({ theme }: Props) {
 
                       {totalEnrolled > 0 ? (
                         <div className="w-full h-64">
-                          <ResponsiveContainer width="100%" height="100%" aspect={undefined}>
+                          <ResponsiveContainer width="100%" height="100%" aspect={1.8}>
                             <BarChart data={chartData} margin={{ top: 10, right: 0, left: -25, bottom: 0 }}>
                               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
                               <XAxis dataKey="name" fontSize={10} tickLine={false} stroke="#64748B" />
@@ -1686,7 +1686,7 @@ export default function EmisTab({ theme }: Props) {
                       {hasStaffData ? (
                         <div className="flex-1 flex flex-col items-center justify-center py-2">
                           <div className="w-full h-32 relative flex justify-center items-center">
-                            <ResponsiveContainer width="100%" height="100%" aspect={undefined}>
+                            <ResponsiveContainer width="100%" height="100%" aspect={1.5}>
                               <PieChart>
                                 <Pie
                                   data={staffData}

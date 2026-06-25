@@ -1,5 +1,5 @@
 import React, { useState, useRef, ChangeEvent, FormEvent, useMemo } from 'react';
-import { Teacher, TeacherRank, TEACHER_RANKS } from '../types';
+import { Teacher, TeacherRank, TEACHER_RANKS, CLASSES, ClassType } from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
@@ -36,7 +36,9 @@ const INITIAL_FORM: Partial<Teacher> = {
   ssnitNumber: '',
   district: '',
   circuit: '',
-  photoUrl: ''
+  photoUrl: '',
+  email: '',
+  assignedClass: 'None'
 };
 
 export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, onManualSave }: Props) {
@@ -553,6 +555,8 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
       district: formState.district || '',
       circuit: formState.circuit || '',
       photoUrl: formState.photoUrl || '',
+      email: formState.email || '',
+      assignedClass: (formState.assignedClass || 'None') as ClassType | 'None',
       createdAt: formState.createdAt || new Date().toISOString()
     };
 
@@ -675,6 +679,18 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                     <GraduationCap size={13} className="text-slate-400" />
                     <span className="truncate"><strong>Subject/Class:</strong> {tea.subjectsTaught || 'Not specified'}</span>
                   </div>
+                  {tea.email && (
+                    <div className="flex items-center gap-1 text-slate-500 font-mono text-[10px] truncate">
+                      <span><strong>Login Email:</strong> {tea.email}</span>
+                    </div>
+                  )}
+                  {tea.assignedClass && tea.assignedClass !== 'None' && (
+                    <div className="flex items-center gap-1 text-slate-600 mt-1">
+                      <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-bold text-[9px] uppercase">
+                        Class Teacher: {tea.assignedClass}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-1 text-slate-600">
                     <Award size={13} className="text-slate-400" />
                     <span className="truncate"><strong>Degree:</strong> {tea.highestAcademicQualifications || 'N/A'}</span>
@@ -1089,6 +1105,33 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                       className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none"
                       placeholder="e.g., Computing / Class 3"
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-600 font-medium mb-1">Login Email Address</label>
+                    <input
+                      type="email"
+                      value={formState.email || ''}
+                      onChange={(e) => setFormState(prev => ({ ...prev, email: e.target.value }))}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none"
+                      placeholder="teacher.email@school.com"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-0.5 font-mono">Enables automatic Class Teacher role mapping on login.</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-600 font-medium mb-1">Assigned Class Role</label>
+                    <select
+                      value={formState.assignedClass || 'None'}
+                      onChange={(e) => setFormState(prev => ({ ...prev, assignedClass: e.target.value as ClassType | 'None' }))}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+                    >
+                      <option value="None">None / Subject Teacher Only</option>
+                      {CLASSES.map(cls => (
+                        <option key={cls} value={cls}>{cls} (Class Teacher)</option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400 mt-0.5 font-mono">Restricts teacher access to their assigned class data only.</p>
                   </div>
 
                   <div>

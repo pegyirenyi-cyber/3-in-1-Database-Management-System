@@ -649,7 +649,7 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
       </div>
 
       {/* PRINT-ONLY HIGH FIDELITY LAYOUT (ONLY VISIBLE ON PRINT) */}
-      <div className="hidden print:block font-serif max-w-4xl mx-auto p-12 bg-white text-black border-4 border-double border-slate-800 rounded-none shadow-none mt-20">
+      <div id="school-profile-print-area" className="hidden print:block font-serif max-w-4xl mx-auto p-12 bg-white text-black border-4 border-double border-slate-800 rounded-none shadow-none mt-20">
         <div className="text-center border-b-2 border-slate-800 pb-6 mb-8">
           <div className="mx-auto w-24 h-24 mb-4 flex items-center justify-center overflow-hidden border border-slate-300 rounded-full bg-slate-50">
             {formData.logoUrl ? (

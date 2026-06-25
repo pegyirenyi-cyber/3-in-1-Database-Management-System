@@ -17,6 +17,19 @@ export interface SchoolInfo {
   reopeningDate?: string;
   signatureUrl?: string;
   stampUrl?: string;
+  paystackPublicKey?: string;
+  paystackSecretKey?: string;
+  paystackMode?: 'test' | 'live';
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  twilioFromNumber?: string;
+  twilioEnabled?: boolean;
+  smsBalance?: number;
+  smsSenderId?: string;
+  licensePrice1Year?: number;
+  licensePrice2Year?: number;
+  licensePrice3Year?: number;
+  licensePrice5Year?: number;
 }
 
 export type ClassType =
@@ -52,9 +65,9 @@ export const CLASSES: ClassType[] = [
   'Basic 9'
 ];
 
-export type SectionType = 'Faith' | 'Harmony' | 'Humility' | 'Peace';
+export type SectionType = 'None' | 'Faith' | 'Harmony' | 'Humility' | 'Peace';
 
-export const SECTIONS: SectionType[] = ['Faith', 'Harmony', 'Humility', 'Peace'];
+export const SECTIONS: SectionType[] = ['None', 'Faith', 'Harmony', 'Humility', 'Peace'];
 
 export interface Student {
   id: string;
@@ -126,6 +139,13 @@ export interface Teacher {
   circuit: string;
   photoUrl: string;
   createdAt: string;
+  email?: string;
+  assignedClass?: ClassType | 'None';
+  permissions?: {
+    canEditGrades?: boolean;
+    canApproveAttendance?: boolean;
+    canExportReports?: boolean;
+  };
 }
 
 export type AttendanceStatus = 'Present' | 'Holiday' | 'Absent' | 'Unmarked';
@@ -203,7 +223,13 @@ export type SubjectType =
   | 'Our World Our People'
   | 'Career Technology'
   | 'History'
-  | 'Ghanaian Language And Culture';
+  | 'Ghanaian Language And Culture'
+  | 'Literacy'
+  | 'Numeracy'
+  | 'Writing'
+  | 'Drawing'
+  | 'Colouring'
+  | 'Environmental Studies';
 
 export const SUBJECTS: SubjectType[] = [
   'English Language',
@@ -217,7 +243,13 @@ export const SUBJECTS: SubjectType[] = [
   'Our World Our People',
   'Career Technology',
   'History',
-  'Ghanaian Language And Culture'
+  'Ghanaian Language And Culture',
+  'Literacy',
+  'Numeracy',
+  'Writing',
+  'Drawing',
+  'Colouring',
+  'Environmental Studies'
 ];
 
 export interface StudentAssessment {
@@ -245,7 +277,7 @@ export interface StudentAssessment {
   teacherRemarks?: string;
 }
 
-export type UserRole = 'Admin' | 'Headteacher';
+export type UserRole = 'Admin' | 'Headteacher' | 'Teacher';
 
 export interface UserAccount {
   uid: string;
@@ -258,6 +290,17 @@ export interface UserAccount {
   lastActivatedOn?: string;
   activationCode?: string;
   requestCode?: string;
+  promoDiscountRate?: number;
+}
+
+export interface WebAuthnCredential {
+  id: string; // base64 / binary string representation of the credential ID
+  publicKey: string; // public key representation
+  userEmail: string; // bound user's email
+  userName: string; // bound user's name
+  deviceName: string; // name of the authenticator e.g., "Peggy's TouchID Laptop"
+  createdAt: string; // timestamp
+  isSimulated?: boolean; // whether it was registered via simulation fallback
 }
 
 export type ThemeType = 'Classic' | 'Emerald' | 'Ruby' | 'Cosmic' | 'Gold' | 'Sophisticated Dark' | 'Crystal Glass';
@@ -406,5 +449,16 @@ export interface PaystackPayment {
   status: string;
   paidAt?: string;
   createdAt: string;
+}
+
+export interface ActivityLog {
+  id: string;
+  timestamp: string; // ISO String representation of action time
+  userEmail: string;
+  userName: string;
+  userRole: UserRole;
+  action: string; // e.g., 'Bulk Student Promotion', 'Teacher Account Deletion', etc.
+  details: string; // detailed description 
+  severity: 'info' | 'low' | 'medium' | 'high' | 'critical';
 }
 

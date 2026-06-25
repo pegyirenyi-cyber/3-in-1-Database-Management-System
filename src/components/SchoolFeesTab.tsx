@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, ChangeEvent, FormEvent } from 'react';
+import { useState, useMemo, useRef, ChangeEvent, FormEvent, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Student, 
@@ -41,7 +41,8 @@ import {
   Eye,
   Bell,
   Mail,
-  Send
+  Send,
+  MessageSquare
 } from 'lucide-react';
 
 interface Props {
@@ -111,6 +112,53 @@ export default function SchoolFeesTab({
   const [reminderSendingSms, setReminderSendingSms] = useState(false);
   const [reminderSmsSuccess, setReminderSmsSuccess] = useState<string | null>(null);
 
+  // Automated Fee Invoice States
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [invoiceNo, setInvoiceNo] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [invoiceDueDate, setInvoiceDueDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 14);
+    return d.toISOString().split('T')[0];
+  });
+  const [invoiceNotes, setInvoiceNotes] = useState(
+    'Please deposit outstanding fees directly into the school account: GeeTech Academy, GCB Bank, Account No. 10111223344, or send via MTN Mobile Money to 0244123456 (Merchant: GeeTech Academy). Please present your deposit slip or transaction ID to the accounts office for official receipting.'
+  );
+
+  // SMS Logs for delivery tracking
+  const [smsLogs, setSmsLogs] = useState<{ sid: string; studentName: string; phone: string; status: string; sentAt: number }[]>(() => {
+    try {
+      const saved = localStorage.getItem('smsLogs_fees_reminders');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('smsLogs_fees_reminders', JSON.stringify(smsLogs));
+  }, [smsLogs]);
+
+  useEffect(() => {
+    // Poll pending SMS statuses
+    const interval = setInterval(() => {
+      const pendingLogs = smsLogs.filter(log => !['delivered', 'failed', 'undelivered'].includes(log.status.toLowerCase()));
+      if (pendingLogs.length > 0) {
+        pendingLogs.forEach(async (log) => {
+          try {
+            const res = await fetch(`/api/communications/sms-status/${log.sid}`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data.status && data.status.toLowerCase() !== log.status.toLowerCase()) {
+                setSmsLogs(prev => prev.map(l => l.sid === log.sid ? { ...l, status: data.status } : l));
+              }
+            }
+          } catch (err) {}
+        });
+      }
+    }, 5000); // poll every 5 seconds
+    return () => clearInterval(interval);
+  }, [smsLogs]);
+
   // Form handling state for currently active selected student
   const activeStudent = useMemo(() => students.find(s => s.id === activeStudentId), [students, activeStudentId]);
   
@@ -140,36 +188,75 @@ export default function SchoolFeesTab({
     setShowReminderModal(true);
   };
 
+  const handleOpenInvoice = () => {
+    if (!activeStudent) return;
+    const yearPart = selectedAcademicYear.split('/')[0];
+    const randPart = Math.floor(1000 + Math.random() * 9000);
+    setInvoiceNo(`INV-${yearPart}-${activeStudent.id}-${randPart}`);
+    
+    // Set default invoice date to today
+    setInvoiceDate(new Date().toISOString().split('T')[0]);
+    
+    // Default due date: 14 days from now
+    const d = new Date();
+    d.setDate(d.getDate() + 14);
+    setInvoiceDueDate(d.toISOString().split('T')[0]);
+    
+    setShowInvoiceModal(true);
+  };
+
   const handleSendReminderSMS = async () => {
     if (!reminderRecipientPhone) return;
     setReminderSendingSms(true);
     setReminderSmsSuccess(null);
 
-    // Simulate GSM handshake / SMS Cellular request
-    await new Promise(resolve => setTimeout(resolve, 1200));
-
-    // Save to local logs using existing structure if desired or just mark success
     const sName = `${activeStudent?.firstName} ${activeStudent?.lastName}`;
     const sGuardian = activeStudent?.guardianName || 'Guardian';
-    
-    // Add to student database if parent tel changed or was blank
-    if (activeStudent && activeStudent.guardianTelephone !== reminderRecipientPhone) {
-      try {
-        const updatedStudent = {
-          ...activeStudent,
-          guardianTelephone: reminderRecipientPhone
-        };
-        await DbController.saveStudent(updatedStudent);
-        if (navigator.onLine) {
-          DbController.syncAllDataFromFirebase().catch(e => console.warn(e));
+
+    try {
+      const res = await fetch('/api/communications/send-sms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: reminderRecipientPhone.trim(),
+          body: reminderCustomMessage
+        })
+      });
+
+      const parsed = await res.json();
+      
+      if (res.ok && parsed.success) {
+        // Add to student database if parent tel changed or was blank
+        if (activeStudent && activeStudent.guardianTelephone !== reminderRecipientPhone) {
+          try {
+            const updatedStudent = {
+              ...activeStudent,
+              guardianTelephone: reminderRecipientPhone
+            };
+            await DbController.saveStudent(updatedStudent);
+            if (navigator.onLine) {
+              DbController.syncAllDataFromFirebase().catch(e => console.warn(e));
+            }
+          } catch (err) {
+            console.warn("Failed to sync guardian telephone updates:", err);
+          }
         }
-      } catch (err) {
-        console.warn("Failed to sync guardian telephone updates:", err);
+        
+        // Save to logs
+        setSmsLogs(prev => [
+          { sid: parsed.sid, studentName: sName, phone: reminderRecipientPhone, status: 'Sent', sentAt: Date.now() },
+          ...prev
+        ]);
+        
+        setReminderSmsSuccess(`Automated payment compliance SMS reminder successfully dispatched to parent ${sGuardian} (${reminderRecipientPhone})!`);
+      } else {
+        showToast(parsed.message || "Failed to dispatch SMS reminder.", "error");
       }
+    } catch (error: any) {
+      showToast(error.message || "Failed to contact SMS gateway.", "error");
     }
 
     setReminderSendingSms(false);
-    setReminderSmsSuccess(`Automated payment compliance SMS reminder successfully dispatched to parent ${sGuardian} (${reminderRecipientPhone})!`);
   };
 
   // Notification / Feedback Toast states
@@ -552,6 +639,45 @@ export default function SchoolFeesTab({
         </div>
       </div>
 
+      {/* SMS Delivery Summary Stats */}
+      {smsLogs.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 flex items-center justify-between">
+            <div>
+              <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Delivered SMS</p>
+              <p className="text-xl font-bold font-mono text-emerald-600 mt-1">
+                {smsLogs.filter(l => l.status.toLowerCase() === 'delivered').length}
+              </p>
+            </div>
+            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-lg">
+              <Check className="h-5 w-5" />
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 flex items-center justify-between">
+            <div>
+              <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Pending SMS</p>
+              <p className="text-xl font-bold font-mono text-blue-600 mt-1">
+                {smsLogs.filter(l => !['delivered', 'failed', 'undelivered'].includes(l.status.toLowerCase())).length}
+              </p>
+            </div>
+            <div className="p-2.5 bg-blue-50 text-blue-600 rounded-lg">
+              <MessageSquare className="h-5 w-5" />
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 flex items-center justify-between">
+            <div>
+              <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Failed SMS</p>
+              <p className="text-xl font-bold font-mono text-rose-600 mt-1">
+                {smsLogs.filter(l => l.status.toLowerCase() === 'failed' || l.status.toLowerCase() === 'undelivered').length}
+              </p>
+            </div>
+            <div className="p-2.5 bg-rose-50 text-rose-600 rounded-lg">
+              <AlertTriangle className="h-5 w-5" />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Control Utility bar */}
       <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-wrap gap-4 items-center justify-between">
         <div className="flex items-center gap-3">
@@ -614,6 +740,62 @@ export default function SchoolFeesTab({
           </button>
         </div>
       </div>
+
+      {/* SMS Delivery Tracking Panel */}
+      {smsLogs.length > 0 && (
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4 no-print">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                <MessageSquare className="text-indigo-600" size={15} /> 
+                Automated SMS Deliveries 
+              </h3>
+              <p className="text-[10px] text-slate-500 mt-0.5">Live tracking of fee reminder dispatches</p>
+            </div>
+            <button 
+              onClick={() => {
+                if (window.confirm("Clear all SMS dispatch logs?")) setSmsLogs([]);
+              }}
+              className="text-[10px] text-rose-500 hover:text-rose-700 font-bold px-2 py-1 bg-rose-50 rounded"
+            >
+              Clear Logs
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 text-[9px] uppercase tracking-wider text-slate-500 border-y border-slate-200">
+                  <th className="p-2 font-semibold">Sent At</th>
+                  <th className="p-2 font-semibold">Student / Parent</th>
+                  <th className="p-2 font-semibold">Phone #</th>
+                  <th className="p-2 font-semibold text-right">Delivery Status</th>
+                </tr>
+              </thead>
+              <tbody className="text-[11px] divide-y divide-slate-100 font-medium">
+                {smsLogs.map((log) => (
+                  <tr key={log.sid} className="hover:bg-slate-50">
+                    <td className="p-2 text-slate-500 font-mono">
+                      {new Date(log.sentAt).toLocaleString('en-US', { hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td className="p-2 text-slate-800">{log.studentName}</td>
+                    <td className="p-2 text-slate-600 font-mono">{log.phone}</td>
+                    <td className="p-2 text-right">
+                      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold tracking-wide uppercase ${
+                        log.status.toLowerCase() === 'delivered' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
+                        log.status.toLowerCase() === 'failed' || log.status.toLowerCase() === 'undelivered' ? 'bg-rose-100 text-rose-800 border border-rose-200' :
+                        log.status.toLowerCase() === 'sent' || log.status.toLowerCase() === 'queued' ? 'bg-blue-100 text-blue-800 border border-blue-200' :
+                        'bg-slate-100 text-slate-600 border border-slate-200'
+                      }`}>
+                        {log.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
@@ -735,6 +917,13 @@ export default function SchoolFeesTab({
                       <Bell className="h-3.5 w-3.5 animate-bounce-slow" /> Notice & SMS Reminder
                     </button>
                   )}
+
+                  <button
+                    onClick={handleOpenInvoice}
+                    className="text-xs inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-3 rounded-lg font-semibold transition shadow-md select-none active:translate-y-0.5"
+                  >
+                    <Receipt className="h-3.5 w-3.5" /> Generate Fee Invoice
+                  </button>
 
                   <button
                     onClick={() => {
@@ -1939,6 +2128,391 @@ export default function SchoolFeesTab({
                     <p>Produced by: Ledger Administration Center</p>
                     <p>Signee: {schoolInfo.headteacherName || 'Head Teacher Principal'}</p>
                     <p>Certified Official Copy • Digital Signature Verification</p>
+                  </div>
+                  
+                  <div className="text-center relative">
+                    {/* Stamp or signature images */}
+                    {schoolInfo.signatureUrl && (
+                      <img 
+                        src={schoolInfo.signatureUrl} 
+                        alt="Signature" 
+                        referrerPolicy="no-referrer"
+                        className="w-16 h-8 absolute -top-6 left-1/2 -translate-x-1/2 object-contain pointer-events-none opacity-80"
+                      />
+                    )}
+                    {schoolInfo.stampUrl && (
+                      <img 
+                        src={schoolInfo.stampUrl} 
+                        alt="Stamp Seal" 
+                        referrerPolicy="no-referrer"
+                        className="w-12 h-12 absolute -top-8 -right-4 object-contain pointer-events-none opacity-70"
+                      />
+                    )}
+                    <span className="block italic text-[10px] text-slate-800 font-bold border-t border-slate-400 border-dashed pt-1 min-w-[130px]">
+                      {schoolInfo.headteacherName || 'Principal headteacher'}
+                    </span>
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-400 mt-0.5">Seal & Signature</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+
+    {/* AUTOMATED FEE INVOICE GENERATOR MODAL */}
+    <AnimatePresence>
+      {showInvoiceModal && activeStudent && activeBill && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs no-print flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowInvoiceModal(false)}
+            className="fixed inset-0 cursor-pointer"
+          />
+
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 15 }}
+            className="relative w-full max-w-5xl bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col lg:flex-row h-[90vh] lg:h-[80vh] z-10 text-left font-sans"
+          >
+            {/* LEFT COLUMN: CONTROLS & INSTRUCTIONS */}
+            <div className="w-full lg:w-2/5 p-6 border-b lg:border-b-0 lg:border-r border-slate-200 overflow-y-auto flex flex-col justify-between bg-slate-50 gap-6">
+              <div className="space-y-5">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-indigo-500/10 border border-indigo-500/20 text-indigo-600 rounded-xl flex items-center justify-center">
+                    <Receipt size={20} className="text-indigo-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">Invoice Generator</h3>
+                    <p className="text-[10px] text-slate-400">Pulls student particulars & outstanding balances to compile printable parental notices.</p>
+                  </div>
+                </div>
+
+                <hr className="border-slate-200" />
+
+                {/* EDITABLE PARAMETERS */}
+                <div className="space-y-4">
+                  <h4 className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Invoice Particulars</h4>
+                  <div className="grid grid-cols-1 gap-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Invoice Number</label>
+                      <input 
+                        type="text"
+                        value={invoiceNo}
+                        onChange={(e) => setInvoiceNo(e.target.value)}
+                        className="w-full text-xs px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-800 font-bold font-mono focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Issue Date</label>
+                        <input 
+                          type="date"
+                          value={invoiceDate}
+                          onChange={(e) => setInvoiceDate(e.target.value)}
+                          className="w-full text-xs px-3 py-2 bg-white border border-slate-200 rounded-lg font-semibold font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Payment Due Date</label>
+                        <input 
+                          type="date"
+                          value={invoiceDueDate}
+                          onChange={(e) => setInvoiceDueDate(e.target.value)}
+                          className="w-full text-xs px-3 py-2 bg-white border border-slate-200 rounded-lg font-semibold font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Custom Notes / Payment Terms</label>
+                      <textarea
+                        rows={5}
+                        value={invoiceNotes}
+                        onChange={(e) => setInvoiceNotes(e.target.value)}
+                        className="w-full text-xs p-3 border border-slate-200 rounded-xl bg-white font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-700 leading-relaxed resize-none"
+                        placeholder="Specify payment details, bank accounts, or MOMO merchant info..."
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* NOTE TEMPLATES FOR EASY POPULATION */}
+                <div className="space-y-2">
+                  <h4 className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Note Templates</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setInvoiceNotes('Please deposit outstanding fees directly into the school account: GeeTech Academy, GCB Bank, Account No. 10111223344, or send via MTN Mobile Money to 0244123456 (Merchant: GeeTech Academy). Please present your deposit slip or transaction ID to the accounts office for official receipting.')}
+                      className="text-[10px] font-medium p-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-slate-600 transition text-left leading-snug"
+                    >
+                      <strong>Default (MOMO & GCB)</strong>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInvoiceNotes('All fees must be fully cleared before the third week of term. Payment can be made in person at the school accounting desk (cash/cheque) or deposited into Ecobank Ghana, Account Name: GeeTech Academy, Account Number: 012233445566. Credit card payments are accepted.')}
+                      className="text-[10px] font-medium p-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-slate-600 transition text-left leading-snug"
+                    >
+                      <strong>Alternative (Ecobank & Desk)</strong>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* ACTION FOOTER */}
+              <div className="space-y-2 pt-4 border-t border-slate-200">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleExportFeesPDF('fees-invoice-notice-canvas', `fee_invoice_${activeStudent.id}`)}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-xs shadow-md transition transform active:translate-y-0.5 select-none"
+                  >
+                    <FileDown size={14} /> Save Invoice PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const printContents = document.getElementById('fees-invoice-notice-canvas')?.innerHTML;
+                      if (printContents) {
+                        const w = window.open('', '_blank');
+                        if (w) {
+                          w.document.write(`
+                            <html>
+                              <head>
+                                <title>Official Student Fee Invoice - ${activeStudent.firstName} ${activeStudent.lastName}</title>
+                                <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+                                <style>
+                                  @media print {
+                                    body { padding: 1.5cm; }
+                                    .no-print { display: none; }
+                                  }
+                                  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+                                  body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; }
+                                </style>
+                              </head>
+                              <body onload="window.print(); window.close();">
+                                <div class="max-w-4xl mx-auto">${printContents}</div>
+                              </body>
+                            </html>
+                          `);
+                          w.document.close();
+                        }
+                      }
+                    }}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-xl text-xs transition"
+                  >
+                    <Printer size={14} /> Direct Print
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowInvoiceModal(false)}
+                  className="w-full text-center py-2 text-slate-400 hover:text-slate-600 text-xs font-semibold"
+                >
+                  Close Invoice Panel
+                </button>
+              </div>
+            </div>
+
+            {/* RIGHT COLUMN: DOCUMENT PREVIEW */}
+            <div className="flex-1 bg-slate-100 p-6 overflow-y-auto flex items-center justify-center">
+              {/* PORTRAIT LETTER CONTAINER */}
+              <div 
+                id="fees-invoice-notice-canvas"
+                className="w-full max-w-[620px] bg-white border border-slate-300 shadow-lg p-8 relative flex flex-col justify-between text-slate-900 leading-normal"
+                style={{ minHeight: '800px', aspectRatio: '1/1.414' }}
+              >
+                <div>
+                  {/* SCHOOL LETTERHEAD */}
+                  <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4">
+                    <div className="flex items-center gap-3">
+                      {schoolInfo.logoUrl ? (
+                        <img 
+                          src={schoolInfo.logoUrl} 
+                          alt="School Logo" 
+                          referrerPolicy="no-referrer"
+                          className="w-14 h-14 object-contain rounded-xl"
+                        />
+                      ) : (
+                        <div className="w-14 h-14 bg-slate-900 text-white rounded-xl flex items-center justify-center font-bold text-xl uppercase">
+                          {schoolInfo.name?.substring(0, 2) || 'SC'}
+                        </div>
+                      )}
+                      <div>
+                        <h1 className="text-sm font-black uppercase text-slate-900 tracking-tight">{schoolInfo.name || 'GeeTech Academy'}</h1>
+                        <p className="text-[10px] italic font-medium text-slate-500">{schoolInfo.motto || 'Motto: Excellence and Dignity'}</p>
+                        <p className="text-[9px] text-slate-400 font-mono mt-0.5">{schoolInfo.gpsAddress || 'Digital Address System'} • GPS</p>
+                      </div>
+                    </div>
+                    <div className="text-right text-[8.5px] font-mono text-slate-500 space-y-0.5">
+                      <p>TEL: {schoolInfo.telephone || '+233 24 556 7780'}</p>
+                      <p>EMAIL: {schoolInfo.email || 'info@school.edu.gh'}</p>
+                      <p className="font-bold">INVOICE: #{invoiceNo}</p>
+                    </div>
+                  </div>
+
+                  {/* INVOICE TITLE & STATUS BLOCK */}
+                  <div className="flex justify-between items-center my-6">
+                    <div className="text-left">
+                      <h2 className="text-sm font-black uppercase tracking-wider text-indigo-700 bg-indigo-50 border border-indigo-100 py-1 px-4 rounded-lg inline-block">
+                        STUDENT TERM FEE INVOICE
+                      </h2>
+                      <p className="text-[9px] text-slate-400 font-mono mt-1">Academic Cycle: {selectedTerm} ({selectedAcademicYear})</p>
+                    </div>
+                    
+                    <div className="text-right">
+                      {activeExpectedAndPaid.bal <= 0 ? (
+                        <span className="text-[10px] font-bold uppercase py-1 px-3 bg-emerald-100 text-emerald-800 border border-emerald-200 rounded">Fully Settled</span>
+                      ) : (
+                        <span className="text-[10px] font-bold uppercase py-1 px-3 bg-amber-100 text-amber-800 border border-amber-200 rounded">Payment Pending</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* CLIENT & BILL TO BLOCK */}
+                  <div className="grid grid-cols-2 gap-6 bg-slate-50 p-4 rounded-xl border border-slate-100 text-xs mb-6 text-left">
+                    <div className="space-y-1">
+                      <span className="text-[8px] uppercase tracking-wider text-slate-400 font-bold block">Bill To (Parent/Guardian)</span>
+                      <p className="font-black text-slate-800 capitalize">{activeStudent.guardianName || 'Parent/Guardian'}</p>
+                      {activeStudent.guardianTelephone && <p className="font-mono text-slate-500 font-semibold">{activeStudent.guardianTelephone}</p>}
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-[8px] uppercase tracking-wider text-slate-400 font-bold block">Student Particulars</span>
+                      <p className="font-bold text-slate-800 capitalize">{activeStudent.firstName} {activeStudent.lastName}</p>
+                      <p className="font-mono text-slate-500 font-semibold">{activeStudent.id} • Class: {activeStudent.class}</p>
+                    </div>
+                  </div>
+
+                  {/* INVOICE METADATA DETAILS */}
+                  <div className="grid grid-cols-3 gap-2 text-left text-[10px] mb-6 font-medium text-slate-600 border-b border-slate-100 pb-3">
+                    <div>
+                      <span className="text-[8px] uppercase text-slate-400 block font-bold">Invoice Date</span>
+                      <span className="font-mono text-slate-800 font-bold">{new Date(invoiceDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                    </div>
+                    <div>
+                      <span className="text-[8px] uppercase text-slate-400 block font-bold">Due Date</span>
+                      <span className="font-mono text-slate-800 font-bold">{new Date(invoiceDueDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                    </div>
+                    <div>
+                      <span className="text-[8px] uppercase text-slate-400 block font-bold">Billing Status</span>
+                      <span className="font-mono text-slate-800 font-bold capitalize">{activeExpectedAndPaid.bal <= 0 ? 'Clearance Issued' : `Outstanding Arrears`}</span>
+                    </div>
+                  </div>
+
+                  {/* ITEMIZED BILL TABLE */}
+                  <div className="space-y-3 text-left">
+                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-1">I. Itemized Term Fees breakdown</p>
+                    <div className="border border-slate-300 rounded-lg overflow-hidden">
+                      <table className="w-full text-left border-collapse text-[10px]">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300">
+                            <th className="p-2">Levy Category component description</th>
+                            <th className="p-2 text-right">Debit Expected</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          {/* schoolFees row */}
+                          <tr>
+                            <td className="p-2">Standard School Tuition Fees</td>
+                            <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {activeBill.schoolFees.toFixed(2)}</td>
+                          </tr>
+                          {/* utilityBill row */}
+                          <tr>
+                            <td className="p-2">Facility & Utility Maintenance Levy</td>
+                            <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {activeBill.utilityBill.toFixed(2)}</td>
+                          </tr>
+                          {/* sportsFees row */}
+                          <tr>
+                            <td className="p-2">Sports Development Dues Allocation</td>
+                            <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {activeBill.sportsFees.toFixed(2)}</td>
+                          </tr>
+                          {/* ptaDues row */}
+                          <tr>
+                            <td className="p-2">PTA Annual Dues Allocation</td>
+                            <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {activeBill.ptaDues.toFixed(2)}</td>
+                          </tr>
+                          {/* otherFee row */}
+                          {activeBill.otherFee > 0 && (
+                            <tr>
+                              <td className="p-2">Miscellaneous Fee ({activeBill.otherFeeDescription || 'Other'})</td>
+                              <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {activeBill.otherFee.toFixed(2)}</td>
+                            </tr>
+                          )}
+                          
+                          {/* Expected total row */}
+                          <tr className="bg-slate-50 font-bold border-t border-slate-300">
+                            <td className="p-2 font-black text-slate-800">Total Billed expected this Term:</td>
+                            <td className="p-2 text-right font-mono font-black text-slate-900">GHS {activeExpectedAndPaid.expected.toFixed(2)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* CREDITS APPLIED BOX (IF ANY) */}
+                  {activeExpectedAndPaid.paid > 0 && (
+                    <div className="mt-4 space-y-2 text-left">
+                      <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-1">II. Credited installments received to-date</p>
+                      <div className="border border-slate-300 rounded-lg overflow-hidden">
+                        <table className="w-full text-left border-collapse text-[9px]">
+                          <thead>
+                            <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300">
+                              <th className="p-1.5">Date</th>
+                              <th className="p-1.5">Receipt No</th>
+                              <th className="p-1.5">Method</th>
+                              <th className="p-1.5 text-right">Amount Paid</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            {activeBill.payments.map((p) => (
+                              <tr key={p.id}>
+                                <td className="p-1.5 font-mono text-slate-600">{p.date}</td>
+                                <td className="p-1.5 font-mono text-slate-700 font-semibold">{p.receiptNo}</td>
+                                <td className="p-1.5 text-slate-600">{p.method}</td>
+                                <td className="p-1.5 text-right font-mono text-emerald-700 font-semibold">GHS {p.amount.toFixed(2)}</td>
+                              </tr>
+                            ))}
+                            <tr className="bg-emerald-50/50 font-bold border-t border-slate-300 text-[10px]">
+                              <td colSpan={3} className="p-1.5 text-right text-emerald-800">Total Payments Credited:</td>
+                              <td className="p-1.5 text-right font-mono text-emerald-700 font-black">GHS {activeExpectedAndPaid.paid.toFixed(2)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* GRAND OUTSTANDING BOX */}
+                  <div className="mt-5 p-4 bg-slate-50 border border-slate-200 rounded-xl flex justify-between items-center">
+                    <div className="text-left">
+                      <h3 className="text-xs font-black uppercase text-slate-900 tracking-tight">TOTAL OUTSTANDING DUE</h3>
+                      <p className="text-[9px] text-slate-400 font-mono">Kindly settle this amount prior to due date</p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-lg font-black font-mono ${activeExpectedAndPaid.bal > 0 ? 'text-indigo-600' : 'text-emerald-600'}`}>
+                        GHS {activeExpectedAndPaid.bal.toFixed(2)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* INVOICE PAYMENT TERMS & NOTES */}
+                  <div className="mt-5 text-[9.5px] leading-relaxed text-slate-600 border-l-2 border-indigo-500 pl-4 bg-indigo-50/15 py-2.5 pr-2 rounded-r-lg text-left">
+                    <p className="font-bold text-slate-800 uppercase tracking-wider text-[8px] mb-1">Official Payment Instructions:</p>
+                    <p className="whitespace-pre-wrap">{invoiceNotes}</p>
+                  </div>
+                </div>
+
+                {/* SIGNATURE AREA IN PORTRAIT CANVAS FOOTER */}
+                <div className="mt-8 border-t border-slate-200 pt-6 flex justify-between items-end text-left">
+                  <div className="space-y-1 text-slate-400 text-[8px] font-mono leading-relaxed">
+                    <p>Generated via GTIMS automated ledger engine</p>
+                    <p>Invoice status: {activeExpectedAndPaid.bal <= 0 ? 'CLOSED' : 'OPEN - ARREARS'}</p>
+                    <p>Official Digital Signature Verification Certificate</p>
                   </div>
                   
                   <div className="text-center relative">
