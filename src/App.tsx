@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent, useMemo, ReactNode } from 'react';
+import { useState, useEffect, FormEvent, useMemo, ReactNode, DragEvent } from 'react';
 import { 
   SchoolInfo, Student, Teacher, UserAccount, UserRole, ThemeType,
   AcademicYearType, TermType, WebAuthnCredential
@@ -30,7 +30,7 @@ import {
   Landmark, Users, UserCheck, CalendarCheck, FileSpreadsheet, Settings, 
   LogOut, ShieldAlert, Lock, Mail, User, BookOpen, GraduationCap, Sparkles, Coins, RotateCcw,
   ChevronDown, MoreHorizontal, TrendingUp, Power, Smartphone, CalendarDays, Menu, X, ClipboardCheck,
-  CreditCard, Fingerprint, Check, Save, Database
+  CreditCard, Fingerprint, Check, Save, Database, GripVertical
 } from 'lucide-react';
 
 const AVAILABLE_TABS = [
@@ -116,7 +116,62 @@ export default function App() {
   const [isMoreDropdownOpen, setIsMoreDropdownOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
 
-  const currentActiveTab = visibleTabs.find(t => t.id === activeTab) || visibleTabs[0];
+  // Drag and Drop Tab Reordering State & Handlers
+  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
+
+  useEffect(() => {
+    try {
+      const email = currentUser?.email || 'guest';
+      const saved = localStorage.getItem(`tab_order_${email}`);
+      setTabOrder(saved ? JSON.parse(saved) : []);
+    } catch {
+      setTabOrder([]);
+    }
+  }, [currentUser]);
+
+  const orderedVisibleTabs = useMemo(() => {
+    if (tabOrder.length === 0) return visibleTabs;
+    return [...visibleTabs].sort((a, b) => {
+      const indexA = tabOrder.indexOf(a.id);
+      const indexB = tabOrder.indexOf(b.id);
+      if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+      if (indexA !== -1) return -1;
+      if (indexB !== -1) return 1;
+      return 0;
+    });
+  }, [visibleTabs, tabOrder]);
+
+  const handleDragStart = (e: DragEvent, id: string) => {
+    setDraggedTabId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', id);
+  };
+
+  const handleDragOver = (e: DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (!draggedTabId || draggedTabId === targetId) return;
+
+    // Get current IDs of visible tabs
+    const currentIds = orderedVisibleTabs.map(t => t.id);
+    const fromIndex = currentIds.indexOf(draggedTabId);
+    const toIndex = currentIds.indexOf(targetId);
+
+    if (fromIndex !== -1 && toIndex !== -1) {
+      const updatedIds = [...currentIds];
+      updatedIds.splice(fromIndex, 1);
+      updatedIds.splice(toIndex, 0, draggedTabId);
+      
+      setTabOrder(updatedIds);
+      localStorage.setItem(`tab_order_${currentUser?.email || 'guest'}`, JSON.stringify(updatedIds));
+    }
+  };
+
+  const handleDragEnd = () => {
+    setDraggedTabId(null);
+  };
+
+  const currentActiveTab = orderedVisibleTabs.find(t => t.id === activeTab) || orderedVisibleTabs[0];
   const CurrentActiveIcon = currentActiveTab.icon;
 
   // Login & Registration state for both Local and secure full-stack Firebase Authentication
@@ -385,6 +440,8 @@ export default function App() {
       if (auth?.currentUser) {
         DbController.syncAllDataFromFirebase().then(() => {
           refreshAllLogs();
+        }).catch(err => {
+          console.warn("Background sync error on state change:", err);
         });
       }
     }
@@ -1505,92 +1562,56 @@ export default function App() {
         <nav id="module-tabs-ribbon" className="no-print">
           {/* Desktop version: horizontal button ribbon */}
           <div className="hidden md:flex bg-white border border-slate-200 p-2 rounded-xl shadow-xs flex-wrap gap-1 items-center w-full">
-            <button
-              onClick={() => {
-                setActiveTab('dashboard');
-                refreshAllLogs();
-              }}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'dashboard' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <TrendingUp size={15} /> Dashboard Summary
-            </button>
-            <button
-              onClick={() => setActiveTab('school_profile')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'school_profile' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <Landmark size={15} /> School Profile
-            </button>
-            <button
-              onClick={() => setActiveTab('calendar')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'calendar' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <CalendarDays size={15} /> Academic Calendar
-            </button>
-            <button
-              onClick={() => setActiveTab('students')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'students' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <Users size={15} /> Student Profiles
-            </button>
-            <button
-              onClick={() => setActiveTab('teachers')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'teachers' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <UserCheck size={15} /> Teacher Profiles
-            </button>
-            <button
-              onClick={() => setActiveTab('attendance')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'attendance' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <CalendarCheck size={15} /> Class Attendance Roster
-            </button>
-            <button
-              onClick={() => {
-                setActiveTab('assessments');
-                refreshAllLogs();
-              }}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'assessments' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <FileSpreadsheet size={15} /> Academic Assessments
-            </button>
-            <button
-              onClick={() => {
-                setActiveTab('fees');
-                refreshAllLogs();
-              }}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'fees' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <Coins size={15} /> School Fees Ledger
-            </button>
-            {isAdmin && (
+            {orderedVisibleTabs.map((tab) => {
+              const IconComponent = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, tab.id)}
+                  onDragOver={(e) => handleDragOver(e, tab.id)}
+                  onDragEnd={handleDragEnd}
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    if (tab.refresh) {
+                      refreshAllLogs();
+                    }
+                  }}
+                  className={`group flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-xs select-none cursor-grab active:cursor-grabbing border ${
+                    isActive 
+                      ? `${themeStyles.primaryBg} text-white shadow-xs border-transparent` 
+                      : 'text-slate-600 hover:bg-slate-50 border-transparent hover:border-slate-100'
+                  } ${draggedTabId === tab.id ? 'opacity-30 scale-95 border border-dashed border-slate-300 bg-slate-50' : ''}`}
+                  title="Drag tab horizontally to prioritize or reorder"
+                >
+                  <GripVertical 
+                    size={12} 
+                    className={`transition shrink-0 ${
+                      isActive 
+                        ? 'text-white/40 group-hover:text-white/80' 
+                        : 'text-slate-300 group-hover:text-slate-400'
+                    }`} 
+                  />
+                  <IconComponent size={14} className="shrink-0" /> 
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+
+            {tabOrder.length > 0 && (
               <button
                 onClick={() => {
-                  setActiveTab('paystack');
-                  refreshAllLogs();
+                  setTabOrder([]);
+                  localStorage.removeItem(`tab_order_${currentUser?.email || 'guest'}`);
                 }}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'paystack' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
+                className="ml-auto px-2.5 py-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg border border-slate-100 hover:border-slate-200 transition cursor-pointer flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider font-mono"
+                title="Reset workspace tab order to default"
               >
-                <CreditCard size={15} /> Paystack Ledger
+                <RotateCcw size={11} />
+                <span>Reset Order</span>
               </button>
             )}
-            <button
-              onClick={() => setActiveTab('communications')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'communications' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <Smartphone size={15} /> Parent Messages
-            </button>
-            <button
-              onClick={() => setActiveTab('emis')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'emis' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <ClipboardCheck size={15} /> GES EMIS Census
-            </button>
-            <button
-              onClick={() => setActiveTab('settings')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition text-xs cursor-pointer ${activeTab === 'settings' ? `${themeStyles.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              <Settings size={15} /> System Controls
-            </button>
           </div>
 
           {/* Mobile version: Hamburger triggers the drawer navigation list */}
@@ -1659,7 +1680,7 @@ export default function App() {
                   <p className="text-[10px] uppercase tracking-wider font-mono font-bold text-slate-500 px-3 mb-2">
                     Portal Sections
                   </p>
-                  {visibleTabs.map((tab) => {
+                  {orderedVisibleTabs.map((tab) => {
                     const IconComponent = tab.icon;
                     const isActive = activeTab === tab.id;
                     return (

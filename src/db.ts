@@ -24,7 +24,8 @@ import {
   where,
   getDocFromServer,
   disableNetwork,
-  enableNetwork
+  enableNetwork,
+  enableIndexedDbPersistence
 } from 'firebase/firestore';
 import {
   SchoolInfo,
@@ -47,7 +48,8 @@ import {
   EmisData,
   PaystackPayment,
   WebAuthnCredential,
-  ActivityLog
+  ActivityLog,
+  BehavioralRemark
 } from './types';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -114,6 +116,11 @@ try {
     }, dbId);
     isFirebaseActive = true;
     console.log("Firebase initialized successfully with live database ID:", dbId);
+    
+    // Attempt to enable offline persistence for resilient local caching
+    enableIndexedDbPersistence(firestoreDb).catch((err) => {
+      console.warn("Firestore offline persistence could not be enabled (possibly multiple tabs open):", err.message || err);
+    });
   }
 } catch (e) {
   console.log("Firebase is not initialized; running securely in offline LocalStorage mode.", e);
@@ -130,9 +137,28 @@ async function testConnection() {
         return;
       }
       
-      const connectionPromise = getDocFromServer(doc(firestoreDb, 'test', 'connection'));
+      let raceFinished = false;
+
+      const connectionPromise = getDocFromServer(doc(firestoreDb, 'test', 'connection'))
+        .then(res => {
+          raceFinished = true;
+          return res;
+        })
+        .catch(err => {
+          if (raceFinished) {
+            console.log("Firestore connection check failed after race finished (swallowed to prevent unhandled rejection):", err.message || err);
+            return null;
+          }
+          raceFinished = true;
+          throw err;
+        });
+
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Firestore connection handshake timed out after 3000ms")), 3000)
+        setTimeout(() => {
+          if (raceFinished) return;
+          raceFinished = true;
+          reject(new Error("Firestore connection handshake timed out after 3000ms"));
+        }, 3000)
       );
 
       await Promise.race([connectionPromise, timeoutPromise]);
@@ -357,7 +383,8 @@ const STORAGE_KEYS = {
   EMIS: 'sms_emis_reports',
   PAYSTACK_LOGS: 'sms_paystack_logs',
   WEBAUTHN_CREDENTIALS: 'sms_webauthn_credentials',
-  ACTIVITY_LOGS: 'sms_activity_logs'
+  ACTIVITY_LOGS: 'sms_activity_logs',
+  BEHAVIORAL_REMARKS: 'sms_behavioral_remarks'
 };
 
 // Help helper to deep copy or get storage
@@ -858,9 +885,46 @@ export class DbController {
       const uid = userCredential.user.uid;
       const assignedRole: UserRole = this.determineRole(email);
 
-      // Retrieve user profile data
-      const userDoc = await getDoc(doc(firestoreDb, 'users', uid));
-      if (userDoc.exists()) {
+      // Retrieve user profile data with offline resiliency
+      let userDoc = null;
+      let isOffline = false;
+      try {
+        userDoc = await getDoc(doc(firestoreDb, 'users', uid));
+      } catch (getDocErr: any) {
+        const errMsg = (getDocErr?.message || getDocErr?.code || String(getDocErr)).toLowerCase();
+        if (errMsg.includes("offline") || errMsg.includes("unavailable") || errMsg.includes("network") || !navigator.onLine) {
+          console.warn("Firestore offline during login profile fetch. Falling back to cached local storage profile.");
+          isOffline = true;
+        } else {
+          throw getDocErr;
+        }
+      }
+
+      if (isOffline) {
+        const cachedUsers = this.getRegisteredUsers();
+        const localUser = cachedUsers.find(u => u.uid === uid) || this.getCurrentUser();
+        if (localUser && localUser.uid === uid) {
+          setStorageItem(STORAGE_KEYS.USER, localUser);
+          return localUser;
+        }
+        // If no cached local user exists, create one locally
+        const createdNow = new Date().toISOString();
+        const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
+        const profile: UserAccount = {
+          uid,
+          email,
+          name: email.split('@')[0].toUpperCase(),
+          role: assignedRole,
+          createdAt: createdNow,
+          licenseType: 'trial',
+          registeredOn: createdNow,
+          requestCode: `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`
+        };
+        setStorageItem(STORAGE_KEYS.USER, profile);
+        return profile;
+      }
+
+      if (userDoc && userDoc.exists()) {
         const profile = userDoc.data() as UserAccount;
         let profileChanged = false;
         
@@ -947,9 +1011,40 @@ export class DbController {
       const email = user.email || '';
       const assignedRole: UserRole = this.determineRole(email);
       
-      // Check if user profile already exists in Firestore
-      const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
-      if (userDocSnapshot.exists()) {
+      // Check if user profile already exists in Firestore with offline resilience
+      let userDocSnapshot = null;
+      let isOffline = false;
+      try {
+        userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
+      } catch (getDocErr: any) {
+        const errMsg = (getDocErr?.message || getDocErr?.code || String(getDocErr)).toLowerCase();
+        if (errMsg.includes("offline") || errMsg.includes("unavailable") || errMsg.includes("network") || !navigator.onLine) {
+          console.warn("Firestore offline during Google login profile fetch. Falling back to cached local storage profile.");
+          isOffline = true;
+        } else {
+          throw getDocErr;
+        }
+      }
+
+      if (isOffline) {
+        const cachedUsers = this.getRegisteredUsers();
+        const localUser = cachedUsers.find(u => u.uid === user.uid) || this.getCurrentUser();
+        if (localUser && localUser.uid === user.uid) {
+          setStorageItem(STORAGE_KEYS.USER, localUser);
+          return { user: localUser, isNew: false };
+        }
+        const tempProfile: UserAccount = {
+          uid: user.uid,
+          email: email,
+          name: user.displayName || email.split('@')[0] || 'Google User',
+          role: assignedRole,
+          createdAt: new Date().toISOString()
+        };
+        setStorageItem(STORAGE_KEYS.USER, tempProfile);
+        return { user: tempProfile, isNew: true };
+      }
+
+      if (userDocSnapshot && userDocSnapshot.exists()) {
         const profile = userDocSnapshot.data() as UserAccount;
         if (profile.role !== assignedRole) {
           profile.role = assignedRole;
@@ -985,8 +1080,40 @@ export class DbController {
       const email = user.email || '';
       const assignedRole: UserRole = this.determineRole(email);
       
-      const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
-      if (userDocSnapshot.exists()) {
+      // Check if user profile already exists in Firestore with offline resilience
+      let userDocSnapshot = null;
+      let isOffline = false;
+      try {
+        userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
+      } catch (getDocErr: any) {
+        const errMsg = (getDocErr?.message || getDocErr?.code || String(getDocErr)).toLowerCase();
+        if (errMsg.includes("offline") || errMsg.includes("unavailable") || errMsg.includes("network") || !navigator.onLine) {
+          console.warn("Firestore offline during Microsoft login profile fetch. Falling back to cached local storage profile.");
+          isOffline = true;
+        } else {
+          throw getDocErr;
+        }
+      }
+
+      if (isOffline) {
+        const cachedUsers = this.getRegisteredUsers();
+        const localUser = cachedUsers.find(u => u.uid === user.uid) || this.getCurrentUser();
+        if (localUser && localUser.uid === user.uid) {
+          setStorageItem(STORAGE_KEYS.USER, localUser);
+          return { user: localUser, isNew: false };
+        }
+        const tempProfile: UserAccount = {
+          uid: user.uid,
+          email: email,
+          name: user.displayName || email.split('@')[0] || 'Microsoft User',
+          role: assignedRole,
+          createdAt: new Date().toISOString()
+        };
+        setStorageItem(STORAGE_KEYS.USER, tempProfile);
+        return { user: tempProfile, isNew: true };
+      }
+
+      if (userDocSnapshot && userDocSnapshot.exists()) {
         const profile = userDocSnapshot.data() as UserAccount;
         if (profile.role !== assignedRole) {
           profile.role = assignedRole;
@@ -1022,8 +1149,40 @@ export class DbController {
       const email = user.email || '';
       const assignedRole: UserRole = this.determineRole(email);
       
-      const userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
-      if (userDocSnapshot.exists()) {
+      // Check if user profile already exists in Firestore with offline resilience
+      let userDocSnapshot = null;
+      let isOffline = false;
+      try {
+        userDocSnapshot = await getDoc(doc(firestoreDb, 'users', user.uid));
+      } catch (getDocErr: any) {
+        const errMsg = (getDocErr?.message || getDocErr?.code || String(getDocErr)).toLowerCase();
+        if (errMsg.includes("offline") || errMsg.includes("unavailable") || errMsg.includes("network") || !navigator.onLine) {
+          console.warn("Firestore offline during Apple login profile fetch. Falling back to cached local storage profile.");
+          isOffline = true;
+        } else {
+          throw getDocErr;
+        }
+      }
+
+      if (isOffline) {
+        const cachedUsers = this.getRegisteredUsers();
+        const localUser = cachedUsers.find(u => u.uid === user.uid) || this.getCurrentUser();
+        if (localUser && localUser.uid === user.uid) {
+          setStorageItem(STORAGE_KEYS.USER, localUser);
+          return { user: localUser, isNew: false };
+        }
+        const tempProfile: UserAccount = {
+          uid: user.uid,
+          email: email,
+          name: user.displayName || email.split('@')[0] || 'Apple User',
+          role: assignedRole,
+          createdAt: new Date().toISOString()
+        };
+        setStorageItem(STORAGE_KEYS.USER, tempProfile);
+        return { user: tempProfile, isNew: true };
+      }
+
+      if (userDocSnapshot && userDocSnapshot.exists()) {
         const profile = userDocSnapshot.data() as UserAccount;
         if (profile.role !== assignedRole) {
           profile.role = assignedRole;
@@ -1062,8 +1221,8 @@ export class DbController {
       try {
         await setDoc(doc(firestoreDb, 'users', updatedProfile.uid), updatedProfile);
       } catch (e: any) {
-        const errMsg = e?.message || String(e);
-        if (errMsg.includes("offline") || errMsg.includes("Failed to get document because the client is offline")) {
+        const errMsg = (e?.message || e?.code || String(e)).toLowerCase();
+        if (errMsg.includes("offline") || errMsg.includes("unavailable") || errMsg.includes("network") || !navigator.onLine) {
           console.warn("Firestore client is offline. Enqueueing user profile save for later offline sync.");
           this.enqueueOfflineOperation('users', updatedProfile.uid, 'set', updatedProfile);
         } else {
@@ -1093,8 +1252,8 @@ export class DbController {
         return userDoc.data() as UserAccount;
       }
     } catch (e: any) {
-      const errMsg = e?.message || String(e);
-      if (errMsg.includes("offline") || errMsg.includes("Failed to get document because the client is offline") || errMsg.includes("client is offline")) {
+      const errMsg = (e?.message || e?.code || String(e)).toLowerCase();
+      if (errMsg.includes("offline") || errMsg.includes("unavailable") || errMsg.includes("network") || !navigator.onLine) {
         console.warn("Firestore client is offline. Resolving user profile from cache/localStorage instead of failing.");
         
         // 1. Try to get from local users list
@@ -1200,12 +1359,17 @@ export class DbController {
 
       // 7. Academic Calendar Settings
       try {
-        const settingsSnap = await getDoc(doc(firestoreDb, 'settings', 'academic_calendar'));
-        if (settingsSnap.exists()) {
-          setStorageItem(STORAGE_KEYS.CALENDAR, settingsSnap.data() as AcademicCalendarConfig);
+        const settingsSnap = await getDocs(collection(firestoreDb, 'settings'));
+        const calendarDoc = settingsSnap.docs.find(d => d.id === 'academic_calendar');
+        if (calendarDoc) {
+          setStorageItem(STORAGE_KEYS.CALENDAR, calendarDoc.data() as AcademicCalendarConfig);
         }
-      } catch (e) {
-        console.warn("Could not sync academic calendar settings:", e);
+      } catch (e: any) {
+        if (e.message?.includes('offline')) {
+          console.log("Offline mode: Using cached academic calendar settings.");
+        } else {
+          console.warn("Could not sync academic calendar settings:", e);
+        }
       }
 
       // 8. EMIS Reports (GES aligned)
@@ -1213,8 +1377,25 @@ export class DbController {
         const emisSnap = await getDocs(collection(firestoreDb, 'emis'));
         const emisList = emisSnap.docs.map(d => d.data() as EmisData);
         setStorageItem(STORAGE_KEYS.EMIS, emisList);
-      } catch (e) {
-        console.warn("Could not sync EMIS reports:", e);
+      } catch (e: any) {
+        if (e.message?.includes('offline')) {
+          console.log("Offline mode: Using cached EMIS reports.");
+        } else {
+          console.warn("Could not sync EMIS reports:", e);
+        }
+      }
+
+      // 9. Behavioral Remarks
+      try {
+        const remarksSnap = await getDocs(collection(firestoreDb, 'behavioral_remarks'));
+        const remarksList = remarksSnap.docs.map(d => d.data() as BehavioralRemark);
+        setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, remarksList);
+      } catch (e: any) {
+        if (e.message?.includes('offline')) {
+          console.log("Offline mode: Using cached behavioral remarks.");
+        } else {
+          console.warn("Could not sync behavioral remarks:", e);
+        }
       }
 
       console.log("Database sync from Firestore successfully synced.");
@@ -1396,6 +1577,58 @@ export class DbController {
     this._cache[STORAGE_KEYS.ATTENDANCE] = filteredAttendance;
 
     this.performFirestoreWrite('students', studentId, 'delete');
+
+    // Also cascade delete behavioral remarks for this student locally and on Firestore
+    try {
+      const remarks = this.getBehavioralRemarks();
+      const studentRemarks = remarks.filter(r => r.studentId === studentId);
+      studentRemarks.forEach(r => {
+        this.performFirestoreWrite('behavioral_remarks', r.id, 'delete').catch(e => console.error(e));
+      });
+      const filteredRemarks = remarks.filter(r => r.studentId !== studentId);
+      setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, filteredRemarks);
+      this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS] = filteredRemarks;
+    } catch (e) {
+      console.warn("Error cascading delete on behavioral remarks:", e);
+    }
+  }
+
+  // BEHAVIORAL REMARKS TRACKER
+  // -------------------------
+  static getBehavioralRemarks(): BehavioralRemark[] {
+    if (this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS]) {
+      return this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS];
+    }
+    const list = getStorageItem<BehavioralRemark[]>(STORAGE_KEYS.BEHAVIORAL_REMARKS, []);
+    this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS] = list;
+    return list;
+  }
+
+  static getBehavioralRemarksForStudent(studentId: string): BehavioralRemark[] {
+    return this.getBehavioralRemarks().filter(r => r.studentId === studentId);
+  }
+
+  static saveBehavioralRemark(remark: BehavioralRemark): void {
+    const remarks = this.getBehavioralRemarks();
+    const idx = remarks.findIndex(r => r.id === remark.id);
+    if (idx >= 0) {
+      remarks[idx] = remark;
+    } else {
+      remarks.push(remark);
+    }
+    setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, remarks);
+    this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS] = remarks;
+
+    this.performFirestoreWrite('behavioral_remarks', remark.id, 'set', remark);
+  }
+
+  static deleteBehavioralRemark(id: string): void {
+    const remarks = this.getBehavioralRemarks();
+    const filtered = remarks.filter(r => r.id !== id);
+    setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, filtered);
+    this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS] = filtered;
+
+    this.performFirestoreWrite('behavioral_remarks', id, 'delete');
   }
 
   static promoteClassBulk(sourceClass: ClassType, targetClass: ClassType | 'Graduated'): number {
@@ -2113,7 +2346,8 @@ export class DbController {
       settings: getStorageItem<any>(STORAGE_KEYS.SETTINGS, null),
       calendar: getStorageItem<any>(STORAGE_KEYS.CALENDAR, null),
       emis_reports: getStorageItem<EmisData[]>(STORAGE_KEYS.EMIS, []),
-      users_list: getStorageItem<UserAccount[]>(STORAGE_KEYS.USERS_LIST, [])
+      users_list: getStorageItem<UserAccount[]>(STORAGE_KEYS.USERS_LIST, []),
+      behavioral_remarks: getStorageItem<BehavioralRemark[]>(STORAGE_KEYS.BEHAVIORAL_REMARKS, [])
     };
     return JSON.stringify(backup, null, 2);
   }
@@ -2147,6 +2381,7 @@ export class DbController {
       if (hasAssessments) setStorageItem(STORAGE_KEYS.ASSESSMENTS, data.assessments);
       if (hasFees) setStorageItem(STORAGE_KEYS.FEES, data.fees);
       if (hasEmis) setStorageItem(STORAGE_KEYS.EMIS, data.emis_reports);
+      if (Array.isArray(data.behavioral_remarks)) setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, data.behavioral_remarks);
       if (data.settings) setStorageItem(STORAGE_KEYS.SETTINGS, data.settings);
       if (data.calendar) setStorageItem(STORAGE_KEYS.CALENDAR, data.calendar);
       if (Array.isArray(data.users_list)) setStorageItem(STORAGE_KEYS.USERS_LIST, data.users_list);
@@ -2196,6 +2431,13 @@ export class DbController {
             }
           });
         }
+        if (Array.isArray(data.behavioral_remarks)) {
+          data.behavioral_remarks.forEach((r: BehavioralRemark) => {
+            if (r.id) {
+              setDoc(doc(firestoreDb, 'behavioral_remarks', r.id), r).catch(err => console.error("Firebase Sync Remark error:", err));
+            }
+          });
+        }
       }
 
       this.clearCache();
@@ -2215,6 +2457,18 @@ export class DbController {
     this._cache[STORAGE_KEYS.STUDENTS] = [];
     this._studentsByClass.clear();
     localStorage.removeItem('school_students');
+
+    // Also clear all behavioral remarks
+    try {
+      const remarks = this.getBehavioralRemarks();
+      remarks.forEach(r => {
+        this.performFirestoreWrite('behavioral_remarks', r.id, 'delete').catch(e => console.error(e));
+      });
+    } catch (e) {
+      console.warn(e);
+    }
+    setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, []);
+    this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS] = [];
   }
 
   static clearAllTeachers(): void {
@@ -2277,6 +2531,11 @@ export class DbController {
           if (e.id) deleteDoc(doc(firestoreDb, 'emis', e.id)).catch(err => console.error(err));
         });
 
+        const remarks = getStorageItem<any[]>(STORAGE_KEYS.BEHAVIORAL_REMARKS, []);
+        remarks.forEach(r => {
+          if (r.id) deleteDoc(doc(firestoreDb, 'behavioral_remarks', r.id)).catch(err => console.error(err));
+        });
+
         // Format/clear school doc on firestore as well
         const defaultSchool: SchoolInfo = {
           id: 'school_default',
@@ -2317,6 +2576,7 @@ export class DbController {
     localStorage.removeItem(STORAGE_KEYS.EMIS);
     localStorage.removeItem(STORAGE_KEYS.CALENDAR);
     localStorage.removeItem(STORAGE_KEYS.ACTIVITY_LOGS);
+    localStorage.removeItem(STORAGE_KEYS.BEHAVIORAL_REMARKS);
     localStorage.removeItem('sms_offline_queue');
 
     // Make sure we purge legacy keys that some old client tab code might read/write

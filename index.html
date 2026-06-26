@@ -7,14 +7,20 @@
     <script>
       // Suppress expected Vite HMR WebSocket errors in the AI Studio environment
       const originalError = console.error;
+      const originalWarn = console.warn;
+      const suppress = (msg) => typeof msg === 'string' && (msg.includes('WebSocket closed') || msg.toLowerCase().includes('websocket') || msg.includes('failed to connect to websocket'));
+      
       console.error = function(...args) {
-        if (args[0] && typeof args[0] === 'string' && args[0].includes('WebSocket closed without opened')) {
-          return;
-        }
+        if (args[0] && suppress(args[0])) return;
         originalError.apply(console, args);
       };
+      console.warn = function(...args) {
+        if (args[0] && suppress(args[0])) return;
+        originalWarn.apply(console, args);
+      };
       window.addEventListener('unhandledrejection', function(event) {
-        if (event.reason && event.reason.message && event.reason.message.includes('WebSocket closed without opened')) {
+        const msg = event.reason && event.reason.message ? event.reason.message : String(event.reason);
+        if (msg.includes('WebSocket closed') || msg.includes('websocket')) {
           event.preventDefault();
         }
       });

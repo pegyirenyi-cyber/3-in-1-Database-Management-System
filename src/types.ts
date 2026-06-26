@@ -462,3 +462,16 @@ export interface ActivityLog {
   severity: 'info' | 'low' | 'medium' | 'high' | 'critical';
 }
 
+export interface BehavioralRemark {
+  id: string;
+  studentId: string;
+  teacherId: string;
+  teacherName: string;
+  category: 'Positive' | 'Academic' | 'Improvement' | 'Conduct' | 'Other';
+  remark: string;
+  date: string; // ISO String
+  academicYear: string;
+  term: string;
+}
+
+

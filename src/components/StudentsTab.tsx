@@ -1,14 +1,15 @@
 import React, { useState, useRef, ChangeEvent, FormEvent, useMemo } from 'react';
 import { 
   Student, ClassType, CLASSES, SectionType, SECTIONS, 
-  AcademicYearType, ACADEMIC_YEARS, TermType, TERMS, UserRole 
+  AcademicYearType, ACADEMIC_YEARS, TermType, TERMS, UserRole,
+  BehavioralRemark
 } from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, User, MapPin, PhoneCall, ShieldAlert, BadgeCheck, FileDown, RotateCcw, Eraser, Eye, FileSpreadsheet,
-  ChevronLeft, ChevronRight, IdCard
+  ChevronLeft, ChevronRight, IdCard, MessageSquare, AlertTriangle, Heart, Award, BookOpen
 } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { motion, AnimatePresence } from 'motion/react';
@@ -92,6 +93,12 @@ export default function StudentsTab({
   // ID Card states
   const [selectedIdCardStudent, setSelectedIdCardStudent] = useState<Student | null>(null);
   const [showIdCardModal, setShowIdCardModal] = useState(false);
+
+  // Behavioral remarks states
+  const [selectedRemarkStudent, setSelectedRemarkStudent] = useState<Student | null>(null);
+  const [showRemarksModal, setShowRemarksModal] = useState(false);
+  const [newRemarkText, setNewRemarkText] = useState('');
+  const [newRemarkCategory, setNewRemarkCategory] = useState<BehavioralRemark['category']>('Conduct');
 
   // Bulk import states
   const [showImportModal, setShowImportModal] = useState(false);
@@ -507,6 +514,43 @@ export default function StudentsTab({
     setShowIdCardModal(true);
   };
 
+  const handleOpenRemarks = (student: Student) => {
+    setSelectedRemarkStudent(student);
+    setShowRemarksModal(true);
+    setNewRemarkText('');
+    setNewRemarkCategory('Conduct');
+  };
+
+  const handleSaveRemark = (e: FormEvent) => {
+    e.preventDefault();
+    if (!selectedRemarkStudent || !newRemarkText.trim()) return;
+
+    const teacher = DbController.getTeachers().find(t => t.email === DbController.getCurrentUser()?.email);
+
+    const remark: BehavioralRemark = {
+      id: 'BR' + Math.floor(100000 + Math.random() * 90000),
+      studentId: selectedRemarkStudent.id,
+      teacherId: teacher?.id || 'T_SYSTEM',
+      teacherName: teacher ? `${teacher.firstName} ${teacher.lastName}` : (DbController.getCurrentUser()?.name || 'Teacher'),
+      category: newRemarkCategory,
+      remark: newRemarkText.trim(),
+      date: new Date().toISOString(),
+      academicYear: selectedRemarkStudent.academicYear || selectedYear || '2026/2027',
+      term: selectedRemarkStudent.term || selectedTerm || 'Term 1'
+    };
+
+    DbController.saveBehavioralRemark(remark);
+    setNewRemarkText('');
+    onRefresh();
+  };
+
+  const handleDeleteRemark = (remarkId: string) => {
+    if (window.confirm("Are you sure you want to delete this behavioral remark entry?")) {
+      DbController.deleteBehavioralRemark(remarkId);
+      onRefresh();
+    }
+  };
+
   const handleDelete = (studentId: string) => {
     setStudentToDelete(studentId);
     setShowConfirmModal(true);
@@ -827,6 +871,13 @@ export default function StudentsTab({
                   <span className="truncate">{std.guardianName || 'Guardian'}: {std.guardianTelephone}</span>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleOpenRemarks(std)}
+                    className="p-1 hover:bg-amber-50 hover:text-amber-600 rounded text-slate-600 cursor-pointer transition"
+                    title="Behavioral Remarks"
+                  >
+                    <MessageSquare size={12} />
+                  </button>
                   <button
                     onClick={() => handleOpenIdCard(std)}
                     className="p-1 hover:bg-indigo-50 hover:text-indigo-600 rounded text-slate-600 cursor-pointer transition"
@@ -2152,6 +2203,265 @@ export default function StudentsTab({
                 </div>
               </div>
 
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* STUDENT BEHAVIORAL REMARKS LOG & TRACKER MODAL */}
+      <AnimatePresence>
+        {showRemarksModal && selectedRemarkStudent && (
+          <div 
+            onClick={() => setShowRemarksModal(false)}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print overflow-y-auto cursor-pointer font-sans"
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-[24px] border border-slate-200/50 shadow-2xl max-w-4xl w-full flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-100 overflow-hidden my-8 max-h-[90vh] cursor-default"
+            >
+              {/* Left Column: Form to log a new remark */}
+              <div className="w-full md:w-[380px] p-6 flex flex-col justify-between bg-slate-50">
+                <div className="space-y-6">
+                  {/* Student Header Info */}
+                  <div className="flex items-center gap-3 pb-4 border-b border-slate-200">
+                    <div className="w-12 h-12 rounded-full border border-slate-200 bg-white overflow-hidden flex-shrink-0 flex items-center justify-center shadow-2xs">
+                      {selectedRemarkStudent.photoUrl ? (
+                        <img src={selectedRemarkStudent.photoUrl} alt={selectedRemarkStudent.firstName} className="w-full h-full object-cover" />
+                      ) : (
+                        <User size={20} className="text-slate-400" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-bold text-slate-900 truncate">
+                        {selectedRemarkStudent.firstName} {selectedRemarkStudent.lastName}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 font-mono">
+                        Class: {selectedRemarkStudent.class} • ID: {selectedRemarkStudent.id}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-black text-slate-950 flex items-center gap-1.5">
+                      <MessageSquare size={16} className="text-amber-500" /> Log Behavioral Remark
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Record disciplinary remarks, conduct praise, or academic observations.
+                    </p>
+                  </div>
+
+                  {/* Form */}
+                  <form onSubmit={handleSaveRemark} className="space-y-4 pt-1">
+                    {/* Category Selector */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                        Category Classification
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(['Conduct', 'Positive', 'Academic', 'Improvement', 'Other'] as const).map((cat) => {
+                          const isSelected = newRemarkCategory === cat;
+                          let themeClasses = '';
+                          let CatIcon = MessageSquare;
+                          if (cat === 'Positive') {
+                            themeClasses = isSelected ? 'bg-emerald-500 border-emerald-500 text-white shadow-xs shadow-emerald-500/10' : 'bg-white border-slate-200 hover:bg-emerald-50 hover:border-emerald-200 text-slate-600 hover:text-emerald-700';
+                            CatIcon = Heart;
+                          } else if (cat === 'Conduct') {
+                            themeClasses = isSelected ? 'bg-blue-500 border-blue-500 text-white shadow-xs shadow-blue-500/10' : 'bg-white border-slate-200 hover:bg-blue-50 hover:border-blue-200 text-slate-600 hover:text-blue-700';
+                            CatIcon = ShieldAlert;
+                          } else if (cat === 'Academic') {
+                            themeClasses = isSelected ? 'bg-purple-500 border-purple-500 text-white shadow-xs shadow-purple-500/10' : 'bg-white border-slate-200 hover:bg-purple-50 hover:border-purple-200 text-slate-600 hover:text-purple-700';
+                            CatIcon = BookOpen;
+                          } else if (cat === 'Improvement') {
+                            themeClasses = isSelected ? 'bg-amber-500 border-amber-500 text-white shadow-xs shadow-amber-500/10' : 'bg-white border-slate-200 hover:bg-amber-50 hover:border-amber-200 text-slate-600 hover:text-amber-700';
+                            CatIcon = AlertTriangle;
+                          } else {
+                            themeClasses = isSelected ? 'bg-slate-600 border-slate-600 text-white' : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-600';
+                            CatIcon = MessageSquare;
+                          }
+
+                          return (
+                            <button
+                              key={cat}
+                              type="button"
+                              onClick={() => setNewRemarkCategory(cat)}
+                              className={`flex items-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] font-bold border transition cursor-pointer ${themeClasses}`}
+                            >
+                              <CatIcon size={12} />
+                              {cat}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Remark Textarea */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                        Detailed Remark
+                      </label>
+                      <textarea
+                        value={newRemarkText}
+                        onChange={(e) => setNewRemarkText(e.target.value)}
+                        placeholder="Write behavioral feedback or disciplinary action..."
+                        rows={4}
+                        required
+                        className="w-full rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition resize-none font-sans"
+                      />
+                    </div>
+
+                    {/* Term/Session Indicator */}
+                    <div className="bg-white rounded-xl border border-slate-200 p-3 flex justify-between items-center text-[10px] font-mono text-slate-500 leading-none">
+                      <div>
+                        <span className="block text-slate-400 uppercase text-[8px] font-bold leading-none mb-1">Academic Session</span>
+                        {selectedRemarkStudent.academicYear || selectedYear || '2026/2027'}
+                      </div>
+                      <div className="text-right">
+                        <span className="block text-slate-400 uppercase text-[8px] font-bold leading-none mb-1">Active Term</span>
+                        {selectedRemarkStudent.term || selectedTerm || 'Term 1'}
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-bold rounded-xl shadow-md transition cursor-pointer text-xs flex items-center justify-center gap-1.5"
+                    >
+                      <Check size={14} /> Log Remark Entry
+                    </button>
+                  </form>
+                </div>
+
+                <div className="pt-4 border-t border-slate-200 mt-6">
+                  <button
+                    type="button"
+                    onClick={() => setShowRemarksModal(false)}
+                    className="w-full py-2 bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 font-bold rounded-xl transition cursor-pointer text-xs"
+                  >
+                    Close Log
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Column: Historical remarks timeline tracker */}
+              <div className="flex-1 p-6 bg-white overflow-y-auto max-h-[90vh] flex flex-col justify-between">
+                <div className="space-y-4">
+                  <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-black text-slate-950">Remarks History Timeline</h4>
+                      <p className="text-[10px] text-slate-400">Chronological history log for this student profile</p>
+                    </div>
+                    <span className="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full font-bold">
+                      {DbController.getBehavioralRemarksForStudent(selectedRemarkStudent.id).length} Entries
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 pr-1 max-h-[55vh] overflow-y-auto">
+                    {DbController.getBehavioralRemarksForStudent(selectedRemarkStudent.id).length === 0 ? (
+                      <div className="py-12 px-4 flex flex-col items-center justify-center text-center space-y-3">
+                        <div className="w-12 h-12 bg-slate-50 border border-slate-100 rounded-full flex items-center justify-center text-slate-400">
+                          <MessageSquare size={20} />
+                        </div>
+                        <div className="space-y-1">
+                          <h5 className="text-xs font-bold text-slate-700">No behavioral remarks logged</h5>
+                          <p className="text-[10px] text-slate-400 max-w-[240px]">
+                            This student has an empty history. Add their first conduct or academic remark using the left-hand form panel.
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      DbController.getBehavioralRemarksForStudent(selectedRemarkStudent.id)
+                        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                        .map((remark) => {
+                          let cardColorClass = '';
+                          let badgeClass = '';
+                          let ItemIcon = MessageSquare;
+
+                          if (remark.category === 'Positive') {
+                            cardColorClass = 'border-l-4 border-l-emerald-500 bg-emerald-50/15 border border-slate-100';
+                            badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-150';
+                            ItemIcon = Heart;
+                          } else if (remark.category === 'Conduct') {
+                            cardColorClass = 'border-l-4 border-l-blue-500 bg-blue-50/15 border border-slate-100';
+                            badgeClass = 'bg-blue-50 text-blue-700 border-blue-150';
+                            ItemIcon = ShieldAlert;
+                          } else if (remark.category === 'Academic') {
+                            cardColorClass = 'border-l-4 border-l-purple-500 bg-purple-50/15 border border-slate-100';
+                            badgeClass = 'bg-purple-50 text-purple-700 border-purple-150';
+                            ItemIcon = BookOpen;
+                          } else if (remark.category === 'Improvement') {
+                            cardColorClass = 'border-l-4 border-l-amber-500 bg-amber-50/15 border border-slate-100';
+                            badgeClass = 'bg-amber-50 text-amber-700 border-amber-150';
+                            ItemIcon = AlertTriangle;
+                          } else {
+                            cardColorClass = 'border-l-4 border-l-slate-400 bg-slate-50/20 border border-slate-100';
+                            badgeClass = 'bg-slate-50 text-slate-700 border-slate-150';
+                            ItemIcon = MessageSquare;
+                          }
+
+                          return (
+                            <div 
+                              key={remark.id}
+                              className={`p-3.5 rounded-xl flex flex-col justify-between space-y-2.5 transition hover:shadow-xs relative group ${cardColorClass}`}
+                            >
+                              <div className="flex items-start justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase border ${badgeClass}`}>
+                                    <ItemIcon size={9} />
+                                    {remark.category}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    {new Date(remark.date).toLocaleDateString(undefined, { 
+                                      year: 'numeric', 
+                                      month: 'short', 
+                                      day: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </span>
+                                </div>
+                                
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRemark(remark.id)}
+                                  className="p-1 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 cursor-pointer transition md:opacity-0 md:group-hover:opacity-100"
+                                  title="Delete Entry"
+                                >
+                                  <Trash2 size={11} />
+                                </button>
+                              </div>
+
+                              <p className="text-xs text-slate-700 font-sans leading-relaxed break-words whitespace-pre-wrap">
+                                {remark.remark}
+                              </p>
+
+                              <div className="flex justify-between items-center text-[9px] font-mono text-slate-450 border-t border-slate-100/60 pt-2 leading-none">
+                                <div>
+                                  Logged by: <span className="font-semibold text-slate-600">{remark.teacherName}</span>
+                                </div>
+                                <div className="text-right text-slate-400">
+                                  {remark.academicYear} • {remark.term}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-indigo-50 p-3 rounded-xl border border-indigo-150 text-[10px] text-indigo-800 leading-normal flex gap-2 mt-4">
+                  <ShieldAlert size={14} className="text-indigo-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <strong>Data Integrity & Traceability:</strong>
+                    <p className="mt-0.5">
+                      All logged behavioral entries are securely cached and synchronized in real-time with the central Cloud Database, associating complete teacher identity tracking tags automatically.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}
