@@ -2,7 +2,12 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
 import firebaseConfig from '../firebase-applet-config.json';
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+const configWithAuthDomain = firebaseConfig.projectId ? {
+  ...firebaseConfig,
+  authDomain: `${firebaseConfig.projectId}.firebaseapp.com`
+} : firebaseConfig;
+
+const app = getApps().length === 0 ? initializeApp(configWithAuthDomain) : getApp();
 const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();

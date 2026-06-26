@@ -108,7 +108,11 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 
 try {
   if (firebaseConfig.apiKey && firebaseConfig.projectId) {
-    firebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+    const configWithAuthDomain = {
+      ...firebaseConfig,
+      authDomain: `${firebaseConfig.projectId}.firebaseapp.com`
+    };
+    firebaseApp = getApps().length === 0 ? initializeApp(configWithAuthDomain) : getApp();
     firebaseAuth = getAuth(firebaseApp);
     const dbId = (firebaseConfig as any).firestoreDatabaseId || "ai-studio-a2d8d304-855b-466a-8f1a-47e69bbb165b";
     firestoreDb = initializeFirestore(firebaseApp, {
