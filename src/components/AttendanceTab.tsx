@@ -1,12 +1,32 @@
 import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AttendanceRecord, ClassType, CLASSES, AttendanceStatus, StaffAttendanceRecord, StaffAttendanceStatus, UserRole } from '../types';
-import { DbController } from '../db';
+import { AttendanceRecord, ClassType, CLASSES, AttendanceStatus, StaffAttendanceRecord, StaffAttendanceStatus, UserRole, SubjectType } from '../types';
+import { DbController, getStorageItem, setStorageItem } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
-import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser, Eye, Clock, LogIn, LogOut, MessageSquare, Briefcase, ChevronLeft, ChevronRight } from 'lucide-react';
+import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser, Eye, Clock, LogIn, LogOut, MessageSquare, Briefcase, ChevronLeft, ChevronRight, Activity } from 'lucide-react';
 import { DefaultCrest } from './SchoolProfileTab';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
+import { getWatermarkHtml } from '../utils';
+import AttendanceSummaryView from './AttendanceSummaryView';
+
+const GHANA_CREST_SVG_SIMPLE = `
+<svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 250px; height: 250px; color: #000;">
+  <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" />
+  <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,32 L 68,32 C 68,32 68,58 50,74 C 32,58 32,32 32,32 Z" fill="none" stroke="currentColor" stroke-width="1.2" />
+  <path d="M 50,32 L 50,74" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,50 L 68,50" stroke="currentColor" stroke-width="0.6" />
+  <polygon points="50,45 52,49 57,49 53,52 55,56 50,54 45,56 47,52 43,49 48,49" fill="currentColor" opacity="0.6" />
+  <path d="M 53,36 L 65,36 L 65,46 L 53,46 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 53,41 L 65,41" stroke="currentColor" stroke-width="0.4" />
+  <line x1="41" y1="36" x2="41" y2="46" stroke="currentColor" stroke-width="1.2" />
+  <circle cx="41" cy="35" r="1.2" fill="currentColor" />
+  <path d="M 23,35 C 19,48 19,63 34,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 77,35 C 81,48 81,63 66,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 25,79 L 75,79 C 75,79 65,85 50,85 C 35,85 25,79 25,79 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+</svg>
+`;
 
 interface TeacherMonthlyStats {
   teacherId: string;
@@ -32,7 +52,9 @@ interface Props {
   theme: ThemeStyles;
   isAutoSave: boolean;
   onManualSave: () => void;
-  assignedClass?: ClassType | null;
+  assignedClass?: ClassType | 'None';
+  assignedClasses?: ClassType[];
+  assignedSubjects?: SubjectType[];
   userRole?: UserRole;
   teacherPermissions?: {
     canEditGrades?: boolean;
@@ -41,7 +63,16 @@ interface Props {
   } | null;
 }
 
-export default function AttendanceTab({ theme, isAutoSave, onManualSave, assignedClass, userRole, teacherPermissions }: Props) {
+export default function AttendanceTab({ 
+  theme, 
+  isAutoSave, 
+  onManualSave, 
+  assignedClass, 
+  assignedClasses = [],
+  assignedSubjects = [],
+  userRole, 
+  teacherPermissions 
+}: Props) {
   const schoolInfo = DbController.getSchoolInfo();
   const [printBlocked, setPrintBlocked] = useState(false);
   const [showPdfGuide, setShowPdfGuide] = useState(false);
@@ -61,18 +92,18 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
   });
 
   const [termStartDate, setTermStartDate] = useState<string>(() => {
-    return localStorage.getItem('sms_term_start_date') || '2026-05-20';
+    return getStorageItem('sms_term_start_date', '2026-05-20');
   });
   const [termEndDate, setTermEndDate] = useState<string>(() => {
-    return localStorage.getItem('sms_term_end_date') || '2026-07-04';
+    return getStorageItem('sms_term_end_date', '2026-07-04');
   });
 
   useEffect(() => {
-    localStorage.setItem('sms_term_start_date', termStartDate);
+    setStorageItem('sms_term_start_date', termStartDate);
   }, [termStartDate]);
 
   useEffect(() => {
-    localStorage.setItem('sms_term_end_date', termEndDate);
+    setStorageItem('sms_term_end_date', termEndDate);
   }, [termEndDate]);
 
   const allRangeDates = useMemo(() => {
@@ -151,15 +182,21 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
     return allRangeDates.filter(d => d.monthKey === activeMonthTab);
   }, [allRangeDates, activeMonthTab]);
   const [selectedClass, setSelectedClass] = useState<ClassType>(() => {
-    return userRole === 'Teacher' && assignedClass ? assignedClass : 'Basic 1';
+    if (userRole === 'Teacher') {
+      return assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'Basic 1');
+    }
+    return 'Basic 1';
   });
 
   useEffect(() => {
-    if (userRole === 'Teacher' && assignedClass) {
-      setSelectedClass(assignedClass);
+    if (userRole === 'Teacher') {
+      const target = assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'None');
+      if (target !== 'None') {
+        setSelectedClass(target as ClassType);
+      }
     }
-  }, [assignedClass, userRole]);
-  const [attendanceView, setAttendanceView] = useState<'student' | 'staff' | 'roster'>('student');
+  }, [assignedClass, assignedClasses, userRole]);
+  const [attendanceView, setAttendanceView] = useState<'student' | 'staff' | 'roster' | 'summary'>('student');
   const [attendanceSheet, setAttendanceSheet] = useState<AttendanceRecord[]>([]);
   const [staffAttendanceSheet, setStaffAttendanceSheet] = useState<StaffAttendanceRecord[]>([]);
   const [saveStatus, setSaveStatus] = useState<string>('');
@@ -451,7 +488,9 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
     }
   };
 
-  if (userRole === 'Teacher' && !assignedClass) {
+  const hasAnyAssignment = (assignedClasses.length > 0) || (assignedSubjects.length > 0) || (assignedClass && assignedClass !== 'None');
+
+  if (userRole === 'Teacher' && !hasAnyAssignment) {
     return (
       <div className="bg-amber-50/50 border border-amber-200 text-amber-800 p-8 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-12 shadow-sm">
         <ShieldAlert size={48} className="text-amber-500 mx-auto animate-bounce" />
@@ -501,7 +540,7 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
         </div>
 
         {/* Dynamic button control */}
-        <div className="bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-3xs flex">
+        <div className="bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-3xs flex flex-wrap gap-1">
           <button
             onClick={() => setAttendanceView('student')}
             className={`px-4 py-2 font-black transition rounded-lg cursor-pointer text-xs flex items-center gap-1.5 ${
@@ -525,6 +564,14 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
             }`}
           >
             <Printer size={14} /> Exportable Roster
+          </button>
+          <button
+            onClick={() => setAttendanceView('summary')}
+            className={`px-4 py-2 font-black transition rounded-lg cursor-pointer text-xs flex items-center gap-1.5 ${
+              attendanceView === 'summary' ? `${theme.primaryBg} text-white shadow-xs` : 'text-slate-600 hover:bg-slate-250'
+            }`}
+          >
+            <Activity size={14} /> Summary Analytics
           </button>
         </div>
       </div>
@@ -685,17 +732,19 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
             </div>
           </div>
 
-          {attendanceView === 'student' && (
+          {(attendanceView === 'student' || attendanceView === 'summary') && (
             <div className="space-y-1">
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Select Class</label>
               <select
                 value={selectedClass}
                 onChange={(e) => setSelectedClass(e.target.value as ClassType)}
-                disabled={userRole === 'Teacher'}
+                disabled={userRole === 'Teacher' && [...new Set([assignedClass, ...assignedClasses])].filter(c => c && c !== 'None').length <= 1}
                 className="px-3 py-1.5 border border-slate-200 rounded-lg bg-slate-50 font-semibold text-xs focus:outline-none disabled:opacity-75 disabled:cursor-not-allowed"
               >
                 {userRole === 'Teacher' ? (
-                  <option value={assignedClass || 'None'}>{assignedClass || 'None'}</option>
+                  [...new Set([assignedClass, ...assignedClasses])].filter(c => c && c !== 'None').map(cls => (
+                    <option key={cls} value={cls}>{cls}</option>
+                  ))
                 ) : (
                   CLASSES.map(cls => (
                     <option key={cls} value={cls}>{cls}</option>
@@ -708,7 +757,7 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
 
         {/* Global Setter controls and Print button */}
         <div className="flex flex-wrap items-center gap-4">
-          {attendanceView === 'student' ? (
+          {attendanceView === 'student' && (
             <div className="flex items-center gap-2">
               <div className="text-[11px] text-slate-500 font-medium">Bulk Mark Class:</div>
               <button
@@ -730,7 +779,8 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
                 All Absent
               </button>
             </div>
-          ) : (
+          )}
+          {attendanceView === 'staff' && (
             <div className="flex items-center gap-2">
               <div className="text-[11px] text-slate-500 font-medium">Bulk Mark Staff:</div>
               <button
@@ -767,7 +817,8 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
       </div>
 
       {/* Grid: Stat Summary on Left, Roster Table on Right */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 no-print">
+      {attendanceView !== 'summary' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 no-print">
         
         {/* STATS AGGREGATES CARDS */}
         <div className="lg:col-span-1 space-y-4">
@@ -1232,37 +1283,46 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
                     </button>
                   </div>
                   
-                  <table className="w-full border-collapse border border-slate-300">
-                    <thead>
-                      <tr className="bg-slate-50">
-                        <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-12">No.</th>
-                        <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-32">Student ID</th>
-                        <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600">Full Name</th>
-                        <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-48">Signature / Remarks</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {attendanceSheet.length === 0 ? (
-                        <tr><td colSpan={4} className="p-4 text-center text-slate-400">No students found.</td></tr>
-                      ) : (
-                        attendanceSheet.map((item, index) => (
-                          <tr key={item.studentId}>
-                            <td className="border border-slate-300 p-2 text-xs font-mono text-slate-500">{index + 1}</td>
-                            <td className="border border-slate-300 p-2 text-xs font-mono text-slate-700">{item.studentId}</td>
-                            <td className="border border-slate-300 p-2 text-xs font-semibold text-slate-800">{item.studentName}</td>
-                            <td className="border border-slate-300 p-2 h-10"></td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+                  <div id="attendance-roster-print-area" className="w-full">
+                    <table className="w-full border-collapse border border-slate-300">
+                      <thead>
+                        <tr className="bg-slate-50">
+                          <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-12">No.</th>
+                          <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-32">Student ID</th>
+                          <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600">Full Name</th>
+                          <th className="border border-slate-300 p-2 text-left text-[10px] uppercase font-bold text-slate-600 w-48">Signature / Remarks</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {attendanceSheet.length === 0 ? (
+                          <tr><td colSpan={4} className="p-4 text-center text-slate-400">No students found.</td></tr>
+                        ) : (
+                          attendanceSheet.map((item, index) => (
+                            <tr key={item.studentId}>
+                              <td className="border border-slate-300 p-2 text-xs font-mono text-slate-500">{index + 1}</td>
+                              <td className="border border-slate-300 p-2 text-xs font-mono text-slate-700">{item.studentId}</td>
+                              <td className="border border-slate-300 p-2 text-xs font-semibold text-slate-800">{item.studentName}</td>
+                              <td className="border border-slate-300 p-2 h-10"></td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               ) : attendanceView === 'student' ? (
                 attendanceSheet.length === 0 ? (
-                  <div className="p-12 text-center text-slate-400 space-y-2">
-                    <CalendarCheck size={32} className="text-slate-300 mx-auto" />
-                    <p className="font-semibold text-slate-600">No Enrolled Students In {selectedClass}</p>
-                    <p className="max-w-sm mx-auto text-slate-400 text-[10px]">Enroll student profiles to {selectedClass} under the primary Databases module to enable attendance register checkmarks.</p>
+                  <div className="p-8 text-center text-slate-400 flex flex-col items-center justify-center space-y-4">
+                    <img 
+                      src="/attendance_empty.jpg" 
+                      alt="No attendance data illustration" 
+                      className="w-48 h-48 object-contain rounded-2xl border border-slate-100 shadow-sm bg-white"
+                      referrerPolicy="no-referrer"
+                    />
+                    <div className="space-y-1">
+                      <p className="font-semibold text-slate-600">No Enrolled Students In {selectedClass}</p>
+                      <p className="max-w-sm mx-auto text-slate-400 text-[10px] leading-relaxed">Enroll student profiles to {selectedClass} under the primary Databases module to enable attendance register checkmarks.</p>
+                    </div>
                   </div>
                 ) : (
                   attendanceSheet.map((item, index) => (
@@ -1415,9 +1475,20 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
         )}
 
       </div>
+      ) : (
+        <div className="no-print">
+          <AttendanceSummaryView 
+            selectedClass={selectedClass} 
+            selectedDate={selectedDate} 
+            theme={theme} 
+          />
+        </div>
+      )}
 
       {/* PRINT-ONLY COHESIVE DAILY REGISTER LOG */}
-      <div className="hidden print:block font-serif max-w-5xl mx-auto p-12 bg-white text-black border-4 border-double border-slate-800 rounded-none shadow-none mt-10">
+      {attendanceView !== 'summary' && (
+        <div className="hidden print:block font-serif max-w-5xl mx-auto p-12 bg-white text-black border-4 border-double border-slate-800 rounded-none shadow-none mt-10 relative">
+          <div className="absolute inset-0 z-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo?.crestUrl) }} />
         <div className="text-center border-b-2 border-slate-800 pb-4 mb-6">
           <div className="mx-auto w-16 h-16 mb-3 flex items-center justify-center overflow-hidden border border-slate-300 rounded-full bg-slate-50">
             {schoolInfo.logoUrl ? (
@@ -1548,6 +1619,7 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
           </div>
         </div>
       </div>
+      )}
 
       {/* SANDBOX PRINT CAPTURE ALERT OVERLAY */}
       {printBlocked && (
@@ -1592,10 +1664,26 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
             
             {/* Left: Document Live Preview */}
             <div className="flex-1 p-6 overflow-y-auto bg-slate-700 flex flex-col justify-between items-center space-y-4">
-              <span className="text-white text-xs font-mono tracking-widest uppercase opacity-70">Interactive Page Print Draft Preview</span>
+              <div className="text-center space-y-1 select-none">
+                <span className="text-amber-400 text-xs font-black tracking-wider uppercase block font-sans">
+                  Print Preview & Document Layout Align
+                </span>
+                <span className="text-white/60 text-[9px] font-sans block max-w-md">
+                  Optimize margins, branding, and paper size before submitting to printer
+                </span>
+              </div>
               
-              <div id="attendance-register-preview-card" className="w-full max-w-[450px] aspect-[1/1.414] bg-white p-8 text-black border-4 border-double border-slate-800 shadow-2xl text-[9px] space-y-3 font-serif rounded-none overflow-y-auto">
-                <div className="text-center border-b-2 border-slate-800 pb-2 mb-3">
+              <div id="attendance-register-preview-card" className="relative w-full max-w-[450px] aspect-[1/1.414] bg-white p-8 text-black border-4 border-double border-slate-800 shadow-2xl text-[9px] space-y-3 font-serif rounded-none overflow-y-auto">
+                {/* Transparent School Crest Watermark */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.045] z-0">
+                  {schoolInfo?.crestUrl ? (
+                    <img src={schoolInfo.crestUrl} className="w-[280px] h-[280px] object-contain" alt="Watermark Crest" referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-[280px] h-[280px]" dangerouslySetInnerHTML={{ __html: GHANA_CREST_SVG_SIMPLE }} />
+                  )}
+                </div>
+
+                <div className="relative z-10 text-center border-b-2 border-slate-800 pb-2 mb-3">
                   <div className="mx-auto w-12 h-12 mb-2 flex items-center justify-center overflow-hidden border border-slate-200 rounded-full bg-slate-50">
                     {schoolInfo.logoUrl ? (
                       <img src={schoolInfo.logoUrl} className="w-full h-full object-contain" alt="School logo" />
@@ -1619,6 +1707,20 @@ export default function AttendanceTab({ theme, isAutoSave, onManualSave, assigne
                     <h4 className="text-[10px] font-bold uppercase text-center tracking-widest border-b border-stone-300 pb-1 mb-2 text-stone-900">
                       Daily Class Attendance Register Log
                     </h4>
+                ) : attendanceView === 'summary' ? (
+                  <>
+                    <div className="flex justify-between items-center bg-stone-50 p-2 rounded border border-stone-200 mb-3 text-[8px] font-mono text-stone-700">
+                      <div><strong>CLASS:</strong> {selectedClass}</div>
+                      <div><strong>PERIOD:</strong> SUMMARY</div>
+                    </div>
+
+                    <h4 className="text-[10px] font-bold uppercase text-center tracking-widest border-b border-stone-300 pb-1 mb-2 text-stone-900">
+                      Attendance Aggregate Summary
+                    </h4>
+                    <p className="text-[8px] italic text-center text-stone-500 mb-2">
+                      Please use the 'Print Summary' button in the summary dashboard to print full statistics with gender aggregates.
+                    </p>
+                  </>
 
                     <table className="w-full text-left text-[8px] border-collapse border border-stone-400">
                       <thead>

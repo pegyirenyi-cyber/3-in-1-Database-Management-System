@@ -2,7 +2,7 @@ import { useState, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { SchoolInfo } from '../types';
 import { DbController } from '../db';
-import { compressImage } from '../utils';
+import { compressImage, getWatermarkHtml } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { Printer, Save, CheckCircle, Info, Landmark, ShieldCheck, FileDown, Trash2, RotateCcw, Eraser, Eye } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
@@ -18,6 +18,24 @@ export function DefaultCrest({ className = "h-12 w-12" }: { className?: string }
     </svg>
   );
 }
+
+const GHANA_CREST_SVG_SIMPLE = `
+<svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 250px; height: 250px; color: #000;">
+  <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" />
+  <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,32 L 68,32 C 68,32 68,58 50,74 C 32,58 32,32 32,32 Z" fill="none" stroke="currentColor" stroke-width="1.2" />
+  <path d="M 50,32 L 50,74" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,50 L 68,50" stroke="currentColor" stroke-width="0.6" />
+  <polygon points="50,45 52,49 57,49 53,52 55,56 50,54 45,56 47,52 43,49 48,49" fill="currentColor" opacity="0.6" />
+  <path d="M 53,36 L 65,36 L 65,46 L 53,46 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 53,41 L 65,41" stroke="currentColor" stroke-width="0.4" />
+  <line x1="41" y1="36" x2="41" y2="46" stroke="currentColor" stroke-width="1.2" />
+  <circle cx="41" cy="35" r="1.2" fill="currentColor" />
+  <path d="M 23,35 C 19,48 19,63 34,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 77,35 C 81,48 81,63 66,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 25,79 L 75,79 C 75,79 65,85 50,85 C 35,85 25,79 25,79 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+</svg>
+`;
 
 interface Props {
   theme: ThemeStyles;
@@ -101,6 +119,26 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
     }
   };
 
+  const handleCrestUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        if (typeof reader.result === 'string') {
+          const base64 = reader.result;
+          try {
+            const compressed = await compressImage(base64);
+            handleInputChange('crestUrl', compressed);
+          } catch (err) {
+            console.error("Crest compression error:", err);
+            handleInputChange('crestUrl', base64);
+          }
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleSave = () => {
     DbController.saveSchoolInfo(formData);
     onManualSave();
@@ -137,7 +175,8 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
       highestAcademicQualifications: '',
       district: '',
       circuit: '',
-      reopeningDate: ''
+      reopeningDate: '',
+      crestUrl: ''
     };
     setFormData(cleared);
     onUpdate(cleared);
@@ -147,8 +186,8 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
   };
 
   const handleDeleteActive = () => {
-    // Reset/delete the active selection (here we clear the active uploaded logo and motto inputs)
-    const activeDeleted = { ...formData, logoUrl: '', motto: '' };
+    // Reset/delete the active selection (here we clear the active uploaded logo, crest, and motto inputs)
+    const activeDeleted = { ...formData, logoUrl: '', motto: '', crestUrl: '' };
     setFormData(activeDeleted);
     onUpdate(activeDeleted);
     if (isAutoSave) {
@@ -174,7 +213,8 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
         highestAcademicQualifications: '',
         district: '',
         circuit: '',
-        reopeningDate: ''
+        reopeningDate: '',
+        crestUrl: ''
       };
       setFormData(blank);
       onUpdate(blank);
@@ -454,7 +494,7 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
                 )}
               </div>
 
-              <div className="md:col-span-2 border-t border-slate-100/65 pt-4 mt-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2 border-t border-slate-100/65 pt-4 mt-2 grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* Digital Signature */}
                 <div className="space-y-1 text-left">
                   <label className="block text-xs font-semibold text-slate-700">Headteacher's Digital Signature</label>
@@ -523,6 +563,41 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
                     </div>
                   </div>
                   <p className="text-[9px] text-slate-400 font-sans">Superimposed adjacent to the Signature block.</p>
+                </div>
+
+                {/* Custom School Crest Watermark */}
+                <div className="space-y-1 text-left">
+                  <label className="block text-xs font-semibold text-slate-700">Custom Watermark Crest / Logo</label>
+                  <div className="flex items-center gap-3 p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                    <div className="w-16 h-12 rounded bg-white border border-slate-300 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-2xs">
+                      {formData.crestUrl ? (
+                        <img src={formData.crestUrl} className="w-full h-full object-contain" alt="Crest Preview" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="text-[10px] text-slate-400 italic font-mono text-center leading-none text-center">Default (Ghana Crest)</div>
+                      )}
+                    </div>
+                    <div className="flex-grow space-y-1">
+                      <label className="inline-block px-2 py-1 bg-white border border-slate-205 text-slate-700 hover:bg-slate-50 text-[10px] font-bold rounded shadow-2xs cursor-pointer transition select-none">
+                        Choose File
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleCrestUpload}
+                        />
+                      </label>
+                      {formData.crestUrl && (
+                        <button
+                          type="button"
+                          onClick={() => handleInputChange('crestUrl', '')}
+                          className="block text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                        >
+                          Remove Crest
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-slate-400 font-sans">Watermarks print preview documents. Falls back to default Ghana Crest.</p>
                 </div>
               </div>
             </div>
@@ -649,8 +724,9 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
       </div>
 
       {/* PRINT-ONLY HIGH FIDELITY LAYOUT (ONLY VISIBLE ON PRINT) */}
-      <div id="school-profile-print-area" className="hidden print:block font-serif max-w-4xl mx-auto p-12 bg-white text-black border-4 border-double border-slate-800 rounded-none shadow-none mt-20">
-        <div className="text-center border-b-2 border-slate-800 pb-6 mb-8">
+      <div id="school-profile-print-area" className="hidden print:block font-serif max-w-4xl mx-auto p-12 bg-white text-black border-4 border-double border-slate-800 rounded-none shadow-none mt-20 relative">
+        <div className="absolute inset-0 z-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(formData.crestUrl) }} />
+        <div className="text-center border-b-2 border-slate-800 pb-6 mb-8 relative z-10">
           <div className="mx-auto w-24 h-24 mb-4 flex items-center justify-center overflow-hidden border border-slate-300 rounded-full bg-slate-50">
             {formData.logoUrl ? (
               <img src={formData.logoUrl} className="w-full h-full object-contain" alt="Logo" referrerPolicy="no-referrer" />
@@ -788,10 +864,26 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
             
             {/* Left: Document Live Preview */}
             <div className="flex-1 p-6 overflow-y-auto bg-slate-700 flex flex-col justify-between items-center space-y-4">
-              <span className="text-white text-xs font-mono tracking-widest uppercase opacity-70">Interactive Page Print Draft Preview</span>
+              <div className="text-center space-y-1 select-none">
+                <span className="text-amber-400 text-xs font-black tracking-wider uppercase block font-sans">
+                  Print Preview & Document Layout Align
+                </span>
+                <span className="text-white/60 text-[9px] font-sans block max-w-md">
+                  Optimize margins, branding, and paper size before submitting to printer
+                </span>
+              </div>
               
-              <div id="school-profile-preview-card" className="w-full max-w-[450px] aspect-[1/1.414] bg-white p-8 text-black border-4 border-double border-slate-800 shadow-2xl text-[9px] space-y-3 font-serif rounded-none overflow-y-auto">
-                <div className="text-center border-b-2 border-slate-800 pb-2 mb-3">
+              <div id="school-profile-preview-card" className="relative w-full max-w-[450px] aspect-[1/1.414] bg-white p-8 text-black border-4 border-double border-slate-800 shadow-2xl text-[9px] space-y-3 font-serif rounded-none overflow-y-auto">
+                {/* Transparent School Crest Watermark */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.045] z-0">
+                  {formData.crestUrl ? (
+                    <img src={formData.crestUrl} className="w-[280px] h-[280px] object-contain" alt="Watermark Crest" referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-[280px] h-[280px]" dangerouslySetInnerHTML={{ __html: GHANA_CREST_SVG_SIMPLE }} />
+                  )}
+                </div>
+
+                <div className="relative z-10 text-center border-b-2 border-slate-800 pb-2 mb-3">
                   <div className="mx-auto w-12 h-12 mb-2 flex items-center justify-center overflow-hidden border border-slate-200 rounded-full bg-slate-50">
                     {formData.logoUrl ? (
                       <img src={formData.logoUrl} className="w-full h-full object-contain" alt="Logo" referrerPolicy="no-referrer" />

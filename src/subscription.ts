@@ -1,4 +1,5 @@
 import { UserAccount } from './types';
+import { getStorageItem } from './db';
 
 export interface SubscriptionStatus {
   isLocked: boolean;
@@ -8,7 +9,7 @@ export interface SubscriptionStatus {
   remainingDays: number;
   message: string;
   requestCode: string;
-  licenseType: 'trial' | 'activated';
+  licenseType: 'trial' | 'activated' | 'unlimited';
 }
 
 /**
@@ -82,10 +83,7 @@ export function evaluateSubscription(user: UserAccount | null): SubscriptionStat
   // -------------------------------------------------------------
   let calendarConfig: any = null;
   try {
-    const savedCal = typeof localStorage !== 'undefined' ? localStorage.getItem('sms_academic_calendar') : null;
-    if (savedCal) {
-      calendarConfig = JSON.parse(savedCal);
-    }
+    calendarConfig = getStorageItem('sms_academic_calendar', null);
   } catch (e) {
     console.error("Error reading academic calendar for subscription evaluation:", e);
   }
@@ -104,12 +102,14 @@ export function evaluateSubscription(user: UserAccount | null): SubscriptionStat
   };
 
   if (licenseType === 'trial') {
-    // Trial expires exactly 21 days after registration
-    expDate = new Date(regDate.getTime() + 21 * 24 * 60 * 60 * 1000);
+    // Trial expires exactly 14 days after registration
+    expDate = new Date(regDate.getTime() + 14 * 24 * 60 * 60 * 1000);
   } else {
-    // Licensed access expires on the defined end date of the active academic calendar school year
-    const yearEndDateStr = yearConfig.endDate || '2026-07-31';
-    expDate = new Date(`${yearEndDateStr}T23:59:59`);
+    // Licensed access expires based on the subscription period (number of years) from lastActivatedOn
+    const activationDate = lastActivatedOn ? new Date(lastActivatedOn) : regDate;
+    const periodYears = user.licensePeriod || 1;
+    expDate = new Date(activationDate.getTime());
+    expDate.setFullYear(expDate.getFullYear() + periodYears);
   }
 
   const now = new Date();
@@ -122,12 +122,12 @@ export function evaluateSubscription(user: UserAccount | null): SubscriptionStat
   let message = '';
   if (isLocked) {
     message = licenseType === 'trial'
-      ? `Your 21-day trial limit has expired. It is highly recommended to subscribe for 1 year or more. Please contact the administrator at pegyirenyi@gmail.com to activate your annual school license.`
-      : `Your academic year license has expired. Please contact pegyirenyi@gmail.com for your yearly application renewal.`;
+      ? `Your 14-day trial limit has expired. All features are currently disabled. Please subscribe for 1 year, 2 years, 3 years, or 5 years to unlock.`
+      : `Your ${user.licensePeriod || 1}-year school database license has expired. Please purchase a renewal to regain full access.`;
   } else {
     message = licenseType === 'trial'
-      ? `System Trial is Active. You have ${remainingDays} days left out of your 21-day trial limit. After your 21-day trial, it is highly recommended to subscribe for 1 year or more.`
-      : `Licensed School Account. Your license is healthy with ${remainingDays} days remaining in this academic year (${activeYear}).`;
+      ? `System Trial is Active. You have ${remainingDays} days left out of your 14-day trial limit.`
+      : `Licensed School Account. Your license is healthy with ${remainingDays} days remaining on your ${user.licensePeriod || 1}-year license subscription.`;
   }
 
   return {
@@ -143,7 +143,7 @@ export function evaluateSubscription(user: UserAccount | null): SubscriptionStat
 }
 
 /**
- * Prepares direct contact links for admin Peggy
+ * Prepares direct contact links for admin
  */
 export function getContactAdminLinks(email: string, requestCode: string) {
   const adminEmail = 'pegyirenyi@gmail.com';

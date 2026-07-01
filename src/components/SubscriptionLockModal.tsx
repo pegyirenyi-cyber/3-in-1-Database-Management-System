@@ -8,16 +8,17 @@ import {
   generateActivationCode 
 } from '../subscription';
 import { 
-  Lock, Mail, Phone, KeyRound, ArrowRightLeft, ShieldAlert, Sparkles, CheckCircle2, LogOut 
+  Lock, Mail, Phone, KeyRound, ArrowRightLeft, ShieldAlert, Sparkles, CheckCircle2, LogOut, CreditCard 
 } from 'lucide-react';
 
 interface SubscriptionLockModalProps {
   user: UserAccount;
   onUnlocked: (updatedUser: UserAccount) => void;
   onLogout: () => void;
+  onShowBilling: () => void;
 }
 
-export default function SubscriptionLockModal({ user, onUnlocked, onLogout }: SubscriptionLockModalProps) {
+export default function SubscriptionLockModal({ user, onUnlocked, onLogout, onShowBilling }: SubscriptionLockModalProps) {
   const [activationInput, setActivationInput] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -94,8 +95,8 @@ export default function SubscriptionLockModal({ user, onUnlocked, onLogout }: Su
             {success 
               ? "Your license has been verified. Welcome back to GEETECH Multimedia!"
               : isTrial 
-                ? "Your 21-day system trial has expired. To preserve your school databases and continue using the software, it is highly recommended to subscribe for 1 year or more."
-                : "Your school database license has completed its academic term. Please contact the administrator to renew or subscribe for 1 year or more."
+                ? "Your 14-day system trial has expired. To preserve your school databases and continue using the software, it is highly recommended to subscribe for 1 year, 2 years, 3 years, or 5 years."
+                : "Your school database license has completed its academic term. Please contact the administrator to renew or subscribe for 1 year, 2 years, 3 years, or 5 years."
             }
           </p>
         </div>
@@ -125,6 +126,22 @@ export default function SubscriptionLockModal({ user, onUnlocked, onLogout }: Su
 
             {/* Quick-action support links */}
             <div className="space-y-3">
+              <span className="block text-[10px] text-slate-500 font-mono uppercase tracking-wider text-center">Renewal & Activation Options</span>
+              
+              <button 
+                onClick={onShowBilling}
+                className="w-full flex items-center justify-center gap-2.5 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm rounded-2xl transition shadow-lg shadow-emerald-900/20 active:scale-[0.98] cursor-pointer group"
+              >
+                <CreditCard size={18} className="group-hover:rotate-12 transition-transform" />
+                Buy Subscription / Renew Online
+              </button>
+
+              <div className="relative py-2 flex items-center gap-3">
+                <div className="flex-1 h-px bg-slate-800" />
+                <span className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">Or</span>
+                <div className="flex-1 h-px bg-slate-800" />
+              </div>
+
               <span className="block text-[10px] text-slate-500 font-mono uppercase tracking-wider text-center">Contact GEETECH Admin</span>
               
               <div className="grid grid-cols-2 gap-3.5">

@@ -1,14 +1,34 @@
-import React, { useState, useRef, ChangeEvent, FormEvent, useMemo } from 'react';
-import { Teacher, TeacherRank, TEACHER_RANKS, CLASSES, ClassType } from '../types';
+import React, { useState, useRef, ChangeEvent, FormEvent, useMemo, useEffect } from 'react';
+import { Teacher, TeacherRank, TEACHER_RANKS, CLASSES, ClassType, SUBJECTS, SubjectType } from '../types';
 import { DbController } from '../db';
-import { compressImage } from '../utils';
+import { compressImage, getWatermarkHtml, triggerToast } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, UserCheck, User, Briefcase, Award, GraduationCap, Calendar, FileDown, ShieldAlert, RotateCcw, Eraser, Eye, FileSpreadsheet,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, Camera, Sparkles, Info, LayoutDashboard, BarChart2, AlertCircle
 } from 'lucide-react';
+import CameraCapture from './CameraCapture';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { motion, AnimatePresence } from 'motion/react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend } from 'recharts';
+
+const GHANA_CREST_SVG_SIMPLE = `
+<svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 250px; height: 250px; color: #000;">
+  <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" />
+  <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,32 L 68,32 C 68,32 68,58 50,74 C 32,58 32,32 32,32 Z" fill="none" stroke="currentColor" stroke-width="1.2" />
+  <path d="M 50,32 L 50,74" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,50 L 68,50" stroke="currentColor" stroke-width="0.6" />
+  <polygon points="50,45 52,49 57,49 53,52 55,56 50,54 45,56 47,52 43,49 48,49" fill="currentColor" opacity="0.6" />
+  <path d="M 53,36 L 65,36 L 65,46 L 53,46 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 53,41 L 65,41" stroke="currentColor" stroke-width="0.4" />
+  <line x1="41" y1="36" x2="41" y2="46" stroke="currentColor" stroke-width="1.2" />
+  <circle cx="41" cy="35" r="1.2" fill="currentColor" />
+  <path d="M 23,35 C 19,48 19,63 34,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 77,35 C 81,48 81,63 66,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 25,79 L 75,79 C 75,79 65,85 50,85 C 35,85 25,79 25,79 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+</svg>
+`;
 
 interface Props {
   theme: ThemeStyles;
@@ -16,6 +36,7 @@ interface Props {
   onRefresh: () => void;
   isAutoSave: boolean;
   onManualSave: () => void;
+  userRole?: string;
 }
 
 const INITIAL_FORM: Partial<Teacher> = {
@@ -38,10 +59,13 @@ const INITIAL_FORM: Partial<Teacher> = {
   circuit: '',
   photoUrl: '',
   email: '',
-  assignedClass: 'None'
+  subjectSpecialization: '',
+  assignedClass: 'None',
+  assignedClasses: [],
+  assignedSubjects: []
 };
 
-export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, onManualSave }: Props) {
+export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, onManualSave, userRole }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
   
   // Pagination states
@@ -49,17 +73,48 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
   const [teacherPageSize, setTeacherPageSize] = useState(12);
 
   // Reset page when search or filters change
-  React.useEffect(() => {
+  useEffect(() => {
     setTeacherPage(1);
   }, [searchTerm]);
   
   // Registration Dialog and Form controllers
   const [isEditing, setIsEditing] = useState(false);
   const [formState, setFormState] = useState<Partial<Teacher>>({ ...INITIAL_FORM });
+
+  // Check if current logged-in user is a Headteacher
+  const isHeadteacherLoggedIn = useMemo(() => {
+    const activeRole = userRole || DbController.getCurrentUser()?.role;
+    return activeRole === 'Headteacher';
+  }, [userRole]);
+
+  // Check if target edited teacher is NOT a Class Teacher (role is Headteacher or Admin)
+  const isTargetNotClassTeacher = useMemo(() => {
+    if (!formState?.email) return false;
+    const registeredUsers = DbController.getRegisteredUsers();
+    const targetUser = registeredUsers.find(u => u.email.toLowerCase().trim() === formState.email?.toLowerCase().trim());
+    return targetUser && (targetUser.role === 'Admin' || targetUser.role === 'Headteacher');
+  }, [formState?.email]);
+
+  const targetUserRole = useMemo(() => {
+    if (!formState?.email) return 'Teacher';
+    const registeredUsers = DbController.getRegisteredUsers();
+    const targetUser = registeredUsers.find(u => u.email.toLowerCase().trim() === formState.email?.toLowerCase().trim());
+    return targetUser ? targetUser.role : 'Teacher';
+  }, [formState?.email]);
   const [showFormModal, setShowFormModal] = useState(false);
   const [teacherToDelete, setTeacherToDelete] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Enrollment confirmation & toast notice states
+  const [pendingTeacher, setPendingTeacher] = useState<Teacher | null>(null);
+  const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+    setToastMessage({ text, type });
+    setTimeout(() => setToastMessage(null), 4000);
+  };
 
   // Bulk import states
   const [showImportModal, setShowImportModal] = useState(false);
@@ -67,7 +122,48 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
   const [importError, setImportError] = useState<string | null>(null);
   const [parsedTeachers, setParsedTeachers] = useState<{ teacher: Partial<Teacher>; errors: string[] }[]>([]);
   const [dragActive, setDragActive] = useState(false);
+  const [showLoadDashboard, setShowLoadDashboard] = useState(false);
   const importFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Aggregated data for Subject Load Dashboard
+  const workloadData = useMemo(() => {
+    return teachers.map(t => {
+      const classCount = (t.assignedClasses || []).length;
+      const subjectCount = (t.assignedSubjects || []).length;
+      const totalLoad = classCount + (subjectCount * 0.5); // Weighted load: classes count more than subjects
+      return {
+        name: `${t.firstName} ${t.lastName.charAt(0)}.`,
+        fullName: `${t.firstName} ${t.lastName}`,
+        classes: classCount,
+        subjects: subjectCount,
+        totalLoad,
+        isOverloaded: totalLoad > 8,
+        isUnderloaded: totalLoad < 2
+      };
+    }).sort((a, b) => b.totalLoad - a.totalLoad);
+  }, [teachers]);
+
+  const classCoverage = useMemo(() => {
+    const coverage: Record<string, { teachers: string[], primary?: string }> = {};
+    CLASSES.forEach(cls => {
+      coverage[cls] = { teachers: [] };
+    });
+
+    teachers.forEach(t => {
+      if (t.assignedClass && t.assignedClass !== 'None') {
+        if (coverage[t.assignedClass]) {
+          coverage[t.assignedClass].primary = `${t.firstName} ${t.lastName}`;
+        }
+      }
+      (t.assignedClasses || []).forEach(cls => {
+        if (coverage[cls]) {
+          coverage[cls].teachers.push(`${t.firstName} ${t.lastName}`);
+        }
+      });
+    });
+
+    return coverage;
+  }, [teachers]);
 
   // Parse CSV utility which handles quotes and double quotes escapes properly
   const parseCSV = (text: string): string[][] => {
@@ -374,9 +470,11 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
   // Filter teachers dynamically with high-performance memoization
   const filteredTeachers = useMemo(() => {
+    const term = searchTerm?.toLowerCase() || '';
     return teachers.filter(tea => {
-      const fullName = `${tea.firstName} ${tea.middleName || ''} ${tea.lastName}`.toLowerCase();
-      const matchesSearch = fullName.includes(searchTerm.toLowerCase()) || tea.staffId.toLowerCase().includes(searchTerm.toLowerCase());
+      if (!tea) return false;
+      const fullName = `${tea.firstName || ''} ${tea.middleName || ''} ${tea.lastName || ''}`.toLowerCase();
+      const matchesSearch = fullName.includes(term) || (tea.staffId?.toLowerCase() || '').includes(term);
       return matchesSearch;
     });
   }, [teachers, searchTerm]);
@@ -446,7 +544,23 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
   };
 
   const handleOpenEdit = (teacher: Teacher) => {
-    setFormState({ ...teacher });
+    // Robust parsing for legacy records and multi-assignment support
+    const parsedClasses = Array.isArray(teacher.assignedClasses) 
+      ? teacher.assignedClasses 
+      : (teacher.assignedClass && teacher.assignedClass !== 'None' ? [teacher.assignedClass] as ClassType[] : []);
+
+    const parsedSubjects = Array.isArray(teacher.assignedSubjects)
+      ? teacher.assignedSubjects
+      : (typeof teacher.subjectsTaught === 'string'
+        ? teacher.subjectsTaught.split(/[,/|;]+/).map(s => s.trim() as SubjectType).filter(s => SUBJECTS.includes(s))
+        : []);
+    
+    setFormState({ 
+      ...INITIAL_FORM,
+      ...teacher, 
+      assignedClasses: parsedClasses,
+      assignedSubjects: parsedSubjects
+    });
     setIsEditing(true);
     setShowFormModal(true);
   };
@@ -528,12 +642,124 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     }
   };
 
+  const suggestedClasses = useMemo(() => {
+    const subs = formState.assignedSubjects || [];
+    const specialization = formState.subjectSpecialization || '';
+    
+    if (subs.length === 0 && !specialization) return [];
+    
+    const suggestions = new Set<ClassType>();
+    
+    // Logic for suggesting classes based on subjects (specializations)
+    const jhsSubjects = ['Integrated Science', 'Social Studies', 'Computing', 'Career Technology', 'Creative Arts And Design'];
+    const primarySubjects = ['Our World Our People', 'History', 'Literacy', 'Numeracy', 'Writing', 'Drawing', 'Colouring', 'Environmental Studies'];
+    
+    // Combine assigned subjects and specialization keywords for broader matching
+    const allInterestKeys = [...subs.map(s => String(s).toLowerCase())];
+    if (specialization) {
+      specialization.split(/[,/|;]+/).forEach(s => {
+        const trimmed = s.trim().toLowerCase();
+        if (trimmed) allInterestKeys.push(trimmed);
+      });
+    }
+
+    if (allInterestKeys.some(key => jhsSubjects.some(js => js.toLowerCase().includes(key) || key.includes(js.toLowerCase())))) {
+      ['Basic 7', 'Basic 8', 'Basic 9'].forEach(c => suggestions.add(c as ClassType));
+    }
+    
+    if (allInterestKeys.some(key => primarySubjects.some(ps => ps.toLowerCase().includes(key) || key.includes(ps.toLowerCase())))) {
+      ['Basic 1', 'Basic 2', 'Basic 3', 'Basic 4', 'Basic 5', 'Basic 6'].forEach(c => suggestions.add(c as ClassType));
+    }
+
+    // Return suggestions that aren't already selected
+    return Array.from(suggestions).filter(c => !(formState.assignedClasses || []).includes(c));
+  }, [formState.assignedSubjects, formState.assignedClasses, formState.subjectSpecialization]);
+
+  const handleToggleClass = (cls: ClassType) => {
+    if (isHeadteacherLoggedIn && isTargetNotClassTeacher) {
+      alert(`Headteachers can only assign classes to Class Teachers. This user is registered as a ${targetUserRole}.`);
+      return;
+    }
+    const current = formState.assignedClasses || [];
+    const updated = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
+    
+    setFormState(prev => {
+      let primary = prev.assignedClass;
+      if (primary && primary !== 'None' && !updated.includes(primary as ClassType)) {
+        primary = updated.length > 0 ? updated[0] : 'None';
+      } else if (!primary || primary === 'None') {
+        primary = updated.length > 0 ? updated[0] : 'None';
+      }
+      return { ...prev, assignedClasses: updated, assignedClass: primary };
+    });
+  };
+
+  const handleToggleSubject = (sub: SubjectType) => {
+    const current = formState.assignedSubjects || [];
+    const updated = current.includes(sub)
+      ? current.filter(s => s !== sub)
+      : [...current, sub];
+    
+    setFormState(prev => ({
+      ...prev,
+      assignedSubjects: updated,
+      subjectsTaught: updated.join(', ')
+    }));
+  };
+
+  const handleApplySuggestions = () => {
+    if (suggestedClasses.length === 0) return;
+    if (isHeadteacherLoggedIn && isTargetNotClassTeacher) {
+      alert(`Headteachers can only assign classes to Class Teachers. This user is registered as a ${targetUserRole}.`);
+      return;
+    }
+    
+    const current = formState.assignedClasses || [];
+    const updated = [...new Set([...current, ...suggestedClasses])];
+    
+    setFormState(prev => {
+      let primary = prev.assignedClass;
+      if (!primary || primary === 'None') {
+        primary = updated[0];
+      }
+      return { ...prev, assignedClasses: updated, assignedClass: primary };
+    });
+    
+    triggerToast(`Added ${suggestedClasses.length} suggested classes based on subjects`, "success");
+  };
+
   const handleSaveSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (!formState.firstName || !formState.lastName || !formState.rank) {
       alert("Please populate all required fields (*)");
       return;
     }
+
+    // Check if current user is Headteacher trying to edit/assign classes to non-Class Teachers
+    if (isHeadteacherLoggedIn) {
+      if (isTargetNotClassTeacher) {
+        const finalAssignedClasses = formState.assignedClasses || [];
+        const hasClasses = finalAssignedClasses.length > 0 || (formState.assignedClass && formState.assignedClass !== 'None');
+        if (hasClasses) {
+          alert(`Headteachers can only assign classes to Class Teachers. This user is registered as a ${targetUserRole}.`);
+          return;
+        }
+      }
+    }
+
+    const finalAssignedClasses = formState.assignedClasses || [];
+    const finalAssignedSubjects = formState.assignedSubjects || [];
+    
+    // Auto-sync legacy fields for backward-compatibility with rest of system
+    const finalAssignedClass = formState.assignedClass && formState.assignedClass !== 'None'
+      ? (formState.assignedClass as ClassType)
+      : (finalAssignedClasses.length > 0 ? finalAssignedClasses[0] : 'None');
+
+    const finalSubjectsTaught = finalAssignedSubjects.length > 0 
+      ? finalAssignedSubjects.join(', ') 
+      : (formState.subjectsTaught || '');
 
     const payload: Teacher = {
       id: formState.id || 'T' + Math.floor(1000 + Math.random() * 9000),
@@ -543,7 +769,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
       gender: formState.gender as 'Male' | 'Female',
       dateOfBirth: formState.dateOfBirth || '',
       placeOfBirth: formState.placeOfBirth || '',
-      subjectsTaught: formState.subjectsTaught || '',
+      subjectsTaught: finalSubjectsTaught,
       professionalQualifications: formState.professionalQualifications || '',
       highestAcademicQualifications: formState.highestAcademicQualifications || '',
       rank: formState.rank as TeacherRank,
@@ -556,11 +782,31 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
       circuit: formState.circuit || '',
       photoUrl: formState.photoUrl || '',
       email: formState.email || '',
-      assignedClass: (formState.assignedClass || 'None') as ClassType | 'None',
+      assignedClass: finalAssignedClass,
+      assignedClasses: finalAssignedClasses,
+      assignedSubjects: finalAssignedSubjects,
       createdAt: formState.createdAt || new Date().toISOString()
     };
 
+    // Save immediately as requested
     DbController.saveTeacher(payload);
+    onRefresh();
+    
+    if (isAutoSave) {
+      // Auto save feedback
+    } else {
+      onManualSave();
+    }
+
+    triggerToast(isEditing ? `Successfully updated record for faculty member ${payload.firstName} ${payload.lastName}.` : `Successfully enrolled faculty member ${payload.firstName} ${payload.lastName} and secured record with central Cloud Database.`, "success");
+    setPendingTeacher(null);
+    setShowFormModal(false);
+  };
+
+  const handleConfirmSave = () => {
+    // This is now integrated into handleSaveSubmit for immediate action
+    if (!pendingTeacher) return;
+    DbController.saveTeacher(pendingTeacher);
     onRefresh();
     setShowFormModal(false);
     
@@ -569,6 +815,9 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     } else {
       onManualSave();
     }
+
+    showToast(isEditing ? `Successfully updated record for faculty member ${pendingTeacher.firstName} ${pendingTeacher.lastName}.` : `Successfully enrolled faculty member ${pendingTeacher.firstName} ${pendingTeacher.lastName} and secured record with central Cloud Database.`, "success");
+    setPendingTeacher(null);
   };
 
   const [printBlocked, setPrintBlocked] = useState(false);
@@ -675,22 +924,57 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
                 {/* Subtext info */}
                 <div className="space-y-1 text-[11px] border-t border-slate-100 pt-3">
-                  <div className="flex items-center gap-1 text-slate-600">
-                    <GraduationCap size={13} className="text-slate-400" />
-                    <span className="truncate"><strong>Subject/Class:</strong> {tea.subjectsTaught || 'Not specified'}</span>
+                  {/* Assigned Subjects & Classes tags */}
+                  <div className="pt-1">
+                    {tea.assignedSubjects && tea.assignedSubjects.length > 0 ? (
+                      <div className="flex flex-wrap gap-1 mb-1.5">
+                        {tea.assignedSubjects.map(sub => (
+                          <span key={sub} className="px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[9px] font-semibold leading-tight">
+                            {sub}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 text-slate-600">
+                        <GraduationCap size={13} className="text-slate-400" />
+                        <span className="truncate"><strong>Subject/Class:</strong> {tea.subjectsTaught || 'Not specified'}</span>
+                      </div>
+                    )}
                   </div>
+
                   {tea.email && (
                     <div className="flex items-center gap-1 text-slate-500 font-mono text-[10px] truncate">
                       <span><strong>Login Email:</strong> {tea.email}</span>
                     </div>
                   )}
-                  {tea.assignedClass && tea.assignedClass !== 'None' && (
+
+                  {/* Assigned Classes */}
+                  {tea.assignedClasses && tea.assignedClasses.length > 0 ? (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {tea.assignedClasses.map(cls => {
+                        const isPrimary = tea.assignedClass === cls;
+                        return (
+                          <span
+                            key={cls}
+                            className={`px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase tracking-wider ${
+                              isPrimary
+                                ? 'bg-indigo-100 text-indigo-800 border-indigo-200 shadow-2xs'
+                                : 'bg-slate-50 text-slate-600 border-slate-200'
+                            }`}
+                            title={isPrimary ? "Primary Class Teacher" : "Assigned Class"}
+                          >
+                            {cls} {isPrimary && '★'}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ) : tea.assignedClass && tea.assignedClass !== 'None' ? (
                     <div className="flex items-center gap-1 text-slate-600 mt-1">
                       <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-bold text-[9px] uppercase">
                         Class Teacher: {tea.assignedClass}
                       </span>
                     </div>
-                  )}
+                  ) : null}
                   <div className="flex items-center gap-1 text-slate-600">
                     <Award size={13} className="text-slate-400" />
                     <span className="truncate"><strong>Degree:</strong> {tea.highestAcademicQualifications || 'N/A'}</span>
@@ -823,7 +1107,9 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
       )}
 
       {/* PRINT-ONLY STAFF DIRECTORY REGISTER SHEET */}
-      <div className="hidden print:block font-sans max-w-6xl mx-auto p-4 bg-white text-black">
+      <div className="hidden print:block font-sans max-w-6xl mx-auto p-4 bg-white text-black relative">
+        <div className="absolute inset-0 z-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(DbController.getSchoolInfo().crestUrl) }} />
+        
         <div className="text-center pb-6 border-b-2 border-slate-900 mb-6">
           <h1 className="text-2xl font-bold uppercase tracking-wide">
             {DbController.getSchoolInfo().name}
@@ -836,6 +1122,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
           </div>
         </div>
 
+        <div id="teacher-registry-print-area" className="w-full">
         <h3 className="text-lg font-bold uppercase text-center mb-4 tracking-wider">
           Academic Faculty & Administrative Staff Register
         </h3>
@@ -881,6 +1168,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
         <div className="mt-8 text-xs font-mono pt-4 border-t border-slate-300 text-center">
           Total Faculty Strength: <strong className="text-slate-900">{filteredTeachers.length} Registered Educators</strong>
         </div>
+      </div>
       </div>
 
       {/* RICH EDIT / ADD MODAL PANEL (NO-PRINT) */}
@@ -944,6 +1232,13 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                       className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded font-medium shadow-2xs transition flex items-center gap-1 cursor-pointer"
                     >
                       Use Image Link
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsCameraOpen(true)}
+                      className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded font-medium shadow-2xs transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <Camera size={13} /> Take Live Photo
                     </button>
                     {formState.photoUrl && (
                       <button
@@ -1097,17 +1392,6 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                   </div>
 
                   <div>
-                    <label className="block text-slate-600 font-medium mb-1">Subjects or Class Taught</label>
-                    <input
-                      type="text"
-                      value={formState.subjectsTaught}
-                      onChange={(e) => setFormState(prev => ({ ...prev, subjectsTaught: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none"
-                      placeholder="e.g., Computing / Class 3"
-                    />
-                  </div>
-
-                  <div>
                     <label className="block text-slate-600 font-medium mb-1">Login Email Address</label>
                     <input
                       type="email"
@@ -1120,20 +1404,388 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                   </div>
 
                   <div>
-                    <label className="block text-slate-600 font-medium mb-1">Assigned Class Role</label>
-                    <select
-                      value={formState.assignedClass || 'None'}
-                      onChange={(e) => setFormState(prev => ({ ...prev, assignedClass: e.target.value as ClassType | 'None' }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+                    <label className="block text-slate-600 font-medium mb-1">Subject Specialization</label>
+                    <input
+                      type="text"
+                      value={formState.subjectSpecialization || ''}
+                      onChange={(e) => setFormState(prev => ({ ...prev, subjectSpecialization: e.target.value }))}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-amber-100 focus:outline-none text-xs font-semibold bg-amber-50/30"
+                      placeholder="e.g. Science, Maths"
+                    />
+                    <p className="text-[9px] text-amber-600 mt-1 font-medium flex items-center gap-1">
+                      <Sparkles size={10} />
+                      Drives smart class suggestions
+                    </p>
+                  </div>
+                </div>
+
+                {/* Multiple Class & Subject Assignments container */}
+                <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-5">
+                  <div className="flex items-center justify-between gap-4 pb-2 border-b border-slate-200">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 bg-indigo-100 rounded-lg text-indigo-600">
+                        <LayoutDashboard size={18} />
+                      </div>
+                      <div>
+                        <h5 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Teacher Workload & Coverage</h5>
+                        <p className="text-[10px] text-slate-500 font-medium italic">Monitor distribution and prevent booking conflicts</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowLoadDashboard(!showLoadDashboard)}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm ${
+                        showLoadDashboard 
+                          ? 'bg-indigo-600 text-white hover:bg-indigo-700' 
+                          : 'bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50'
+                      }`}
                     >
-                      <option value="None">None / Subject Teacher Only</option>
-                      {CLASSES.map(cls => (
-                        <option key={cls} value={cls}>{cls} (Class Teacher)</option>
-                      ))}
-                    </select>
-                    <p className="text-[10px] text-slate-400 mt-0.5 font-mono">Restricts teacher access to their assigned class data only.</p>
+                      <BarChart2 size={14} />
+                      {showLoadDashboard ? 'Hide Analytics' : 'View Load Dashboard'}
+                    </button>
                   </div>
 
+                  <AnimatePresence>
+                    {showLoadDashboard && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2">
+                          {/* Workload Chart */}
+                          <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
+                            <div className="flex items-center justify-between mb-3">
+                              <h6 className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Load Distribution</h6>
+                              <span className="text-[9px] text-slate-400 font-mono italic">Staff vs Assignments</span>
+                            </div>
+                            <div className="h-48 w-full">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={workloadData.slice(0, 10)}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                                  <XAxis dataKey="name" fontSize={9} tickLine={false} axisLine={false} />
+                                  <YAxis fontSize={9} tickLine={false} axisLine={false} />
+                                  <Tooltip 
+                                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', fontSize: '10px' }}
+                                    cursor={{ fill: '#f8fafc' }}
+                                  />
+                                  <Bar dataKey="totalLoad" radius={[4, 4, 0, 0]}>
+                                    {workloadData.map((entry, index) => (
+                                      <Cell 
+                                        key={`cell-${index}`} 
+                                        fill={entry.isOverloaded ? '#ef4444' : entry.isUnderloaded ? '#f59e0b' : '#6366f1'} 
+                                      />
+                                    ))}
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                            </div>
+                            <div className="flex items-center justify-center gap-4 mt-2">
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                                <span className="text-[9px] text-slate-500 font-bold uppercase">Optimal</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-2 rounded-full bg-red-500" />
+                                <span className="text-[9px] text-slate-500 font-bold uppercase">High Load</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-2 rounded-full bg-amber-500" />
+                                <span className="text-[9px] text-slate-500 font-bold uppercase">Low Load</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Class Coverage Matrix */}
+                          <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm overflow-hidden flex flex-col">
+                            <div className="flex items-center justify-between mb-3">
+                              <h6 className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Class Coverage Matrix</h6>
+                              <span className="text-[9px] text-slate-400 font-mono italic">Booking Conflicts</span>
+                            </div>
+                            <div className="flex-1 overflow-y-auto pr-1 max-h-48 space-y-1.5">
+                              {CLASSES.map(cls => {
+                                const cov = classCoverage[cls];
+                                const hasConflict = (cov?.teachers.length || 0) > 3;
+                                const noPrimary = !cov?.primary;
+                                return (
+                                  <div key={cls} className="flex items-center justify-between p-1.5 rounded-lg border border-slate-100 hover:bg-slate-50 transition-colors">
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-12 text-[10px] font-bold text-slate-700">{cls}</span>
+                                      <div className="flex -space-x-1.5">
+                                        {cov?.teachers.slice(0, 3).map((t, idx) => (
+                                          <div key={idx} className="w-5 h-5 rounded-full bg-slate-200 border border-white flex items-center justify-center text-[8px] font-bold text-slate-600 shadow-sm" title={t}>
+                                            {t.charAt(0)}
+                                          </div>
+                                        ))}
+                                        {(cov?.teachers.length || 0) > 3 && (
+                                          <div className="w-5 h-5 rounded-full bg-slate-100 border border-white flex items-center justify-center text-[7px] font-bold text-slate-400">
+                                            +{(cov?.teachers.length || 0) - 3}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      {hasConflict && <AlertCircle size={12} className="text-red-500" title="Unbalanced Workload (Too many teachers)" />}
+                                      {noPrimary && <ShieldAlert size={12} className="text-amber-500" title="Missing Primary Teacher" />}
+                                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${noPrimary ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                                        {noPrimary ? 'No Supervisor' : cov.primary?.split(' ')[0]}
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <div>
+                    {isHeadteacherLoggedIn && isTargetNotClassTeacher ? (
+                      <div className="p-4 bg-rose-50 border border-rose-100 rounded-xl flex items-start gap-2.5 shadow-xs">
+                        <ShieldAlert className="text-rose-500 shrink-0 mt-0.5" size={16} />
+                        <div>
+                          <p className="text-xs font-bold text-rose-800">Class Assignment Restricted</p>
+                          <p className="text-[11px] text-rose-600 mt-1 leading-relaxed">
+                            As a Headteacher, you can only assign classes to standard Class Teachers. This user is registered with <strong>{targetUserRole}</strong> status.
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                          <div className="flex items-center gap-2">
+                            <label className="block text-slate-700 font-bold text-xs uppercase tracking-wider">
+                              Assigned Classes
+                            </label>
+                            {(formState.assignedClasses || []).length > 0 && (
+                              <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-[10px] font-bold">
+                                {(formState.assignedClasses || []).length} Selected
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 text-[10px]">
+                            <button
+                              type="button"
+                              onClick={() => setFormState(prev => ({ ...prev, assignedClasses: [...CLASSES], assignedClass: CLASSES[0] }))}
+                              className="px-2 py-1 bg-white border border-slate-200 hover:border-slate-300 rounded font-semibold text-slate-600 transition shadow-sm cursor-pointer"
+                            >
+                              Select All
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setFormState(prev => ({ ...prev, assignedClasses: [], assignedClass: 'None' }))}
+                              className="px-2 py-1 bg-white border border-slate-200 hover:border-red-200 hover:text-red-600 rounded font-semibold text-slate-600 transition shadow-sm cursor-pointer"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 mb-4 p-2 bg-white rounded-lg border border-slate-100 min-h-[40px] items-center">
+                          {(formState.assignedClasses || []).length === 0 ? (
+                            <div className="flex items-center gap-2 text-slate-400 italic text-[11px] px-2">
+                              <Info size={12} />
+                              <span>No classes assigned yet.</span>
+                            </div>
+                          ) : (
+                            (formState.assignedClasses || []).map(cls => (
+                              <div 
+                                key={cls}
+                                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold transition ${
+                                  formState.assignedClass === cls 
+                                    ? 'bg-indigo-600 text-white shadow-md ring-2 ring-indigo-200' 
+                                    : 'bg-indigo-50 text-indigo-700 border border-indigo-100'
+                                }`}
+                              >
+                                <span>{cls}</span>
+                                <button 
+                                  type="button" 
+                                  onClick={() => handleToggleClass(cls)}
+                                  className="hover:bg-black/10 rounded-full p-0.5 transition cursor-pointer"
+                                >
+                                  <X size={10} />
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        {/* Class Selection Grid */}
+                        <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-8 lg:grid-cols-10 gap-1.5">
+                          {CLASSES.map(cls => {
+                            const isSelected = (formState.assignedClasses || []).includes(cls);
+                            return (
+                              <button
+                                type="button"
+                                key={cls}
+                                onClick={() => handleToggleClass(cls)}
+                                className={`px-2 py-1.5 text-[10px] font-bold rounded-lg border transition text-center cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-indigo-100 text-indigo-800 border-indigo-300'
+                                    : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-200 hover:bg-indigo-50/30'
+                                }`}
+                              >
+                                {cls}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Auto-Suggest Feature */}
+                        {suggestedClasses.length > 0 && (
+                          <motion.div 
+                            initial={{ opacity: 0, y: 5 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="mt-3 p-2 bg-amber-50 border border-amber-100 rounded-lg flex items-center justify-between gap-3"
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className="p-1.5 bg-amber-100 rounded-lg text-amber-600">
+                                <Sparkles size={14} />
+                              </div>
+                              <div>
+                                <p className="text-[10px] font-bold text-amber-800 uppercase tracking-tight">Smart Suggestion</p>
+                                <p className="text-[10px] text-amber-700 font-medium">Based on selected subjects, consider adding: <span className="font-bold">{suggestedClasses.join(', ')}</span></p>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleApplySuggestions}
+                              className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-bold shadow-sm transition flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <Plus size={12} />
+                              Apply
+                            </button>
+                          </motion.div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  <div className="pt-4 border-t border-slate-200/60">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <div className="flex items-center gap-2">
+                        <label className="block text-slate-700 font-bold text-xs uppercase tracking-wider">
+                          Assigned Subjects
+                        </label>
+                        {(formState.assignedSubjects || []).length > 0 && (
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full text-[10px] font-bold">
+                            {(formState.assignedSubjects || []).length} Selected
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <button
+                          type="button"
+                          onClick={() => setFormState(prev => {
+                            const updated = [...SUBJECTS];
+                            return { ...prev, assignedSubjects: updated, subjectsTaught: updated.join(', ') };
+                          })}
+                          className="px-2 py-1 bg-white border border-slate-200 hover:border-slate-300 rounded font-semibold text-slate-600 transition shadow-sm cursor-pointer"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormState(prev => ({ ...prev, assignedSubjects: [], subjectsTaught: '' }))}
+                          className="px-2 py-1 bg-white border border-slate-200 hover:border-red-200 hover:text-red-600 rounded font-semibold text-slate-600 transition shadow-sm cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5 mb-3 p-2 bg-white rounded-lg border border-slate-100 min-h-[40px] items-center">
+                      {(formState.assignedSubjects || []).length === 0 ? (
+                        <div className="flex items-center gap-2 text-slate-400 italic text-[11px] px-2">
+                          <Info size={12} />
+                          <span>No subjects assigned yet.</span>
+                        </div>
+                      ) : (
+                        (formState.assignedSubjects || []).map(sub => (
+                          <div 
+                            key={sub}
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] font-bold transition hover:bg-emerald-100"
+                          >
+                            <span>{sub}</span>
+                            <button 
+                              type="button" 
+                              onClick={() => handleToggleSubject(sub)}
+                              className="hover:bg-emerald-200 rounded-full p-0.5 transition cursor-pointer"
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1.5 border border-slate-100 rounded-lg bg-white/50 shadow-inner">
+                      {SUBJECTS.map(sub => {
+                        const isSelected = (formState.assignedSubjects || []).includes(sub);
+                        const isMatchSpecialization = formState.subjectSpecialization && 
+                          formState.subjectSpecialization.toLowerCase().split(/[,/|; ]+/).some(term => term.length > 2 && sub.toLowerCase().includes(term));
+                        
+                        return (
+                          <button
+                            type="button"
+                            key={sub}
+                            onClick={() => handleToggleSubject(sub)}
+                            className={`px-2.5 py-1 text-[10px] font-semibold rounded-full border transition cursor-pointer ${
+                              isSelected
+                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                                : isMatchSpecialization
+                                  ? 'bg-emerald-50 text-emerald-600 border-emerald-400 ring-1 ring-emerald-100'
+                                  : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50 hover:text-emerald-600 hover:border-emerald-200'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1">
+                              {sub}
+                              {!isSelected && isMatchSpecialization && <Sparkles size={8} className="text-amber-500" />}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-slate-200/60">
+                    <div>
+                      <label className="block text-slate-600 font-semibold mb-1 text-xs uppercase tracking-tight">Primary Class Duty</label>
+                      <select
+                        value={formState.assignedClass || 'None'}
+                        onChange={(e) => setFormState(prev => ({ ...prev, assignedClass: e.target.value as ClassType | 'None' }))}
+                        className="w-full px-3 py-2.5 border border-slate-200 rounded-lg bg-white text-xs font-bold text-indigo-700 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition shadow-sm"
+                      >
+                        <option value="None">None / Subject Teacher Only</option>
+                        {(formState.assignedClasses || []).map(cls => (
+                          <option key={cls} value={cls}>{cls} (Class Teacher)</option>
+                        ))}
+                      </select>
+                      <p className="text-[9px] text-slate-400 mt-1 leading-tight font-medium italic">
+                        Act as registration officer for the selected class. Must be one of the assigned classes above.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-600 font-semibold mb-1 text-xs uppercase tracking-tight">Additional Details</label>
+                      <input
+                        type="text"
+                        value={formState.subjectsTaught || ''}
+                        onChange={(e) => setFormState(prev => ({ ...prev, subjectsTaught: e.target.value }))}
+                        className="w-full px-3 py-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-emerald-100 focus:outline-none text-xs font-medium bg-white shadow-sm"
+                        placeholder="e.g. Specializes in Literacy development"
+                      />
+                      <p className="text-[9px] text-slate-400 mt-1 leading-tight font-medium italic">
+                        Raw text field for notes or specific sub-topics taught.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-slate-600 font-medium mb-1">Highest Academic Qualifications</label>
                     <select
@@ -1156,9 +1808,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                       <option value="Other">Other Academic Qualification</option>
                     </select>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-slate-600 font-medium mb-1">Professional Licensing Qualifications</label>
                     <select
@@ -1291,10 +1941,26 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
             
             {/* Left: Document Live Preview */}
             <div className="flex-1 p-6 overflow-y-auto bg-slate-700 flex flex-col justify-between items-center space-y-4">
-              <span className="text-white text-xs font-mono tracking-widest uppercase opacity-70">Interactive Page Print Draft Preview</span>
+              <div className="text-center space-y-1 select-none">
+                <span className="text-amber-400 text-xs font-black tracking-wider uppercase block font-sans">
+                  Print Preview & Document Layout Align
+                </span>
+                <span className="text-white/60 text-[9px] font-sans block max-w-md">
+                  Optimize margins, branding, and paper size before submitting to printer
+                </span>
+              </div>
               
-              <div id="teachers-roster-preview-card" className="w-full max-w-[650px] aspect-[1.414/1] bg-white p-6 text-black border shadow-2xl text-[8px] space-y-3 font-sans rounded-none overflow-y-auto">
-                <div className="text-center pb-3 border-b-2 border-slate-800 mb-3">
+              <div id="teachers-roster-preview-card" className="relative w-full max-w-[650px] aspect-[1.414/1] bg-white p-6 text-black border shadow-2xl text-[8px] space-y-3 font-sans rounded-none overflow-y-auto">
+                {/* Transparent School Crest Watermark */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.045] z-0">
+                  {DbController.getSchoolInfo().crestUrl ? (
+                    <img src={DbController.getSchoolInfo().crestUrl} className="w-[280px] h-[280px] object-contain" alt="Watermark Crest" referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-[280px] h-[280px]" dangerouslySetInnerHTML={{ __html: GHANA_CREST_SVG_SIMPLE }} />
+                  )}
+                </div>
+
+                <div className="relative z-10 text-center pb-3 border-b-2 border-slate-800 mb-3">
                   <h3 className="text-xs font-bold uppercase tracking-wide text-stone-900">
                     {DbController.getSchoolInfo().name}
                   </h3>
@@ -1827,6 +2493,101 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
           </button>
         </div>
       </div>
+
+      {/* Dynamic Feedback Toast */}
+      <AnimatePresence>
+        {toastMessage && (
+          <div className={`fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-xl text-white transition-all duration-300 transform translate-y-0 ${
+            toastMessage.type === 'success' ? 'bg-emerald-600' : 'bg-rose-600'
+          }`}>
+            <Check className="h-5 w-5 shrink-0" />
+            <span className="text-sm font-medium">{toastMessage.text}</span>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* FACULTY ENROLLMENT/SAVE CONFIRMATION MODAL */}
+      <AnimatePresence>
+        {pendingTeacher && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setPendingTeacher(null);
+            }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-50 no-print cursor-pointer"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-slate-900 font-sans cursor-default space-y-4"
+              id="faculty-enrollment-confirmation-modal"
+            >
+              <div className="flex flex-col items-center text-center space-y-3">
+                <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center text-emerald-600">
+                  <UserCheck size={28} />
+                </div>
+                
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide">
+                    {isEditing ? "Confirm Faculty Updates" : "Confirm Faculty Enrollment"}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {isEditing ? "Verify and confirm updates to this faculty profile:" : "Please verify the teacher registration information below before finalizing:"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-2.5 text-xs">
+                <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
+                  <span className="text-slate-500 font-medium">Full Name</span>
+                  <span className="text-slate-800 font-semibold">{pendingTeacher.firstName} {pendingTeacher.middleName ? pendingTeacher.middleName + ' ' : ''}{pendingTeacher.lastName}</span>
+                </div>
+                <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
+                  <span className="text-slate-500 font-medium">Professional Rank</span>
+                  <span className="text-slate-800 font-semibold">{pendingTeacher.rank}</span>
+                </div>
+                <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
+                  <span className="text-slate-500 font-medium">Class Appointed</span>
+                  <span className="text-slate-800 font-semibold">{pendingTeacher.assignedClass}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Email Address</span>
+                  <span className="text-slate-800 font-semibold">{pendingTeacher.email || 'N/A'}</span>
+                </div>
+              </div>
+
+              <div className="text-[10px] text-slate-400 bg-indigo-50/50 p-2 rounded-lg border border-indigo-100 text-center">
+                🛡️ This faculty record is synced automatically with the central Cloud Database.
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPendingTeacher(null)}
+                  className="flex-1 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl font-bold font-sans text-xs transition cursor-pointer text-center bg-white"
+                >
+                  Go Back
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmSave}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold font-sans text-xs transition cursor-pointer text-center"
+                >
+                  Confirm & Save
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      
+      {isCameraOpen && (
+        <CameraCapture 
+          onCapture={(url) => setFormState(prev => ({ ...prev, photoUrl: url }))} 
+          onClose={() => setIsCameraOpen(false)} 
+        />
+      )}
 
     </div>
   );

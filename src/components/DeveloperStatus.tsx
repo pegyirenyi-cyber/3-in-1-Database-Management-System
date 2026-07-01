@@ -1,6 +1,6 @@
 import { Phone, Mail, Award, CheckCircle2 } from 'lucide-react';
 // @ts-ignore
-import developerLogo from '../assets/images/developer_logo_1781333279532.jpg';
+import geetechLogo from '../assets/images/geetech_new_logo_1782900372763.jpg';
 
 export default function DeveloperStatus({ isAutoSaveActive = true, hasUnsavedChanges = false, onSave }: { isAutoSaveActive?: boolean; hasUnsavedChanges?: boolean; onSave?: () => void }) {
   return (
@@ -11,9 +11,9 @@ export default function DeveloperStatus({ isAutoSaveActive = true, hasUnsavedCha
         <div className="flex items-center gap-3">
           <div className="relative flex-shrink-0">
             <img 
-              src={developerLogo} 
+              src={geetechLogo} 
               alt="GEETECH MULTIMEDIA" 
-              className="w-8 h-8 rounded-full border border-slate-700 object-cover shadow-sm bg-slate-800"
+              className="w-8 h-8 rounded-full border border-slate-700 object-contain shadow-sm bg-white p-0.5"
               onError={(e) => {
                 // If there's ever a fallback error, render an inline custom SVG to prevent a broken image
                 const target = e.currentTarget;

@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { DbController } from '../db';
-import { generateSecureToken } from '../utils';
+import { generateSecureToken, getWatermarkHtml } from '../utils';
 import PaystackPaymentTrigger from './PaystackPaymentTrigger';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import { AcademicYearType, TermType } from '../types';
@@ -481,11 +481,12 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
         <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200 p-0 sm:p-2 bg-gradient-to-br from-white to-slate-50/20 print:border-none print:shadow-none print:p-0 print:bg-white">
           <div 
             id="parent-portal-report-card-render" 
-            className="w-full bg-white p-6 sm:p-12 md:p-16 text-black border-[6px] md:border-[10px] border-double border-slate-900 space-y-6 font-sans text-left report-card-print-container print:p-12 print:border-double"
+            className="w-full bg-white p-6 sm:p-12 md:p-16 text-black border-[6px] md:border-[10px] border-double border-slate-900 space-y-6 font-sans text-left report-card-print-container print:p-12 print:border-double relative"
           >
+            <div className="absolute inset-0 z-0 pointer-events-none hidden print:block" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo.crestUrl) }} />
             
             {/* Header / Watermark letterhead */}
-            <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 pb-5 mb-8 gap-4 font-sans text-left">
+            <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 pb-5 mb-8 gap-4 font-sans text-left relative z-10">
               {schoolInfo.logoUrl ? (
                 <img 
                   src={schoolInfo.logoUrl} 

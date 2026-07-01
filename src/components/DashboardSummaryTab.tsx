@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Student, ClassType, CLASSES, AcademicYearType, ACADEMIC_YEARS, AttendanceRecord, StudentFeeBill, TermType, TERMS, SubjectType, UserRole, ActivityLog } from '../types';
-import { DbController } from '../db';
+import { DbController, getStorageItem, setStorageItem } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { motion } from 'motion/react';
 import { evaluateSubscription } from '../subscription';
@@ -20,7 +20,10 @@ interface Props {
   students: Student[];
   onRefresh: () => void;
   setActiveTab?: (tab: string) => void;
-  assignedClass?: ClassType | null;
+  setSettingsSubTab?: (tab: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers') => void;
+  assignedClass?: ClassType | 'None';
+  assignedClasses?: ClassType[];
+  assignedSubjects?: SubjectType[];
   userRole?: UserRole;
 }
 
@@ -248,16 +251,32 @@ const PerformanceTooltip = ({ active, payload, label }: { active?: boolean; payl
   return null;
 };
 
-export default function DashboardSummaryTab({ theme, students: propStudents, onRefresh, setActiveTab, assignedClass, userRole }: Props) {
+export default function DashboardSummaryTab({ 
+  theme, 
+  students: propStudents, 
+  onRefresh, 
+  setActiveTab, 
+  setSettingsSubTab, 
+  assignedClass, 
+  assignedClasses = [],
+  assignedSubjects = [],
+  userRole 
+}: Props) {
   const students = useMemo(() => {
-    if (userRole === 'Teacher' && assignedClass) {
-      return propStudents.filter(s => s.class === assignedClass);
+    if (userRole === 'Teacher') {
+      const teacherClasses = [...assignedClasses];
+      if (assignedClass && assignedClass !== 'None' && !teacherClasses.includes(assignedClass)) {
+        teacherClasses.push(assignedClass);
+      }
+      
+      if (teacherClasses.length === 0) return []; // No access if no assignments
+      return propStudents.filter(s => teacherClasses.includes(s.class));
     }
     return propStudents;
-  }, [propStudents, userRole, assignedClass]);
+  }, [propStudents, userRole, assignedClass, assignedClasses]);
 
-  const teachers = DbController.getTeachers();
-  const bills = DbController.getStudentFeeBills();
+  const teachers = useMemo(() => DbController.getTeachers(), []);
+  const bills = useMemo(() => DbController.getStudentFeeBills(), []);
 
   // Selected period controls for deeper analytics focus
   const [selectedDashboardYear, setSelectedDashboardYear] = useState<AcademicYearType>('2026/2027');
@@ -266,18 +285,22 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>(() => DbController.getActivityLogs());
 
   // Real-time synchronization polling
-  React.useEffect(() => {
+  useEffect(() => {
+    let isSubscribed = true;
     const interval = setInterval(async () => {
-      if (DbController.isFirebaseEnabled()) {
+      if (DbController.isFirebaseEnabled() && isSubscribed) {
         try {
           await DbController.syncAllDataFromFirebase();
-          onRefresh();
+          if (isSubscribed) onRefresh();
         } catch (e) {
           console.warn("Background sync error:", e);
         }
       }
-    }, 10000); // 10 seconds
-    return () => clearInterval(interval);
+    }, 60000); // Reduce frequency to 60 seconds for performance
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
   }, [onRefresh]);
 
   // --- WIDGET VISIBILITY CUSTOMIZATION ---
@@ -294,12 +317,8 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
       activityLogs: true,
       assessmentTasks: true,
     };
-    try {
-      const stored = localStorage.getItem('sms_dashboard_widgets');
-      return stored ? { ...defaultWidgets, ...JSON.parse(stored) } : defaultWidgets;
-    } catch (e) {
-      return defaultWidgets;
-    }
+    const stored = getStorageItem('sms_dashboard_widgets', {});
+    return { ...defaultWidgets, ...stored };
   });
 
   const [isCustomizing, setIsCustomizing] = useState(false);
@@ -307,7 +326,7 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
   const toggleWidget = (key: keyof typeof widgets) => {
     const next = { ...widgets, [key]: !widgets[key] };
     setWidgets(next);
-    localStorage.setItem('sms_dashboard_widgets', JSON.stringify(next));
+    setStorageItem('sms_dashboard_widgets', next);
   };
 
   const showAllWidgets = () => {
@@ -324,7 +343,7 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
       assessmentTasks: true,
     };
     setWidgets(next);
-    localStorage.setItem('sms_dashboard_widgets', JSON.stringify(next));
+    setStorageItem('sms_dashboard_widgets', next);
   };
 
   const hideAllWidgets = () => {
@@ -341,7 +360,7 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
       assessmentTasks: false,
     };
     setWidgets(next);
-    localStorage.setItem('sms_dashboard_widgets', JSON.stringify(next));
+    setStorageItem('sms_dashboard_widgets', next);
   };
 
   const widgetDefinitions = [
@@ -369,19 +388,7 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
   const todayDateStr = getTodayDateString();
   const [selectedAttendanceDate, setSelectedAttendanceDate] = useState<string>(todayDateStr);
 
-  // Load and parse Attendance from local storage safely
-  const getLocalStorageAttendance = (): AttendanceRecord[] => {
-    if (typeof window === 'undefined') return [];
-    try {
-      const raw = localStorage.getItem('sms_attendance');
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      console.error("Error parsing attendance ledger:", e);
-      return [];
-    }
-  };
-
-  const attendanceRecords = getLocalStorageAttendance();
+  const attendanceRecords = useMemo(() => DbController.getAllAttendance(), []);
 
   // Get active HEX color code for charts based on theme selection
   const getThemeHexColor = (): string => {
@@ -487,10 +494,10 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
     };
   }).filter(item => item.className !== 'Nursery 1' || students.length === 0);
 
-  const termStart = typeof window !== 'undefined' ? localStorage.getItem('sms_term_start_date') || '2026-05-20' : '2026-05-20';
-  const termEnd = typeof window !== 'undefined' ? localStorage.getItem('sms_term_end_date') || '2026-07-04' : '2026-07-04';
+  const termStart = getStorageItem('sms_term_start_date', '2026-05-20');
+  const termEnd = getStorageItem('sms_term_end_date', '2026-07-04');
   
-  const activeTermWeeks = React.useMemo(() => {
+  const activeTermWeeks = useMemo(() => {
     const start = new Date(termStart);
     const end = new Date(termEnd);
     if (!isNaN(start.getTime()) && !isNaN(end.getTime()) && start <= end) {
@@ -602,7 +609,7 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
   const dayEnrolledCounter = students.filter(s => s.status === 'Day').length;
 
   // ACADEMIC PERFORMANCE DATA COMPUTATION
-  const assessments = DbController.getAssessments();
+  const assessments = useMemo(() => DbController.getAssessments(), []);
   const topSubjects: SubjectType[] = ['Mathematics', 'English Language', 'Integrated Science'];
 
   const termSubjectScoresMap: Record<TermType, Record<string, { total: number; count: number }>> = {
@@ -710,14 +717,16 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
     { name: 'Emerging (L5)', value: l5Count, pct: totalGrades > 0 ? Math.round((l5Count / totalGrades) * 100) : 0, color: '#ef4444' },
   ];
 
-  const currentUser = DbController.getCurrentUser();
+  const currentUser = useMemo(() => DbController.getCurrentUser(), []);
   const subStatus = currentUser ? evaluateSubscription(currentUser) : null;
 
   // --- TEACHER SPECIFIC COMPUTATIONS & DATA PIPELINE ---
   const teacherProfile = useMemo(() => {
     if (!currentUser || currentUser.role !== 'Teacher') return null;
+    const userEmail = currentUser.email?.toLowerCase().trim();
+    if (!userEmail) return null;
     return teachers.find(
-      t => t.email?.toLowerCase().trim() === currentUser.email.toLowerCase().trim()
+      t => t.email?.toLowerCase().trim() === userEmail
     );
   }, [currentUser, teachers]);
 
@@ -944,6 +953,24 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
                   {subStatus.expiryDate.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
                 </span>
               </div>
+              {setActiveTab && (
+                <button
+                  onClick={() => {
+                    if (setSettingsSubTab) {
+                      setSettingsSubTab('billing');
+                    }
+                    setActiveTab('settings');
+                  }}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-xs transition active:translate-y-0.5 cursor-pointer flex items-center gap-1.5 ${
+                    subStatus.isTrial 
+                      ? 'bg-amber-600 hover:bg-amber-700 text-white' 
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  }`}
+                >
+                  <Key size={13} />
+                  {subStatus.isTrial ? 'Renew License' : 'Manage License'}
+                </button>
+              )}
             </div>
           </motion.div>
         )}
@@ -1001,7 +1028,7 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           
           {/* KPI 1: Class Enrollment size */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between text-left">
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.1 }} className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between text-left">
             <div className="space-y-1.5">
               <span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 font-mono tracking-wider block">My Class Size</span>
               <div className="flex items-baseline gap-1.5">
@@ -1017,10 +1044,10 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
             <div className="w-11 h-11 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
               <Users size={20} />
             </div>
-          </div>
+          </motion.div>
 
           {/* KPI 2: Attendance Rate */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between text-left">
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.2 }} className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between text-left">
             <div className="space-y-1.5">
               <span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 font-mono tracking-wider block">Class Attendance Avg</span>
               <div className="flex items-baseline gap-1.5">
@@ -1036,10 +1063,10 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
             <div className="w-11 h-11 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
               <Calendar size={20} />
             </div>
-          </div>
+          </motion.div>
 
           {/* KPI 3: Class Academic GPA Average */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between text-left">
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.3 }} className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between text-left">
             <div className="space-y-1.5">
               <span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 font-mono tracking-wider block">Class Subject Average</span>
               <div className="flex items-baseline gap-1.5">
@@ -1055,10 +1082,10 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
             <div className="w-11 h-11 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center">
               <Award size={20} />
             </div>
-          </div>
+          </motion.div>
 
           {/* KPI 4: Assessments logged */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between text-left">
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.4 }} className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between text-left">
             <div className="space-y-1.5">
               <span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 font-mono tracking-wider block">Assessments Marked</span>
               <div className="flex items-baseline gap-1.5">
@@ -1074,7 +1101,7 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
             <div className="w-11 h-11 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-650 dark:text-indigo-450 flex items-center justify-center">
               <FileCheck size={20} />
             </div>
-          </div>
+          </motion.div>
 
         </div>
 
@@ -1366,7 +1393,12 @@ export default function DashboardSummaryTab({ theme, students: propStudents, onR
             </div>
             {setActiveTab && (
               <button
-                onClick={() => setActiveTab('settings')}
+                onClick={() => {
+                  if (setSettingsSubTab) {
+                    setSettingsSubTab('billing');
+                  }
+                  setActiveTab('settings');
+                }}
                 className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-xs transition active:translate-y-0.5 cursor-pointer flex items-center gap-1.5 ${
                   subStatus.isTrial 
                     ? 'bg-amber-600 hover:bg-amber-700 text-white' 

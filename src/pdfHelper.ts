@@ -58,6 +58,64 @@ export function replaceOklchInString(str: string): string {
   });
 }
 
+export function replaceOklabInString(str: string): string {
+  if (!str || !str.includes('oklab')) return str;
+  const oklabRegex = /oklab\(\s*([0-9.]+%?)(?:\s+|\s*,\s*)([0-9.-]+%?)(?:\s+|\s*,\s*)([0-9.-]+%?)(?:\s*(?:\/|,)\s*([0-9.%]+))?\s*\)/gi;
+  return str.replace(oklabRegex, (match, lStr, aStrVal, bStrVal, aStr) => {
+    try {
+      let l = lStr.endsWith('%') ? parseFloat(lStr) / 100 : parseFloat(lStr);
+      let a_lab = aStrVal.endsWith('%') ? parseFloat(aStrVal) / 100 : parseFloat(aStrVal);
+      let b_lab = bStrVal.endsWith('%') ? parseFloat(bStrVal) / 100 : parseFloat(bStrVal);
+      let alpha = 1;
+      if (aStr) {
+        if (aStr.endsWith('%')) {
+          alpha = parseFloat(aStr) / 100;
+        } else {
+          alpha = parseFloat(aStr);
+        }
+      }
+
+      if (isNaN(l)) l = 0;
+      if (isNaN(a_lab)) a_lab = 0;
+      if (isNaN(b_lab)) b_lab = 0;
+
+      const l_lms = l + 0.3963377774 * a_lab + 0.2158037573 * b_lab;
+      const m_lms = l - 0.1055613458 * a_lab - 0.0638541728 * b_lab;
+      const s_lms = l - 0.0894841775 * a_lab - 1.2914855480 * b_lab;
+
+      const l3 = l_lms * l_lms * l_lms;
+      const m3 = m_lms * m_lms * m_lms;
+      const s3 = s_lms * s_lms * s_lms;
+
+      const r_lin = +4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+      const g_lin = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+      const b_lin = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3;
+
+      const f = (x: number) => (x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055);
+
+      const r = Math.round(Math.max(0, Math.min(1, f(r_lin))) * 255);
+      const g = Math.round(Math.max(0, Math.min(1, f(g_lin))) * 255);
+      const b = Math.round(Math.max(0, Math.min(1, f(b_lin))) * 255);
+
+      return alpha === 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    } catch (err) {
+      console.warn("Failed to parse oklab color:", match, err);
+      return match;
+    }
+  });
+}
+
+export function replaceColorFunctions(str: string): string {
+  let res = str;
+  if (res && res.includes('oklch')) {
+    res = replaceOklchInString(res);
+  }
+  if (res && res.includes('oklab')) {
+    res = replaceOklabInString(res);
+  }
+  return res;
+}
+
 export const generatePdfFromHtml = async (
   elementId: string, 
   filename: string, 
@@ -113,8 +171,8 @@ export const generatePdfFromHtml = async (
   // 1. Patch CSSStyleDeclaration.prototype.getPropertyValue
   CSSStyleDeclaration.prototype.getPropertyValue = function(property: string): string {
     const val = originalGetPropertyValue.call(this, property);
-    if (typeof val === 'string' && val.includes('oklch')) {
-      return replaceOklchInString(val);
+    if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+      return replaceColorFunctions(val);
     }
     return val;
   };
@@ -122,16 +180,16 @@ export const generatePdfFromHtml = async (
   // 2. Patch Element.prototype.getAttribute
   Element.prototype.getAttribute = function(name: string): string | null {
     const val = originalGetAttribute.call(this, name);
-    if (typeof val === 'string' && val.includes('oklch')) {
-      return replaceOklchInString(val);
+    if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+      return replaceColorFunctions(val);
     }
     return val;
   };
 
   // 3. Patch specific descriptors like cssText on prototype objects
-  patchProperty(cssStyleDeclProto, 'cssText', replaceOklchInString);
-  if (cssRuleProto) patchProperty(cssRuleProto, 'cssText', replaceOklchInString);
-  if (cssStyleRuleProto) patchProperty(cssStyleRuleProto, 'cssText', replaceOklchInString);
+  patchProperty(cssStyleDeclProto, 'cssText', replaceColorFunctions);
+  if (cssRuleProto) patchProperty(cssRuleProto, 'cssText', replaceColorFunctions);
+  if (cssStyleRuleProto) patchProperty(cssStyleRuleProto, 'cssText', replaceColorFunctions);
 
   // 4. Dynamic prototype getter patching for CSSStyleDeclaration.prototype properties
   try {
@@ -140,7 +198,7 @@ export const generatePdfFromHtml = async (
       if (prop !== 'getPropertyValue' && prop !== 'cssText') {
         const desc = Object.getOwnPropertyDescriptor(cssStyleDeclProto, prop);
         if (desc && desc.get) {
-          patchProperty(cssStyleDeclProto, prop, replaceOklchInString);
+          patchProperty(cssStyleDeclProto, prop, replaceColorFunctions);
         }
       }
     }
@@ -155,8 +213,8 @@ export const generatePdfFromHtml = async (
       get(target, prop) {
         const val = Reflect.get(target, prop);
         if (typeof prop === 'string') {
-          if (typeof val === 'string' && val.includes('oklch')) {
-            return replaceOklchInString(val);
+          if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+            return replaceColorFunctions(val);
           }
         }
         if (typeof val === 'function') {
@@ -190,22 +248,22 @@ export const generatePdfFromHtml = async (
           clonedElement.style.backgroundColor = '#ffffff';
         }
 
-        // Convert all oklch colors in clone stylesheets
+        // Convert all oklch/oklab colors in clone stylesheets
         const styleElements = clonedDoc.getElementsByTagName('style');
         for (let i = 0; i < styleElements.length; i++) {
           const style = styleElements[i];
-          if (style.textContent && style.textContent.includes('oklch')) {
-            style.textContent = replaceOklchInString(style.textContent);
+          if (style.textContent && (style.textContent.includes('oklch') || style.textContent.includes('oklab'))) {
+            style.textContent = replaceColorFunctions(style.textContent);
           }
         }
 
-        // Convert all oklch colors in inline style attributes of elements
+        // Convert all oklch/oklab colors in inline style attributes of elements
         const allElements = clonedDoc.getElementsByTagName('*');
         for (let i = 0; i < allElements.length; i++) {
           const el = allElements[i] as HTMLElement;
           const styleAttr = el.getAttribute('style');
-          if (styleAttr && styleAttr.includes('oklch')) {
-            el.setAttribute('style', replaceOklchInString(styleAttr));
+          if (styleAttr && (styleAttr.includes('oklch') || styleAttr.includes('oklab'))) {
+            el.setAttribute('style', replaceColorFunctions(styleAttr));
           }
         }
       }
@@ -229,14 +287,20 @@ export const generatePdfFromHtml = async (
   const imgData = canvas.toDataURL('image/png', 1.0);
   
   const orientation = isLandscape ? 'l' : 'p';
+  const isDL = elementId === 'fee-receipt-print-area' || 
+               elementId === 'fee-ledger-print-area' || 
+               element.querySelector('#fee-receipt-print-area') !== null || 
+               element.querySelector('#fee-ledger-print-area') !== null;
+  const format = isDL ? [220, 110] : 'a4';
+  
   const pdf = new jsPDF({
     orientation: orientation,
     unit: 'mm',
-    format: 'a4',
+    format: format,
   });
 
-  const pdfWidth = isLandscape ? 297 : 210;
-  const pdfHeight = isLandscape ? 210 : 297;
+  const pdfWidth = isDL ? 220 : (isLandscape ? 297 : 210);
+  const pdfHeight = isDL ? 110 : (isLandscape ? 210 : 297);
 
   // Setup margins
   const margin = 8;

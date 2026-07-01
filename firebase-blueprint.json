@@ -198,6 +198,20 @@
       },
       "required": ["id", "date", "teacherId", "teacherName", "status"]
     },
+    "SyncEvent": {
+      "title": "SyncEvent",
+      "description": "Real-time sync event between teacher and headteacher",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "type": { "type": "string", "enum": ["AssessmentUpdate", "AssignmentNotification"] },
+        "payload": { "type": "object" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "senderId", "recipientId", "type", "createdAt"]
+    },
     "AcademicCalendarConfig": {
       "title": "AcademicCalendarConfig",
       "description": "System-wide academic calendar active configuration",
@@ -309,6 +323,10 @@
     "/staff_attendance/{recordId}": {
       "schema": "StaffAttendanceRecord",
       "description": "Daily attendance mark and times for a teacher/staff member"
+    },
+    "/teacher_headteacher_sync/{syncId}": {
+      "schema": "SyncEvent",
+      "description": "Real-time teacher to headteacher synchronization events"
     },
     "/settings/{settingId}": {
       "schema": "AcademicCalendarConfig",

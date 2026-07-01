@@ -6,73 +6,37 @@ import crypto from 'crypto';
 import { apiRouter } from './src/api-router';
 
 // Dynamically load Firebase config if exists for server-side persistence sync
-let firebaseConfig = { projectId: '', apiKey: '' };
-try {
-  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-  if (fs.existsSync(configPath)) {
-    firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    console.log(`[Server Setup] Dynamically loaded Firebase credentials. Project: ${firebaseConfig.projectId}`);
-  }
-} catch (err) {
-  console.warn("[Server Setup] Could not read firebase-applet-config.json. Fallback to client-side database synchronization.", err);
-}
+let firebaseConfig = {
+  projectId: process.env.FIREBASE_PROJECT_ID || '',
+  apiKey: process.env.FIREBASE_API_KEY || ''
+};
 
-// REST helper to write payment logs directly to Firestore on the backend
-async function logWebhookPaymentToFirestore(paymentData: {
-  reference: string;
-  studentId: string;
-  billId: string;
-  component: string;
-  amount: number;
-  academicYear: string;
-  term: string;
-  status: string;
-}) {
-  const { projectId, apiKey } = firebaseConfig;
-  if (!projectId || !apiKey) {
-    console.log("[Firestore Sync] Inactive Firebase credentials. Bypassing persistent cloud logging in server.");
-    return;
-  }
-
+if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
   try {
-    const documentUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/paystack_payments/${paymentData.reference}?key=${apiKey}`;
-    const payload = {
-      fields: {
-        id: { stringValue: paymentData.reference },
-        reference: { stringValue: paymentData.reference },
-        studentId: { stringValue: paymentData.studentId },
-        billId: { stringValue: paymentData.billId },
-        component: { stringValue: paymentData.component },
-        amount: { doubleValue: paymentData.amount },
-        academicYear: { stringValue: paymentData.academicYear },
-        term: { stringValue: paymentData.term },
-        status: { stringValue: paymentData.status },
-        paidAt: { stringValue: new Date().toISOString() },
-        createdAt: { stringValue: new Date().toISOString() }
-      }
-    };
-
-    console.log(`[Firestore Sync] Logging verification to Cloud Firestore: ${paymentData.reference}`);
-    const response = await fetch(documentUrl, {
-      method: 'PATCH', // Creates or overwrites document
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[Firestore Sync] Document write error:", errorText);
-    } else {
-      console.log("[Firestore Sync] Successfully written payment document: ", paymentData.reference);
+    const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(configPath)) {
+      const fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      firebaseConfig.projectId = fileConfig.projectId || '';
+      firebaseConfig.apiKey = fileConfig.apiKey || '';
+      console.log(`[Server Setup] Loaded Firebase credentials from file fallback. Project: ${firebaseConfig.projectId}`);
     }
-  } catch (error) {
-    console.error("[Firestore Sync] Crash occurred while writing ledger logging REST request:", error);
+  } catch (err) {
+    console.warn("[Server Setup] Could not read firebase-applet-config.json fallback. Using environment variables.", err);
   }
 }
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // Secure HTTP Headers Middleware
+  app.use((_req, res, next) => {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    next();
+  });
 
   // Custom parser to capture the exact raw request payload as a Buffer
   // This is required to securely verify Paystack Webhook signatures (HMAC-SHA512)

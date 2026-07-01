@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, FormEvent, ChangeEvent } from 'react';
-import { ThemeType, UserRole, PaystackPayment, WebAuthnCredential, ActivityLog, CLASSES, ClassType } from '../types';
+import { ThemeType, UserRole, PaystackPayment, WebAuthnCredential, ActivityLog, CLASSES, ClassType, AttendanceRecord, StudentAssessment, AutoBackupConfig, AutoBackupEntry } from '../types';
 import { DbController } from '../db';
 import { THEME_CONFIGS, ThemeStyles } from './ThemeWrapper';
 import { generateActivationCode, evaluateSubscription } from '../subscription';
@@ -7,7 +7,7 @@ import PaystackPaymentTrigger from './PaystackPaymentTrigger';
 import { 
   Palette, Smartphone, Save, CheckCircle2, ShieldCheck, UserPlus, FileSliders, Laptop, Lock, Mail,
   Database, Download, Upload, AlertTriangle, Trash2, ShieldAlert, X, Sun, Moon, Key, CreditCard, Sparkles, HelpCircle, AlertCircle, Check,
-  Fingerprint, RefreshCw, History, ArrowUpCircle, Filter, ClipboardCheck, ArrowUpDown, Users, UserCheck
+  Fingerprint, RefreshCw, History, ArrowUpCircle, Filter, ClipboardCheck, ArrowUpDown, Users, UserCheck, Wrench
 } from 'lucide-react';
 
 interface Props {
@@ -16,9 +16,19 @@ interface Props {
   isAutoSave: boolean;
   onAutoSaveToggle: (active: boolean) => void;
   onRefresh: () => void;
+  settingsSubTab?: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers';
+  setSettingsSubTab?: (tab: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers') => void;
 }
 
-export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSaveToggle, onRefresh }: Props) {
+export default function SettingsTab({ 
+  theme, 
+  onThemeChange, 
+  isAutoSave, 
+  onAutoSaveToggle, 
+  onRefresh,
+  settingsSubTab: propSettingsSubTab,
+  setSettingsSubTab: propSetSettingsSubTab
+}: Props) {
   const [activeTheme, setActiveTheme] = useState<ThemeType>(theme.name);
   const [autoSaveActive, setAutoSaveActive] = useState<boolean>(isAutoSave);
   const [saveStatus, setSaveStatus] = useState(false);
@@ -34,7 +44,8 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
   // User registration forms
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
-  const [regRole, setRegRole] = useState<UserRole>('Headteacher');
+  const [regRole, setRegRole] = useState<UserRole>('Teacher');
+  const [regPassword, setRegPassword] = useState('');
   const [regSuccess, setRegSuccess] = useState('');
 
   const [registeredAccounts, setRegisteredAccounts] = useState(DbController.getRegisteredUsers());
@@ -46,7 +57,9 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
   const [copiedSuccess, setCopiedSuccess] = useState(false);
 
   // Sub-tabs state inside System Controls (SettingsTab)
-  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers'>('general');
+  const [settingsSubTabState, setSettingsSubTabState] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers'>('general');
+  const settingsSubTab = propSettingsSubTab !== undefined ? propSettingsSubTab : settingsSubTabState;
+  const setSettingsSubTab = propSetSettingsSubTab !== undefined ? propSetSettingsSubTab : setSettingsSubTabState;
   const [teachersList, setTeachersList] = useState(() => DbController.getTeachers());
   const [teacherSearchQuery, setTeacherSearchQuery] = useState('');
   const [teacherSaveStatus, setTeacherSaveStatus] = useState(false);
@@ -59,6 +72,7 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
   const [adminPrice2Y, setAdminPrice2Y] = useState(school.licensePrice2Year ?? 600);
   const [adminPrice3Y, setAdminPrice3Y] = useState(school.licensePrice3Year ?? 800);
   const [adminPrice5Y, setAdminPrice5Y] = useState(school.licensePrice5Year ?? 1200);
+  const [adminSmsRate, setAdminSmsRate] = useState(school.smsRate ?? 20);
 
   const price1Year = school.licensePrice1Year ?? 350;
   const price2Year = school.licensePrice2Year ?? 600;
@@ -90,6 +104,109 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
   const [lastBackupTime, setLastBackupTime] = useState<string | null>(() => {
     return localStorage.getItem('last_backup_download_timestamp');
   });
+
+  // --- AUTOMATIC SCHEDULED BACKUPS STATE ---
+  const [autoBackupConfig, setAutoBackupConfig] = useState<AutoBackupConfig>(() => {
+    return DbController.getAutoBackupConfig();
+  });
+  const [autoBackupsList, setAutoBackupsList] = useState<AutoBackupEntry[]>(() => {
+    return DbController.getAutoBackups();
+  });
+
+  const handleToggleAutoBackup = (enabled: boolean) => {
+    const updated = { ...autoBackupConfig, enabled };
+    DbController.saveAutoBackupConfig(updated);
+    setAutoBackupConfig(updated);
+    
+    // Write activity log
+    DbController.writeActivityLog(
+      'Backup Preference Modified',
+      `Automatic database backup set to: ${enabled ? 'ENABLED' : 'DISABLED'}.`,
+      'medium'
+    );
+  };
+
+  const handleAutoBackupFrequencyChange = (frequency: 'daily' | 'weekly') => {
+    const updated = { ...autoBackupConfig, frequency };
+    DbController.saveAutoBackupConfig(updated);
+    setAutoBackupConfig(updated);
+    
+    // Write activity log
+    DbController.writeActivityLog(
+      'Backup Preference Modified',
+      `Automatic database backup frequency updated to: ${frequency.toUpperCase()}.`,
+      'medium'
+    );
+  };
+
+  const handleTriggerAutoBackupNow = () => {
+    try {
+      const result = DbController.performAutoBackup();
+      if (result.success) {
+        setAutoBackupsList(DbController.getAutoBackups());
+        setAutoBackupConfig(DbController.getAutoBackupConfig());
+        setImportSuccess("✓ Automatic browser-cached backup executed and saved successfully!");
+        setTimeout(() => setImportSuccess(''), 4000);
+        onRefresh();
+      }
+    } catch (e: any) {
+      setImportError("Failed to trigger automatic backup: " + e.message);
+      setTimeout(() => setImportError(''), 4000);
+    }
+  };
+
+  const handleRestoreAutoBackup = (entry: AutoBackupEntry) => {
+    const timeStr = new Date(entry.timestamp).toLocaleString();
+    if (window.confirm(`RESTORE CONFIRMATION: Are you sure you want to restore the automatic backup from ${timeStr}? This will replace your current local registers and sync with your database configurations.`)) {
+      try {
+        const result = DbController.importAllData(entry.data);
+        if (result.success) {
+          setImportSuccess(`✓ Successfully restored system backup state from ${timeStr}! Core registers and settings reloaded.`);
+          onRefresh();
+          setTimeout(() => setImportSuccess(''), 5000);
+        } else {
+          setImportError(result.error || "Failed to restore backup.");
+          setTimeout(() => setImportError(''), 5000);
+        }
+      } catch (err: any) {
+        setImportError("Restore failed: " + err.message);
+        setTimeout(() => setImportError(''), 5000);
+      }
+    }
+  };
+
+  const handleDeleteAutoBackup = (id: string, timestamp: string) => {
+    const timeStr = new Date(timestamp).toLocaleString();
+    if (window.confirm(`Are you sure you want to delete the automatic backup from ${timeStr}? This cached data will be permanently removed from your browser.`)) {
+      try {
+        DbController.deleteAutoBackup(id);
+        setAutoBackupsList(DbController.getAutoBackups());
+        setAutoBackupConfig(DbController.getAutoBackupConfig());
+      } catch (e: any) {
+        alert("Failed to delete auto-backup: " + e.message);
+      }
+    }
+  };
+
+  const handleDownloadAutoBackup = (entry: AutoBackupEntry) => {
+    try {
+      const dataStr = entry.data;
+      const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+      const formatedDate = new Date(entry.timestamp).toISOString().split('T')[0];
+      const filename = `geetech_sms_auto_backup_${formatedDate}_${entry.id}.json`;
+      
+      const linkElement = document.createElement('a');
+      linkElement.setAttribute('href', dataUri);
+      linkElement.setAttribute('download', filename);
+      linkElement.click();
+
+      const now = new Date().toISOString();
+      localStorage.setItem('last_backup_download_timestamp', now);
+      setLastBackupTime(now);
+    } catch (e: any) {
+      alert("Failed to download auto-backup file: " + e.message);
+    }
+  };
 
   const backupStatus = useMemo(() => {
     if (!lastBackupTime) {
@@ -140,6 +257,8 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
 
   // === ACTIVITY LOGS & ADMINISTRATIVE PROMOTIONS ===
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>(() => DbController.getActivityLogs());
+  const [integrityReport, setIntegrityReport] = useState<string | null>(null);
+  const [canRepair, setCanRepair] = useState(false);
   const [logSearch, setLogSearch] = useState('');
   const [logSeverityFilter, setLogSeverityFilter] = useState<'all' | 'info' | 'low' | 'medium' | 'high' | 'critical'>('all');
   
@@ -147,6 +266,150 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
   const [promoSourceClass, setPromoSourceClass] = useState<ClassType>('Creche');
   const [promoTargetClass, setPromoTargetClass] = useState<ClassType | 'Graduated'>('Nursery 1');
   const [promotionSuccessText, setPromotionSuccessText] = useState('');
+
+  const handleRunIntegrityReport = () => {
+    const students = DbController.getStudents();
+    const attendance = DbController.getAllAttendance();
+    const assessments = DbController.getAssessments();
+    const errors: string[] = [];
+    let repairableCount = 0;
+
+    // 1. Audit Students
+    students.forEach(s => {
+      if (!s.id || !s.firstName || !s.lastName || !s.class) {
+        errors.push(`[Student] Missing critical fields: ID ${s.id || 'N/A'}, Name "${s.firstName || ''} ${s.lastName || ''}"`);
+        repairableCount++;
+      }
+    });
+
+    // 2. Audit Attendance
+    attendance.forEach(a => {
+      if (!students.find(s => s.id === a.studentId)) {
+        errors.push(`[Attendance] Orphaned record: Student ID ${a.studentId} not found in student list`);
+        repairableCount++;
+      }
+    });
+
+    // 3. Audit Assessments
+    assessments.forEach(ass => {
+      const studentExists = students.find(s => s.id === ass.studentId);
+      if (!studentExists) {
+        errors.push(`[Assessment] Orphaned record: Student ID "${ass.studentId}" not found for assessment ID ${ass.id}`);
+        repairableCount++;
+      }
+      if (!ass.academicYear) {
+        errors.push(`[Assessment] Missing Academic Year: ID ${ass.id} (Student: ${ass.studentName || 'Orphaned ID ' + ass.studentId})`);
+        repairableCount++;
+      }
+    });
+
+    if (errors.length === 0) {
+      setIntegrityReport("Database Integrity Report: No issues found! Database is consistent.");
+      setCanRepair(false);
+    } else {
+      setIntegrityReport(
+        `Database Integrity Report Found ${errors.length} Issue(s):\n` +
+        `----------------------------------------\n` +
+        errors.join('\n') +
+        `\n----------------------------------------\n` +
+        `Summary: ${repairableCount} repairable issue(s) detected.`
+      );
+      setCanRepair(repairableCount > 0);
+    }
+  };
+
+  const handleAutoRepair = () => {
+    const students = DbController.getStudents();
+    const assessments = DbController.getAssessments();
+    const attendance = DbController.getAllAttendance();
+    const calendar = DbController.getAcademicCalendar();
+    const activeYear = calendar.activeAcademicYear;
+
+    let repairedStudents = 0;
+    let repairedAssessments = 0;
+    let prunedAttendance = 0;
+
+    // 1. Repair Students
+    const updatedStudents = students.map(s => {
+      let changed = false;
+      const copy = { ...s };
+      if (!copy.firstName) {
+        copy.firstName = 'Unknown';
+        changed = true;
+      }
+      if (!copy.lastName) {
+        copy.lastName = 'Unknown';
+        changed = true;
+      }
+      if (!copy.class) {
+        copy.class = 'Creche';
+        changed = true;
+      }
+      if (changed) {
+        repairedStudents++;
+      }
+      return copy;
+    });
+
+    // 2. Repair Assessments (including orphaned assessment records missing Academic Year)
+    const updatedAssessments = assessments.map(ass => {
+      let changed = false;
+      const copy = { ...ass };
+      if (!copy.academicYear) {
+        copy.academicYear = activeYear;
+        changed = true;
+        repairedAssessments++;
+      }
+      // Standardize orphaned student names if empty
+      if (!copy.studentName) {
+        const matchingStudent = students.find(s => s.id === copy.studentId);
+        if (matchingStudent) {
+          copy.studentName = `${matchingStudent.firstName} ${matchingStudent.lastName}`;
+          changed = true;
+        } else {
+          copy.studentName = `Former Student (${copy.studentId})`;
+          changed = true;
+        }
+      }
+      return copy;
+    });
+
+    // 3. Prune/Repair Attendance: remove orphaned attendance records
+    const beforeAttendanceCount = attendance.length;
+    const updatedAttendance = attendance.filter(a => students.some(s => s.id === a.studentId));
+    prunedAttendance = beforeAttendanceCount - updatedAttendance.length;
+
+    // Save all updated collections back to persistence
+    if (repairedStudents > 0) {
+      DbController.saveAllStudents(updatedStudents);
+    }
+    if (repairedAssessments > 0) {
+      DbController.saveAllAssessments(updatedAssessments);
+    }
+    if (prunedAttendance > 0) {
+      DbController.saveAllAttendance(updatedAttendance);
+    }
+
+    const totalFixed = repairedStudents + repairedAssessments + prunedAttendance;
+
+    if (totalFixed > 0) {
+      setIntegrityReport(
+        `Auto-Repair Complete! Successfully corrected database health:\n` +
+        `- Corrected ${repairedStudents} student record(s)\n` +
+        `- Corrected ${repairedAssessments} assessment record(s) missing Academic Year (including orphaned entries)\n` +
+        `- Cleaned up ${prunedAttendance} orphaned attendance record(s)`
+      );
+      DbController.writeActivityLog(
+        'Database Auto-Repair', 
+        `Fixed ${repairedStudents} students, ${repairedAssessments} assessments, and pruned ${prunedAttendance} orphaned attendance logs.`, 
+        'high'
+      );
+      setCanRepair(false);
+    } else {
+      setIntegrityReport("No issues requiring auto-repair found.");
+      setCanRepair(false);
+    }
+  };
 
   // Refresh logs when tab selected
   useEffect(() => {
@@ -164,6 +427,7 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
       setAdminPrice2Y(freshSchool.licensePrice2Year ?? 600);
       setAdminPrice3Y(freshSchool.licensePrice3Year ?? 800);
       setAdminPrice5Y(freshSchool.licensePrice5Year ?? 1200);
+      setAdminSmsRate(freshSchool.smsRate ?? 20);
     }
   }, [settingsSubTab]);
 
@@ -175,15 +439,16 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
         licensePrice2Year: adminPrice2Y,
         licensePrice3Year: adminPrice3Y,
         licensePrice5Year: adminPrice5Y,
+        smsRate: adminSmsRate,
       };
       DbController.saveSchoolInfo(updatedSchool);
       setSchool(updatedSchool);
       DbController.writeActivityLog(
         'Licensing pricing modified',
-        `Adjusted tier prices: 1-Year = GHS ${adminPrice1Y}, 2-Year = GHS ${adminPrice2Y}, 3-Year = GHS ${adminPrice3Y}, 5-Year = GHS ${adminPrice5Y}`,
+        `Adjusted tier prices: 1-Year = GHS ${adminPrice1Y}, 2-Year = GHS ${adminPrice2Y}, 3-Year = GHS ${adminPrice3Y}, 5-Year = GHS ${adminPrice5Y}, SMS Rate = ${adminSmsRate} credits/GHS`,
         'medium'
       );
-      alert("License tier pricing configurations updated successfully across the entire platform!");
+      alert("License tier and SMS carrier pricing configurations updated successfully across the entire platform!");
       onRefresh();
     } catch (e: any) {
       alert("Failed to save pricing configuration updates: " + e.message);
@@ -248,7 +513,18 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
       return;
     }
 
-    const assignedRole: UserRole = regEmail.toLowerCase().trim() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
+    const passwordRegex = /^(?=.*[0-9])(?=.*[!@#$%^&*.,])[a-zA-Z0-9!@#$%^&*.,]{8,}$/;
+    if (!passwordRegex.test(regPassword)) {
+      alert("Password must be at least 8 characters long, include numbers and special characters.");
+      return;
+    }
+
+    const assignedRole: UserRole = regEmail.toLowerCase().trim() === 'pegyirenyi@gmail.com' ? 'Admin' : regRole;
+
+    if (assignedRole === 'Headteacher' && !isAdmin) {
+      alert("Only Admins can register Headteachers.");
+      return;
+    }
 
     DbController.register(regName, regEmail, assignedRole);
     setRegisteredAccounts(DbController.getRegisteredUsers());
@@ -257,6 +533,7 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
     setRegSuccess(`Account for ${regName} (${assignedRole}) created successfully!`);
     setRegName('');
     setRegEmail('');
+    setRegPassword('');
     setTimeout(() => setRegSuccess(''), 3500);
   };
 
@@ -406,6 +683,20 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
     }
   };
 
+  const handlePurgeCache = async () => {
+    if (window.confirm("Are you sure you want to permanently delete all offline cached assets? This will force a full refresh of the application on the next load.")) {
+      try {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(key => caches.delete(key)));
+        alert("Offline storage cache successfully purged. Please reload the application.");
+        onRefresh();
+      } catch (err) {
+        console.error("Cache purge failed:", err);
+        alert("Failed to purge cache. Please check browser permissions.");
+      }
+    }
+  };
+
   const handleImportBackup = (e: ChangeEvent<HTMLInputElement>) => {
     setImportError('');
     setImportSuccess('');
@@ -448,27 +739,33 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
 
       {/* Settings Sub Tabs Bar */}
       <div className="flex flex-wrap gap-2 pb-1 border-b border-slate-200 no-print">
-        <button
-          type="button"
-          onClick={() => setSettingsSubTab('general')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'general' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-        >
-          <Palette size={13} /> Appearance & Themes
-        </button>
-        <button
-          type="button"
-          onClick={() => setSettingsSubTab('accounts')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'accounts' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-        >
-          <UserPlus size={13} /> Account Provisioning
-        </button>
-        <button
-          type="button"
-          onClick={() => setSettingsSubTab('backup')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'backup' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-        >
-          <Database size={13} /> Backup & Hard Reset
-        </button>
+        {!subStatus?.isLocked && (
+          <>
+            <button
+              type="button"
+              onClick={() => setSettingsSubTab('general')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'general' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+            >
+              <Palette size={13} /> Appearance & Themes
+            </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setSettingsSubTab('accounts')}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'accounts' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+              >
+                <UserPlus size={13} /> Account Provisioning
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setSettingsSubTab('backup')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'backup' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+            >
+              <Database size={13} /> Backup & Hard Reset
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={() => setSettingsSubTab('billing')}
@@ -476,20 +773,24 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
         >
           <CreditCard size={13} /> Buy Subscription / Renewal
         </button>
-        <button
-          type="button"
-          onClick={() => setSettingsSubTab('logs')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'logs' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-        >
-          <ClipboardCheck size={13} /> Activity Logs & Admin Utilities
-        </button>
-        <button
-          type="button"
-          onClick={() => setSettingsSubTab('teachers')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'teachers' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-        >
-          <UserCheck size={13} /> Teacher Permissions
-        </button>
+        {!subStatus?.isLocked && (
+          <>
+            <button
+              type="button"
+              onClick={() => setSettingsSubTab('logs')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'logs' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+            >
+              <ClipboardCheck size={13} /> Activity Logs & Admin Utilities
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsSubTab('teachers')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'teachers' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+            >
+              <UserCheck size={13} /> Teacher Permissions
+            </button>
+          </>
+        )}
       </div>
       
       {/* Dynamic Weekly Backup Alert Card (only on backup tab) */}
@@ -512,6 +813,16 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 self-end sm:self-center">
+            {isAdmin && (
+              <button
+                onClick={handlePurgeCache}
+                type="button"
+                className="py-2 px-4 rounded-lg font-bold text-xs bg-red-600 hover:bg-red-700 text-white shadow-xs cursor-pointer hover:scale-101 active:scale-99 transition-all duration-200 flex items-center gap-1.5"
+              >
+                <Trash2 size={13} />
+                <span>Purge Cache</span>
+              </button>
+            )}
             <button
               onClick={handleExportBackup}
               type="button"
@@ -628,103 +939,131 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
         {settingsSubTab === 'accounts' && (
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
           
-          <div className="space-y-3">
-            <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5 pb-2 border-b border-slate-100">
-              <UserPlus size={17} className={theme.accentText} />
-              Role Accounts Provisioning Center
-            </h3>
-            <p className="text-[10px] text-slate-400 leading-relaxed">Add administrative handles securely mapped for Admin and Headteacher access roles.</p>
+          {(isAdmin || currentUser?.role === 'Headteacher') && (
+            <div className="space-y-3">
+              <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5 pb-2 border-b border-slate-100">
+                <UserPlus size={17} className={theme.accentText} />
+                Role Accounts Provisioning Center
+              </h3>
+              <p className="text-[10px] text-slate-400 leading-relaxed">Add administrative handles securely mapped for {isAdmin ? 'Admin, Headteacher, or Teacher' : 'Teacher'} access roles.</p>
 
-            <form onSubmit={handleUserRegistration} className="space-y-3 pt-2">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[10px] text-slate-500 mb-1">Account Full Name</label>
-                  <input
-                    type="text"
-                    required
-                    value={regName}
-                    onChange={(e) => setRegName(e.target.value)}
-                    className="w-full text-xs px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none"
-                    placeholder="e.g. Ama Serwaa"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-slate-500 mb-1">Mailing Address (Email) *</label>
-                  <input
-                    type="email"
-                    required
-                    value={regEmail}
-                    onChange={(e) => {
-                      const emailVal = e.target.value;
-                      setRegEmail(emailVal);
-                      if (emailVal.toLowerCase().trim() === 'pegyirenyi@gmail.com') {
-                        setRegRole('Admin');
-                      } else {
-                        setRegRole('Headteacher');
-                      }
-                    }}
-                    className="w-full text-xs px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none font-mono"
-                    placeholder="e.g. pegyirenyi@gmail.com"
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-1 bg-slate-50 p-2.5 rounded-lg border border-slate-200/40 text-[10px]">
-                <div className="flex items-center gap-1.5">
-                  <ShieldCheck size={14} className="text-slate-400" />
-                  <span className="font-semibold text-slate-600">Administrative Permission Role Assignment:</span>
-                </div>
-                <div className="mt-1 font-bold">
-                  {regEmail.toLowerCase().trim() === 'pegyirenyi@gmail.com' ? (
-                    <span className="text-indigo-600 px-2 py-0.5 bg-indigo-50 border border-indigo-100 rounded">System Administrator Level Permissions</span>
-                  ) : (
-                    <span className="text-teal-600 px-2 py-0.5 bg-teal-50 border border-teal-100 rounded">Headteacher Level Permissions</span>
-                  )}
-                </div>
-                <div className="text-[9px] text-slate-400 mt-1 italic">
-                  * Dynamic Authorization: only pegyirenyi@gmail.com is granted System Administrator access. All other email addresses are initialized as Headteacher.
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                className={`w-full py-2 rounded-lg font-bold shadow-xs cursor-pointer active:translate-y-0.5 transition ${theme.btnColors}`}
-              >
-                Provision Role Account
-              </button>
-            </form>
-
-            {regSuccess && (
-              <div className="bg-indigo-50 border border-indigo-200 text-indigo-800 p-2 rounded-lg animate-fade-in font-medium">
-                {regSuccess}
-              </div>
-            )}
-          </div>
-
-          {/* List Registered Users */}
-          <div className="space-y-2 pt-2">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Registered Security Accounts</span>
-            <div className="divide-y divide-slate-100 max-h-[140px] overflow-y-auto border border-slate-100 rounded-lg p-2.5 bg-slate-50/50">
-              {registeredAccounts.map(u => (
-                <div key={u.uid} className="py-1.5 flex items-center justify-between">
+              <form onSubmit={handleUserRegistration} className="space-y-3 pt-2">
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="font-semibold text-slate-700 block text-xs">{u.name}</span>
-                      {u.promoDiscountRate && u.promoDiscountRate > 0 ? (
-                        <span className="text-[8px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200/50 px-1.5 py-0.5 rounded leading-none uppercase font-mono tracking-wider">
-                          {u.promoDiscountRate}% Promo
-                        </span>
-                      ) : null}
-                    </div>
-                    <span className="text-[9px] text-slate-400 font-mono italic">{u.email}</span>
+                    <label className="block text-[10px] text-slate-500 mb-1">Account Full Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={regName}
+                      onChange={(e) => setRegName(e.target.value)}
+                      className="w-full text-xs px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none"
+                      placeholder="e.g. Ama Serwaa"
+                    />
                   </div>
-                  <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${u.role === 'Admin' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100' : 'bg-teal-50 text-teal-800 border border-teal-100'}`}>
-                    {u.role}
-                  </span>
+                  <div>
+                    <label className="block text-[10px] text-slate-500 mb-1">Mailing Address (Email) *</label>
+                    <input
+                      type="email"
+                      required
+                      value={regEmail}
+                      onChange={(e) => {
+                        const emailVal = e.target.value;
+                        setRegEmail(emailVal);
+                        if (isAdmin && emailVal.toLowerCase().trim() === 'pegyirenyi@gmail.com') {
+                          setRegRole('Admin');
+                        } else {
+                          // Default for non-admin email is Teacher, but Admin can manually toggle Headteacher if we add a selector
+                          setRegRole('Teacher');
+                        }
+                      }}
+                      className="w-full text-xs px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none font-mono"
+                      placeholder="e.g. pegyirenyi@gmail.com"
+                    />
+                  </div>
                 </div>
-              ))}
+
+                <div>
+                  <label className="block text-[10px] text-slate-500 mb-1">Initial Password *</label>
+                  <input
+                    type="password"
+                    required
+                    value={regPassword}
+                    onChange={(e) => setRegPassword(e.target.value)}
+                    className="w-full text-xs px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none font-mono"
+                    placeholder="Min 8 chars, 1 number, 1 special char"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1 bg-slate-50 p-2.5 rounded-lg border border-slate-200/40 text-[10px]">
+                  <div className="flex items-center gap-1.5">
+                    <ShieldCheck size={14} className="text-slate-400" />
+                    <span className="font-semibold text-slate-600">Administrative Permission Role Assignment:</span>
+                  </div>
+                  <div className="mt-1 font-bold">
+                    {regEmail.toLowerCase().trim() === 'pegyirenyi@gmail.com' ? (
+                      <span className="text-indigo-600 px-2 py-0.5 bg-indigo-50 border border-indigo-100 rounded">System Administrator Level Permissions</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={regRole}
+                          onChange={(e) => setRegRole(e.target.value as UserRole)}
+                          className="text-[10px] font-bold border border-slate-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        >
+                          <option value="Teacher">Teacher (Classroom Access)</option>
+                          {isAdmin && (
+                            <option value="Headteacher">Headteacher (School Management Access)</option>
+                          )}
+                        </select>
+                        <span className="text-slate-400 italic font-normal">* {isAdmin ? 'Choose Teacher or Headteacher' : 'Teacher role assigned by default'}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-[9px] text-slate-400 mt-1 italic">
+                    * Dynamic Authorization: only pegyirenyi@gmail.com is granted System Administrator access. {isAdmin ? 'Admins can provision Headteachers and Teachers.' : 'Headteachers can provision Teachers.'}
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className={`w-full py-2 rounded-lg font-bold shadow-xs cursor-pointer active:translate-y-0.5 transition ${theme.btnColors}`}
+                >
+                  Provision Role Account
+                </button>
+              </form>
+
+              {regSuccess && (
+                <div className="bg-indigo-50 border border-indigo-200 text-indigo-800 p-2 rounded-lg animate-fade-in font-medium">
+                  {regSuccess}
+                </div>
+              )}
             </div>
-          </div>
+          )}
+
+          {isAdmin && (
+            <div className="space-y-2 pt-2">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Registered Security Accounts</span>
+              <div className="divide-y divide-slate-100 max-h-[140px] overflow-y-auto border border-slate-100 rounded-lg p-2.5 bg-slate-50/50">
+                {registeredAccounts.map(u => (
+                  <div key={u.uid} className="py-1.5 flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-semibold text-slate-700 block text-xs">{u.name}</span>
+                        {u.promoDiscountRate && u.promoDiscountRate > 0 ? (
+                          <span className="text-[8px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200/50 px-1.5 py-0.5 rounded leading-none uppercase font-mono tracking-wider">
+                            {u.promoDiscountRate}% Promo
+                          </span>
+                        ) : null}
+                      </div>
+                      <span className="text-[9px] text-slate-400 font-mono italic">{u.email}</span>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${u.role === 'Admin' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100' : 'bg-teal-50 text-teal-800 border border-teal-100'}`}>
+                      {u.role}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* WebAuthn Biometric Security & Shared Devices Segment */}
           <div className="space-y-4 pt-4 border-t border-slate-100">
@@ -992,6 +1331,160 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
 
       </div>
 
+      {/* AUTOMATIC SCHEDULED DATABASE BACKUPS */}
+      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5 text-left">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
+          <div className="space-y-1">
+            <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5">
+              <RefreshCw size={17} className={`${theme.accentText}`} />
+              Scheduled Auto-Backups (Browser-Cached)
+            </h3>
+            <p className="text-[10px] text-slate-400 leading-normal max-w-xl">
+              Configure local background processes to keep automatic snapshot logs of your school records. Backups rotate in local storage using a safe FIFO queue of the last 5 records.
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <span className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${autoBackupConfig.enabled ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>
+              {autoBackupConfig.enabled ? "Active" : "Disabled"}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
+          {/* Control Panel: Toggle and frequency */}
+          <div className="md:col-span-1 border border-slate-200/60 rounded-xl p-4 bg-slate-50/50 space-y-4">
+            <div>
+              <span className="font-bold text-slate-700 text-xs block mb-1">Automation Settings</span>
+              <p className="text-[10px] text-slate-400 leading-normal">
+                Turn on automatic local backups and select your preferred schedule.
+              </p>
+            </div>
+
+            {/* Toggle Switch */}
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-white border border-slate-200/70">
+              <span className="text-[11px] font-bold text-slate-700">Enable Auto-Backup</span>
+              <button
+                type="button"
+                onClick={() => handleToggleAutoBackup(!autoBackupConfig.enabled)}
+                className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${autoBackupConfig.enabled ? 'bg-emerald-600' : 'bg-slate-300'}`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${autoBackupConfig.enabled ? 'translate-x-5' : 'translate-x-0'}`}
+                />
+              </button>
+            </div>
+
+            {/* Frequency Selector */}
+            {autoBackupConfig.enabled && (
+              <div className="space-y-2 animate-fade-in">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Backup Frequency</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleAutoBackupFrequencyChange('daily')}
+                    className={`py-1.5 px-3 rounded-lg border text-xs font-bold transition ${autoBackupConfig.frequency === 'daily' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-100'}`}
+                  >
+                    Daily Backup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAutoBackupFrequencyChange('weekly')}
+                    className={`py-1.5 px-3 rounded-lg border text-xs font-bold transition ${autoBackupConfig.frequency === 'weekly' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-100'}`}
+                  >
+                    Weekly Backup
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Manual Trigger */}
+            <button
+              type="button"
+              onClick={handleTriggerAutoBackupNow}
+              className="w-full py-2 px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-lg font-bold text-xs shadow-xs transition flex items-center justify-center gap-1.5 text-center cursor-pointer"
+            >
+              <Database size={13} />
+              Trigger Auto-Backup Now
+            </button>
+          </div>
+
+          {/* Backups List */}
+          <div className="md:col-span-2 border border-slate-200/60 rounded-xl p-4 bg-slate-50/50 space-y-4 flex flex-col justify-between">
+            <div>
+              <span className="font-bold text-slate-700 text-xs block mb-1">Local Browser-Cached Backups</span>
+              <p className="text-[10px] text-slate-400 leading-normal">
+                Last Backup Timestamp: <strong className="text-slate-600">{autoBackupConfig.lastBackupTime ? new Date(autoBackupConfig.lastBackupTime).toLocaleString() : "Never Executed"}</strong>
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/70 rounded-lg divide-y divide-slate-100 overflow-hidden max-h-[160px] overflow-y-auto">
+              {autoBackupsList.length === 0 ? (
+                <div className="p-6 text-center text-slate-400">
+                  <Database size={24} className="mx-auto mb-2 text-slate-300 opacity-60" />
+                  <p className="text-[10px]">No automatic backups are currently stored in this browser's cache.</p>
+                </div>
+              ) : (
+                autoBackupsList.map((entry, idx) => {
+                  const time = new Date(entry.timestamp);
+                  return (
+                     <div key={entry.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left">
+                       <div className="space-y-0.5">
+                         <div className="flex items-center gap-2">
+                           <span className="text-[10px] font-mono font-bold text-slate-700">
+                             #{autoBackupsList.length - idx} Auto-Backup
+                           </span>
+                           <span className="text-[9px] text-indigo-600 font-bold px-1.5 py-0.2 bg-indigo-50 border border-indigo-100/60 rounded">
+                             {(entry.size / 1024).toFixed(1)} KB
+                           </span>
+                         </div>
+                         <p className="text-[10px] text-slate-400 font-sans leading-none">
+                           Saved: {time.toLocaleString()}
+                         </p>
+                       </div>
+
+                       <div className="flex items-center gap-1.5">
+                         <button
+                           type="button"
+                           onClick={() => handleRestoreAutoBackup(entry)}
+                           className="p-1 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200/80 rounded-md font-bold text-[10px] transition cursor-pointer"
+                           title="Restore database from this backup"
+                         >
+                           Restore
+                         </button>
+                         <button
+                           type="button"
+                           onClick={() => handleDownloadAutoBackup(entry)}
+                           className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-md transition cursor-pointer"
+                           title="Download JSON copy"
+                         >
+                           <Download size={11} />
+                         </button>
+                         <button
+                           type="button"
+                           onClick={() => handleDeleteAutoBackup(entry.id, entry.timestamp)}
+                           className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-md transition cursor-pointer"
+                           title="Delete backup"
+                         >
+                           <Trash2 size={11} />
+                         </button>
+                       </div>
+                     </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="bg-amber-50/50 border border-amber-200 p-2.5 rounded-lg flex items-start gap-2 text-[10px] text-amber-800 leading-normal">
+              <AlertCircle size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
+              <span>
+                <strong>Storage Warning:</strong> These backups exist inside your active browser cache. Clearing your browser's site data or history may delete these auto-backups. Downloading a physical JSON file is recommended for permanent safety.
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* SYSTEM HARD RESET & RECOVERY CONSOLE */}
       <div className="bg-white p-6 rounded-xl border border-rose-100 shadow-sm space-y-4">
         <h3 className="text-sm font-display font-bold text-rose-800 flex items-center gap-1.5 pb-2 border-b border-rose-100">
@@ -1075,7 +1568,7 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
                 <div className="flex items-center gap-2">
                   <span className={`w-2.5 h-2.5 rounded-full ${subStatus?.isLocked ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`} />
                   <strong className="text-slate-800 text-xs font-black">
-                    {subStatus?.licenseType === 'trial' ? '21-Day System Trial' : 'Active School License'}
+                    {subStatus?.licenseType === 'trial' ? '14-Day System Trial' : 'Active School License'}
                   </strong>
                 </div>
                 <p className="text-[10px] text-slate-500 leading-normal font-sans pt-1">
@@ -1290,12 +1783,15 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
                         
                         DbController.savePaystackPayment(paymentLog);
 
+                        const tierYears = selectedLicenseTier === '1year' ? 1 : selectedLicenseTier === '2year' ? 2 : selectedLicenseTier === '3year' ? 3 : selectedLicenseTier === '5year' ? 5 : 1;
+
                         await DbController.updateUserLicense(
                           currentUser.uid,
                           'activated',
                           new Date().toISOString(),
                           generatedKey,
-                          currentUser.requestCode || 'REQ-SYSTEM-9401'
+                          currentUser.requestCode || 'REQ-SYSTEM-9401',
+                          tierYears
                         );
                         setSubscriptionSuccess(true);
                         // Force refresh lists of users locally so evaluateSubscription finds the new state
@@ -1587,6 +2083,52 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
                 </div>
 
               </div>
+
+              {/* SMS Rate Adjustment Sub-Section */}
+              <div className="bg-gradient-to-r from-amber-50 to-orange-50/50 p-5 rounded-2xl border border-amber-200/60 shadow-xs space-y-4">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <span className="text-[10px] bg-amber-200 text-amber-800 font-black px-2.5 py-1 rounded-lg uppercase font-mono tracking-wider">
+                      Prepaid SMS Rate Adjuster
+                    </span>
+                    <h5 className="font-bold text-slate-800 text-xs font-sans">Ghana SMS Carrier Wallet Exchange Multiplier</h5>
+                    <p className="text-[10px] text-slate-500 font-sans leading-relaxed">
+                      Define how many SMS credits are granted per 1 GHS loaded. Higher values decrease the unit price per SMS, making broadcasts cheaper. Only administrators can alter this rate.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="space-y-1">
+                      <label className="block text-[9px] font-bold text-slate-400 uppercase font-mono">Credits per GHS 1.00</label>
+                      <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl p-1 shadow-8xs">
+                        <input 
+                          type="number"
+                          value={adminSmsRate}
+                          onChange={(e) => setAdminSmsRate(Math.max(1, parseInt(e.target.value) || 0))}
+                          className="w-16 px-2 py-1 text-slate-700 bg-transparent text-xs font-mono font-bold focus:outline-none"
+                        />
+                        <div className="flex gap-1">
+                          <button type="button" onClick={() => setAdminSmsRate(Math.max(5, adminSmsRate - 5))} className="px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 text-[9px] font-mono font-bold text-slate-600 rounded-md transition cursor-pointer">-5</button>
+                          <button type="button" onClick={() => setAdminSmsRate(adminSmsRate + 5)} className="px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 text-[9px] font-mono font-bold text-slate-600 rounded-md transition cursor-pointer">+5</button>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="bg-white/80 border border-amber-100 p-3 rounded-xl flex items-center gap-4 text-xs">
+                      <div>
+                        <span className="block text-[9px] text-slate-400 uppercase font-mono leading-none">Equivalent Cost</span>
+                        <strong className="text-amber-700 font-black font-mono mt-1 block">GHS {(1 / adminSmsRate).toFixed(3)} / SMS</strong>
+                      </div>
+                      <div className="border-l border-amber-100 pl-4">
+                        <span className="block text-[9px] text-slate-400 uppercase font-mono leading-none">Price Level Description</span>
+                        <span className={`text-[10px] font-bold mt-1 block ${adminSmsRate >= 20 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                          {adminSmsRate >= 20 ? 'Highly Discounted (Lowered)' : 'Standard Premium Rate'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
             </div>
           )}
         </div>
@@ -1702,8 +2244,38 @@ export default function SettingsTab({ theme, onThemeChange, isAutoSave, onAutoSa
                       <span>Clear Audit Logs</span>
                     </button>
                   )}
+                  <button
+                      type="button"
+                      onClick={handleRunIntegrityReport}
+                      className="px-2.5 py-1.5 bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-700 hover:text-sky-800 rounded-lg transition cursor-pointer text-[10px] font-bold flex items-center gap-1 font-sans"
+                    >
+                      <Database size={12} />
+                      <span>Database Integrity Report</span>
+                    </button>
+                    {canRepair && (
+                      <button
+                        type="button"
+                        onClick={handleAutoRepair}
+                        className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 hover:text-emerald-800 rounded-lg transition cursor-pointer text-[10px] font-bold flex items-center gap-1 font-sans"
+                      >
+                        <Wrench size={12} />
+                        <span>Run Auto-Repair</span>
+                      </button>
+                    )}
                 </div>
               </div>
+              
+              {integrityReport && (
+                <div className="p-4 bg-slate-800 text-white rounded-xl text-xs font-mono whitespace-pre-wrap mt-2 overflow-auto max-h-40 relative">
+                  <button 
+                    onClick={() => setIntegrityReport(null)}
+                    className="absolute top-2 right-2 text-slate-400 hover:text-white"
+                  >
+                    <X size={14}/>
+                  </button>
+                  {integrityReport}
+                </div>
+              )}
 
               {/* Filters bar */}
               <div className="flex flex-col sm:flex-row gap-2 font-sans">

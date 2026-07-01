@@ -1,10 +1,8 @@
-const CACHE_NAME = 'ges-sms-cache-v1';
+const CACHE_NAME = 'ges-sms-cache-v2';
 const STATIC_RESOURCES = [
   '/',
   '/index.html',
-  '/src/main.tsx',
-  '/src/index.css',
-  '/src/App.tsx'
+  '/attendance_empty.jpg'
 ];
 
 // Install Event: cache core app shell
@@ -57,60 +55,51 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Handle SPA routing: if requesting helper index/navigation pages, return cached index.html
-  if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          // Keep a fresh index copy in cache
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put('/', clone));
-          return response;
-        })
-        .catch(() => {
-          // If network fails (offline), load from cache root
-          return caches.match('/').then((cachedResponse) => {
-            if (cachedResponse) return cachedResponse;
-            return caches.match('/index.html');
-          });
-        })
-    );
-    return;
-  }
-
-  // Stale-While-Revalidate caching pattern for general assets (CSS, JS, Fonts, Images)
+  // Cache-First Strategy for all intercepted requests
   event.respondWith(
     caches.match(request).then((cachedResponse) => {
+      // If we found a match in the cache, return it immediately
       if (cachedResponse) {
-        // Fetch background refresh to update cache silently
-        fetch(request)
-          .then((networkResponse) => {
-            if (networkResponse.status === 200) {
-              caches.open(CACHE_NAME).then((cache) => cache.put(request, networkResponse));
+        // For navigation requests, we still attempt a background update to keep the shell fresh
+        if (request.mode === 'navigate') {
+          fetch(request).then((networkResponse) => {
+            if (networkResponse && networkResponse.status === 200) {
+              caches.open(CACHE_NAME).then((cache) => cache.put('/', networkResponse));
             }
-          })
-          .catch(() => {
+          }).catch(() => {
             /* ignore background fetch errors when offline */
           });
+        }
         return cachedResponse;
       }
 
+      // If not in cache, fetch from network
       return fetch(request)
         .then((networkResponse) => {
+          // Check if we received a valid response
           if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
             return networkResponse;
           }
+
+          // Clone the response before caching it
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
-            cache.put(request, responseToCache);
+            // For navigation requests, we always cache them at the root '/'
+            const cacheKey = request.mode === 'navigate' ? '/' : request;
+            cache.put(cacheKey, responseToCache);
           });
+
           return networkResponse;
         })
         .catch((err) => {
-          // Fallback modes for offline images or fallback components if wanted
-          console.log('[Service Worker] Offline fetch failed for:', url.pathname);
-          // Return cached fallback if available
-          return caches.match(request);
+          console.log('[Service Worker] Fetch failed, and no cache match for:', url.pathname);
+          
+          // If navigation fails and no cache match, try root fallback
+          if (request.mode === 'navigate') {
+            return caches.match('/');
+          }
+          
+          return undefined;
         });
     })
   );

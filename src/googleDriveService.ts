@@ -2,10 +2,20 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
 import firebaseConfig from '../firebase-applet-config.json';
 
-const configWithAuthDomain = firebaseConfig.projectId ? {
-  ...firebaseConfig,
-  authDomain: `${firebaseConfig.projectId}.firebaseapp.com`
-} : firebaseConfig;
+const resolvedFirebaseConfig = {
+  projectId: (import.meta as any).env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId || '',
+  appId: (import.meta as any).env.VITE_FIREBASE_APP_ID || firebaseConfig.appId || '',
+  apiKey: (import.meta as any).env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey || '',
+  authDomain: (import.meta as any).env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain || ((import.meta as any).env.VITE_FIREBASE_PROJECT_ID ? `${(import.meta as any).env.VITE_FIREBASE_PROJECT_ID}.firebaseapp.com` : firebaseConfig.projectId ? `${firebaseConfig.projectId}.firebaseapp.com` : ''),
+  storageBucket: (import.meta as any).env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket || '',
+  messagingSenderId: (import.meta as any).env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId || '',
+  measurementId: (import.meta as any).env.VITE_FIREBASE_MEASUREMENT_ID || firebaseConfig.measurementId || ''
+};
+
+const configWithAuthDomain = resolvedFirebaseConfig.projectId ? {
+  ...resolvedFirebaseConfig,
+  authDomain: resolvedFirebaseConfig.authDomain || `${resolvedFirebaseConfig.projectId}.firebaseapp.com`
+} : resolvedFirebaseConfig;
 
 const app = getApps().length === 0 ? initializeApp(configWithAuthDomain) : getApp();
 const auth = getAuth(app);

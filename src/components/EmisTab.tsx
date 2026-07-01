@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { AcademicYearType, ACADEMIC_YEARS, CLASSES, ClassType, EmisData } from '../types';
 import { DbController } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
+import { getWatermarkHtml } from '../utils';
 import { 
   Building, ShieldCheck, ClipboardCheck, Users, UsersRound, Eye, Plus, Trash2, 
   Sparkles, Save, Printer, HelpCircle, HardHat, FileBox, LineChart, CheckCircle2,
@@ -117,6 +118,14 @@ function generateEmptyReport(year: AcademicYearType): EmisData {
     // Safety & Compound Security
     isCompoundFenced: false,
     hasSecurityGuard: false,
+    
+    // Additional GES EMIS Census fields
+    hasSpecialNeedsFacilities: false,
+    specialNeedsPupilsCount: 0,
+    hasGuidanceCounsellor: false,
+    hasRecreationalFacilities: false,
+    ghanaianLanguageTaught: 'None',
+    hasInternetAccess: false,
     
     targetCommunityPopulation: 350,
     updatedAt: new Date().toISOString()
@@ -361,8 +370,159 @@ export default function EmisTab({ theme }: Props) {
   const communityCap = report.targetCommunityPopulation || Math.max(250, Math.round(totalEnrolled * 1.15));
   const netEnrollmentRatio = communityCap > 0 ? Math.min(100, (officialAgeEnrolled / communityCap) * 100) : 0;
 
+  // Age calculations relative to Census Completion Date
+  const getStudentAge = (dobString: string, censusDateString: string) => {
+    if (!dobString) return null;
+    const dob = new Date(dobString);
+    const census = censusDateString ? new Date(censusDateString) : new Date();
+    if (isNaN(dob.getTime())) return null;
+    let age = census.getFullYear() - dob.getFullYear();
+    const m = census.getMonth() - dob.getMonth();
+    if (m < 0 || (m === 0 && census.getDate() < dob.getDate())) {
+      age--;
+    }
+    return age;
+  };
+
+  const ageKeys = ['< 4', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18+'];
+
+  const getEnrollmentByAgeAndClass = () => {
+    const matrix: Record<string, Record<string, { boys: number; girls: number }>> = {};
+    
+    CLASSES.forEach(cls => {
+      matrix[cls] = {};
+      ageKeys.forEach(ageKey => {
+        matrix[cls][ageKey] = { boys: 0, girls: 0 };
+      });
+    });
+
+    activeStudents.forEach(student => {
+      const cls = student.class;
+      if (!CLASSES.includes(cls)) return;
+      
+      const age = getStudentAge(student.dateOfBirth, report.censusDate);
+      if (age === null) return;
+      
+      let ageKey = '';
+      if (age < 4) ageKey = '< 4';
+      else if (age >= 18) ageKey = '18+';
+      else ageKey = String(age);
+      
+      if (matrix[cls] && matrix[cls][ageKey]) {
+        if (student.gender === 'Male') {
+          matrix[cls][ageKey].boys++;
+        } else {
+          matrix[cls][ageKey].girls++;
+        }
+      }
+    });
+
+    return matrix;
+  };
+
+  const ageEnrollmentMatrix = getEnrollmentByAgeAndClass();
+
+  // Get total per age group
+  const getAgeTotals = () => {
+    const totals: Record<string, { boys: number; girls: number }> = {};
+    ageKeys.forEach(ageKey => {
+      totals[ageKey] = { boys: 0, girls: 0 };
+    });
+
+    CLASSES.forEach(cls => {
+      ageKeys.forEach(ageKey => {
+        if (ageEnrollmentMatrix[cls] && ageEnrollmentMatrix[cls][ageKey]) {
+          totals[ageKey].boys += ageEnrollmentMatrix[cls][ageKey].boys;
+          totals[ageKey].girls += ageEnrollmentMatrix[cls][ageKey].girls;
+        }
+      });
+    });
+
+    return totals;
+  };
+
+  const ageGroupTotals = getAgeTotals();
+
   const handlePrint = () => {
-    window.print();
+    const printArea = document.getElementById('emis-census-print-area');
+    if (!printArea) {
+      window.print();
+      return;
+    }
+    try {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        window.print();
+        return;
+      }
+
+      let stylesHtml = '';
+      const styleSheets = document.head.querySelectorAll('style, link[rel="stylesheet"]');
+      styleSheets.forEach((el) => {
+        stylesHtml += el.outerHTML;
+      });
+
+      const printHtml = printArea.innerHTML;
+
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>GES EMIS Census Return Report - ${schoolInfo.name || 'School'}</title>
+            ${stylesHtml}
+            <style>
+              body {
+                margin: 0;
+                padding: 30px;
+                background-color: #ffffff;
+                color: #0f172a;
+                font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+              }
+              #emis-census-print-area {
+                display: block !important;
+                border: none !important;
+                padding: 0 !important;
+                box-shadow: none !important;
+                max-width: 100% !important;
+              }
+              @media print {
+                @page {
+                  size: 210mm 297mm;
+                  margin: 10mm;
+                }
+                body {
+                  padding: 0 !important;
+                  margin: 0 !important;
+                }
+                .no-print {
+                  display: none !important;
+                }
+              }
+            </style>
+          </head>
+          <body>
+            <div id="emis-census-print-area" class="bg-white text-slate-900 space-y-5 text-xs leading-normal font-sans">
+              ${printHtml}
+            </div>
+            <script>
+              window.addEventListener('load', () => {
+                setTimeout(() => {
+                  window.focus();
+                  window.print();
+                  window.onafterprint = () => {
+                    window.close();
+                  };
+                }, 600);
+              });
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    } catch (e) {
+      console.warn("Popup blocked or direct print restricted:", e);
+      window.print();
+    }
   };
 
   return (
@@ -865,6 +1025,71 @@ export default function EmisTab({ theme }: Props) {
                     </tfoot>
                   </table>
                 </div>
+
+                {/* GES Enrollment by Age Sub-Section */}
+                <div className="space-y-4 pt-6 border-t border-slate-100">
+                  <div>
+                    <h2 className="text-base font-black text-slate-800 flex items-center gap-2">
+                      <LineChart size={16} className="text-indigo-500" /> Ministry of Education / GES Enrolment by Age
+                    </h2>
+                    <p className="text-xs text-slate-500">Real-time age mapping of registered student profiles based on official birth records and the designated EMIS census target date.</p>
+                  </div>
+
+                  <div className="overflow-x-auto border border-slate-100 rounded-2xl">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-black uppercase text-slate-500 tracking-wider font-mono border-b border-slate-100">
+                          <th className="p-3 min-w-[130px]">Class / Form</th>
+                          {ageKeys.map(ageKey => (
+                            <th key={ageKey} className="p-2 text-center border-l border-slate-100 font-mono">Age {ageKey}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs font-semibold">
+                        {CLASSES.map((cls) => (
+                          <tr key={cls} className="hover:bg-slate-50/50 transition">
+                            <td className="p-3 font-bold text-slate-850 font-mono">{cls}</td>
+                            {ageKeys.map(ageKey => {
+                              const cell = ageEnrollmentMatrix[cls]?.[ageKey];
+                              const cellTotal = (cell?.boys || 0) + (cell?.girls || 0);
+                              return (
+                                <td key={ageKey} className="p-2 text-center border-l border-slate-100 bg-slate-50/10">
+                                  {cellTotal > 0 ? (
+                                    <div className="flex flex-col items-center justify-center">
+                                      <span className="font-extrabold text-[11px] text-indigo-900">{cellTotal}</span>
+                                      <span className="text-[9px] text-slate-400 font-mono">({cell.boys}B/{cell.girls}G)</span>
+                                    </div>
+                                  ) : (
+                                    <span className="text-slate-300 font-light font-mono">-</span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-slate-100/70 font-extrabold text-[11px] text-slate-800 border-t border-slate-200">
+                          <td className="p-3 uppercase font-black">AGE TOTAL</td>
+                          {ageKeys.map(ageKey => {
+                            const b = ageGroupTotals[ageKey]?.boys || 0;
+                            const g = ageGroupTotals[ageKey]?.girls || 0;
+                            const tot = b + g;
+                            return (
+                              <td key={ageKey} className="p-2 text-center font-mono font-black border-l border-slate-200 bg-indigo-50/30">
+                                <div className="flex flex-col items-center justify-center">
+                                  <span className="text-indigo-950 text-[11.5px]">{tot}</span>
+                                  <span className="text-[9px] text-indigo-600 font-bold">{b}B/{g}G</span>
+                                </div>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+
               </div>
             )}
 
@@ -1216,6 +1441,102 @@ export default function EmisTab({ theme }: Props) {
                           onChange={(e) => handleBaseFieldChange('hasSecurityGuard', e.target.checked)}
                           className="w-4 h-4 text-amber-600 rounded"
                         />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Inclusive Education, Sports & Services */}
+                  <div className="bg-slate-50/70 border border-slate-100 p-4 rounded-2xl space-y-3 md:col-span-2">
+                    <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                      <Sparkles size={14} className="text-purple-500" /> Inclusive Education, Recreational & Language Services
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {/* Special Needs */}
+                      <div className="bg-white border border-slate-100 p-3 rounded-xl space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="leading-tight">
+                            <span className="text-xs font-bold text-slate-700 block">Special Needs Facilities?</span>
+                            <span className="text-[9px] text-slate-500 block">Ramps, accessible restrooms, or special learning aids</span>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={report.hasSpecialNeedsFacilities || false}
+                            onChange={(e) => handleBaseFieldChange('hasSpecialNeedsFacilities', e.target.checked)}
+                            className="w-4 h-4 text-purple-600 rounded"
+                          />
+                        </div>
+                        {(report.hasSpecialNeedsFacilities) && (
+                          <div className="flex items-center justify-between pt-1 border-t border-slate-100 mt-1">
+                            <span className="text-[10px] text-slate-500 font-medium">Special Needs pupils count:</span>
+                            <input
+                              type="number"
+                              min="0"
+                              value={report.specialNeedsPupilsCount || 0}
+                              onChange={(e) => handleBaseFieldChange('specialNeedsPupilsCount', Number(e.target.value) || 0)}
+                              className="w-16 border border-slate-200 rounded-md py-0.5 text-center text-xs font-bold"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Guidance Counsellor */}
+                      <div className="bg-white border border-slate-100 p-3 rounded-xl flex items-center justify-between gap-2">
+                        <div className="leading-tight">
+                          <span className="text-xs font-bold text-slate-700 block">Guidance & Counselling?</span>
+                          <span className="text-[9px] text-slate-500 block">Assigned school guidance counsellor or wellbeing room</span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={report.hasGuidanceCounsellor || false}
+                          onChange={(e) => handleBaseFieldChange('hasGuidanceCounsellor', e.target.checked)}
+                          className="w-4 h-4 text-purple-600 rounded"
+                        />
+                      </div>
+
+                      {/* Recreational Facilities */}
+                      <div className="bg-white border border-slate-100 p-3 rounded-xl flex items-center justify-between gap-2">
+                        <div className="leading-tight">
+                          <span className="text-xs font-bold text-slate-700 block">Recreational Facilities?</span>
+                          <span className="text-[9px] text-slate-500 block">Playground, sports field, or physical education kits</span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={report.hasRecreationalFacilities || false}
+                          onChange={(e) => handleBaseFieldChange('hasRecreationalFacilities', e.target.checked)}
+                          className="w-4 h-4 text-purple-600 rounded"
+                        />
+                      </div>
+
+                      {/* Internet Access */}
+                      <div className="bg-white border border-slate-100 p-3 rounded-xl flex items-center justify-between gap-2">
+                        <div className="leading-tight">
+                          <span className="text-xs font-bold text-slate-700 block">School Internet Access?</span>
+                          <span className="text-[9px] text-slate-500 block">Wi-Fi or broadband for learning/administration</span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={report.hasInternetAccess || false}
+                          onChange={(e) => handleBaseFieldChange('hasInternetAccess', e.target.checked)}
+                          className="w-4 h-4 text-purple-600 rounded"
+                        />
+                      </div>
+
+                      {/* Ghanaian Language */}
+                      <div className="bg-white border border-slate-100 p-3 rounded-xl space-y-1 sm:col-span-2 lg:col-span-1">
+                        <span className="text-xs font-bold text-slate-700 block">Primary Ghanaian Language Taught</span>
+                        <select
+                          value={report.ghanaianLanguageTaught || 'None'}
+                          onChange={(e) => handleBaseFieldChange('ghanaianLanguageTaught', e.target.value)}
+                          className="w-full border border-slate-200 bg-white rounded-lg px-2 py-1 text-xs font-semibold text-slate-700 mt-1"
+                        >
+                          <option value="None">None</option>
+                          <option value="Twi">Asante Twi / Akuapem Twi</option>
+                          <option value="Fante">Fante</option>
+                          <option value="Ga">Ga</option>
+                          <option value="Ewe">Ewe</option>
+                          <option value="Dagbani">Dagbani</option>
+                          <option value="Other">Other Ghanaian Language</option>
+                        </select>
                       </div>
                     </div>
                   </div>
@@ -1822,10 +2143,11 @@ export default function EmisTab({ theme }: Props) {
       </div>      {/* ---------------------------------------------------------------------- */}
       {/* CENSUS return print template layout - HIDDEN BY DEFAULT EXCEPT FOR PRINTING */}
       {/* ---------------------------------------------------------------------- */}
-      <div className="hidden print:block bg-white text-slate-900 border border-slate-950 p-8 space-y-5 max-w-4xl mx-auto text-xs leading-normal font-sans">
+      <div id="emis-census-print-area" className="hidden print:block bg-white text-slate-900 border border-slate-950 p-8 space-y-5 w-full mx-auto text-xs leading-normal font-sans relative">
+        <div className="absolute inset-0 z-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo?.crestUrl) }} />
         
         {/* LOGO AND PRINT TITLE CORES */}
-        <div className="flex items-center justify-between border-b-2 border-double border-slate-900 pb-3">
+        <div className="flex items-center justify-between border-b-2 border-double border-slate-900 pb-3 relative z-10">
           <div className="text-slate-950 flex items-center gap-3">
             <div className="border-2 border-slate-950 p-1 rounded-sm bg-slate-50">
               <Building size={34} className="text-slate-900" />
@@ -2015,6 +2337,61 @@ export default function EmisTab({ theme }: Props) {
           </table>
         </div>
 
+        {/* SECTION 2B: GES ENROLMENT BY AGE DEMOGRAPHICS */}
+        <div className="space-y-1.5" style={{ pageBreakInside: 'avoid', marginTop: '15px' }}>
+          <h3 className="text-[10px] font-black uppercase text-slate-950 tracking-wider">III-B. National Education Census - Class Enrolment Matrix by Age Group</h3>
+          <p className="text-[8px] text-slate-500 italic mt-0">Required Ministry of Education age-grade distribution statistics based on registered student profile birthdates.</p>
+          <table className="w-full text-center border-collapse border border-slate-950 text-[8px] font-mono">
+            <thead>
+              <tr className="bg-slate-100 font-extrabold border-b border-slate-950 text-[7.5px]">
+                <th className="border border-slate-950 p-1 text-left font-sans min-w-[95px]">Class / Form</th>
+                {ageKeys.map(ageKey => (
+                  <th key={ageKey} className="border border-slate-950 p-0.5">Age {ageKey}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-300">
+              {CLASSES.map(cls => (
+                <tr key={cls}>
+                  <td className="border border-slate-900 p-1 text-left font-bold font-sans">{cls}</td>
+                  {ageKeys.map(ageKey => {
+                    const cell = ageEnrollmentMatrix[cls]?.[ageKey];
+                    const cellTotal = (cell?.boys || 0) + (cell?.girls || 0);
+                    return (
+                      <td key={ageKey} className="border border-slate-900 p-0.5">
+                        {cellTotal > 0 ? (
+                          <div className="flex flex-col items-center justify-center leading-tight">
+                            <span className="font-bold text-slate-900">{cellTotal}</span>
+                            <span className="text-[6.5px] text-slate-500 font-sans">({cell.boys}b/{cell.girls}g)</span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-300 font-light">-</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+              <tr className="bg-slate-100 font-black border-t-2 border-slate-950 text-[8px]">
+                <td className="border border-slate-950 p-1 text-left uppercase font-sans">AGE GROUP TOTAL</td>
+                {ageKeys.map(ageKey => {
+                  const b = ageGroupTotals[ageKey]?.boys || 0;
+                  const g = ageGroupTotals[ageKey]?.girls || 0;
+                  const tot = b + g;
+                  return (
+                    <td key={ageKey} className="border border-slate-950 p-1">
+                      <div className="flex flex-col items-center justify-center leading-tight">
+                        <span className="font-black text-indigo-950">{tot}</span>
+                        <span className="text-[6.5px] text-indigo-800 font-sans font-bold">({b}b/{g}g)</span>
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         {/* SECTION 3: STAFF PROFESSIONAL INVENTORY */}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
@@ -2062,6 +2439,7 @@ export default function EmisTab({ theme }: Props) {
               <p>• <strong>Gov Issued Textbooks:</strong> English: <strong className="font-mono text-[9px]">{report.englishTextbooks}</strong> | Math: <strong className="font-mono text-[9px]">{report.mathTextbooks}</strong> | Science: <strong className="font-mono text-[9px]">{report.scienceTextbooks}</strong> | Social: <strong className="font-mono text-[9px]">{report.socialStudiesTextbooks}</strong> books</p>
               <p>• <strong>Learning Centers & Kits:</strong> School Library: <strong className="text-slate-900">{report.hasFunctionalLibrary ? `Yes (${report.totalLibraryBooks} books logged)` : 'No'}</strong> | MoE Science Lab Kit on-site: <strong className="text-slate-900">{report.hasScienceKit ? 'Yes' : 'No'}</strong></p>
               <p>• <strong>Social Governance & SMC Board:</strong> PTA Board: <strong className="text-slate-900">{report.hasActivePta ? `Active (${report.ptaMeetingsHeldCount} meetings held)` : 'Inactive'}</strong> | School Management Committee (SMC): <strong className="text-slate-900">{report.hasActiveSmc ? 'Active' : 'Inactive'}</strong></p>
+              <p>• <strong>Inclusive Support, Sports & Lang:</strong> Special Needs: <strong className="text-slate-900">{report.hasSpecialNeedsFacilities ? `Yes (${report.specialNeedsPupilsCount || 0} pupils)` : 'No'}</strong> | Guidance Counselling: <strong className="text-slate-900">{report.hasGuidanceCounsellor ? 'Active / Assigned' : 'None'}</strong> | Recreational Spaces: <strong className="text-slate-900">{report.hasRecreationalFacilities ? 'Available' : 'None'}</strong> | Ghanaian Lang: <strong className="text-slate-900">{report.ghanaianLanguageTaught || 'None'}</strong> | Internet Sourcing: <strong className="text-slate-900">{report.hasInternetAccess ? 'Yes / Active' : 'No'}</strong></p>
             </div>
           </div>
         </div>

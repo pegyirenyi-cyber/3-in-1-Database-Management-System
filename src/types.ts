@@ -30,6 +30,8 @@ export interface SchoolInfo {
   licensePrice2Year?: number;
   licensePrice3Year?: number;
   licensePrice5Year?: number;
+  smsRate?: number;
+  crestUrl?: string;
 }
 
 export type ClassType =
@@ -84,6 +86,8 @@ export interface Student {
   guardianName: string;
   guardianTelephone: string;
   guardianOccupation: string;
+  guardianEmail?: string;
+  email?: string;
   residentialAddress: string;
   photoUrl: string; // Base64 or local path
   createdAt: string;
@@ -140,7 +144,10 @@ export interface Teacher {
   photoUrl: string;
   createdAt: string;
   email?: string;
+  subjectSpecialization?: string;
   assignedClass?: ClassType | 'None';
+  assignedClasses?: ClassType[];
+  assignedSubjects?: SubjectType[];
   permissions?: {
     canEditGrades?: boolean;
     canApproveAttendance?: boolean;
@@ -275,6 +282,15 @@ export interface StudentAssessment {
   remarks: string; // Emerging, Developing, etc.
   position?: number; // Position in class for this subject
   teacherRemarks?: string;
+
+  // Custom assessments
+  isCustomAssessment?: boolean;
+  customAssessments?: number[]; // Scores for custom components
+}
+
+export interface AssessmentTemplate {
+  id: string; // class + subject + year + term
+  components: { name: string; maxScore: number }[];
 }
 
 export type UserRole = 'Admin' | 'Headteacher' | 'Teacher';
@@ -285,7 +301,8 @@ export interface UserAccount {
   name: string;
   role: UserRole;
   createdAt: string;
-  licenseType?: 'trial' | 'activated';
+  licenseType?: 'trial' | 'activated' | 'unlimited';
+  licensePeriod?: number; // Number of years: 1, 2, 3, or 5
   registeredOn?: string;
   lastActivatedOn?: string;
   activationCode?: string;
@@ -303,7 +320,7 @@ export interface WebAuthnCredential {
   isSimulated?: boolean; // whether it was registered via simulation fallback
 }
 
-export type ThemeType = 'Classic' | 'Emerald' | 'Ruby' | 'Cosmic' | 'Gold' | 'Sophisticated Dark' | 'Crystal Glass';
+export type ThemeType = 'Classic' | 'Emerald' | 'Ruby' | 'Cosmic' | 'Gold' | 'Sophisticated Dark' | 'Crystal Glass' | 'Midnight' | 'Sunset' | 'Ocean';
 
 export interface FeePayment {
   id: string; // transaction ID
@@ -433,6 +450,14 @@ export interface EmisData {
   
   targetCommunityPopulation?: number; // Optional community catchment population of school-age children (4-15 yrs)
   
+  // 11. Additional GES EMIS Census fields
+  hasSpecialNeedsFacilities?: boolean;
+  specialNeedsPupilsCount?: number;
+  hasGuidanceCounsellor?: boolean;
+  hasRecreationalFacilities?: boolean;
+  ghanaianLanguageTaught?: 'Twi' | 'Ga' | 'Fante' | 'Ewe' | 'Dagbani' | 'None' | 'Other';
+  hasInternetAccess?: boolean;
+  
   updatedAt: string;
 }
 
@@ -472,6 +497,30 @@ export interface BehavioralRemark {
   date: string; // ISO String
   academicYear: string;
   term: string;
+}
+
+export interface TeacherReflection {
+  id: string;
+  teacherId: string;
+  teacherName: string;
+  date: string; // YYYY-MM-DD
+  content: string;
+  category: 'Behavior' | 'Learning Progress' | 'General' | 'Other';
+  class?: ClassType;
+  createdAt: string; // ISO string
+}
+
+export interface AutoBackupConfig {
+  enabled: boolean;
+  frequency: 'daily' | 'weekly';
+  lastBackupTime: string | null;
+}
+
+export interface AutoBackupEntry {
+  id: string;
+  timestamp: string;
+  size: number;
+  data: string;
 }
 
 

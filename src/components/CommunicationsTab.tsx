@@ -1,16 +1,17 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Smartphone, Send, AlertTriangle, Search, Trash2, CheckCircle, RefreshCw, 
-  MessageSquare, Sliders, Users
+  MessageSquare, Sliders, Users, Info, MessageCircle
 } from 'lucide-react';
 import { Student, CLASSES, AcademicYearType, ACADEMIC_YEARS } from '../types';
-import { DbController } from '../db';
+import { DbController, getStorageItem, setStorageItem, removeStorageItem } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { generateSecureToken } from '../utils';
 
 interface Props {
   theme: ThemeStyles;
   students: Student[];
+  isAdmin?: boolean;
 }
 
 interface TwilioConfig {
@@ -28,7 +29,7 @@ interface DispatchLog {
   guardianName: string;
   phoneNumber: string;
   message: string;
-  channel: 'Twilio API' | 'Native Carrier' | 'Ghana Carrier (MTN)';
+  channel: 'Twilio API' | 'Native Carrier' | 'Ghana Carrier (MTN)' | 'WhatsApp Direct';
   status: 'Delivered' | 'Failed' | 'Initiated' | 'Pending';
   errorDetails?: string;
   class: string;
@@ -40,6 +41,11 @@ const TEMPLATES = [
     id: 'report_link',
     label: 'Academic Report Link Notice',
     text: 'Dear {guardianName}, the Term Report Card for {firstName} {lastName} ({class}) is now ready. Click here to securely view/download the full official grades and fee statement anytime: {reportLink}'
+  },
+  {
+    id: 'assessment_reminder',
+    label: 'Upcoming Assessment Reminder',
+    text: 'Dear {guardianName}, please be reminded that {firstName} {lastName} ({class}) has upcoming assessments scheduled for next week. Kindly ensure they are well prepared. - {schoolName}'
   },
   {
     id: 'fee_reminder',
@@ -58,7 +64,7 @@ const TEMPLATES = [
   }
 ];
 
-export default function CommunicationsTab({ theme, students }: Props) {
+export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
   const [selectedClass, setSelectedClass] = useState<string>('All Classes');
   const [selectedAcademicYear, setSelectedAcademicYear] = useState<string>('All Academic Years');
   const [targetFilter, setTargetFilter] = useState<'all' | 'outstanding_fees' | 'no_phone' | 'has_phone'>('all');
@@ -76,7 +82,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
 
   // Active channel selection: 'ghana-sms' (default) or 'twilio' or 'native-device'
   const [activeChannel, setActiveChannel] = useState<'ghana-sms' | 'twilio' | 'native-device'>(() => {
-    const saved = localStorage.getItem('geetech_active_sms_channel');
+    const saved = getStorageItem('geetech_active_sms_channel', 'ghana-sms');
     return (saved as any) || 'ghana-sms';
   });
 
@@ -100,11 +106,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
   // Retrieve Twilio configurations stored on local machine/DB settings
   const [twilioConfig, setTwilioConfig] = useState<TwilioConfig>(() => {
     const sInfo = DbController.getSchoolInfo();
-    const saved = localStorage.getItem('geetech_twilio_config');
-    let localVal = { accountSid: '', authToken: '', fromNumber: '', enabled: false };
-    if (saved) {
-      try { localVal = JSON.parse(saved); } catch (e) { /* ignore */ }
-    }
+    const localVal = getStorageItem<any>('geetech_twilio_config', { accountSid: '', authToken: '', fromNumber: '', enabled: false }) || { accountSid: '', authToken: '', fromNumber: '', enabled: false };
     return {
       accountSid: sInfo.twilioAccountSid || localVal.accountSid || '',
       authToken: sInfo.twilioAuthToken || localVal.authToken || '',
@@ -213,7 +215,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
         };
         const updated = [newLog, ...smsLogs];
         setSmsLogs(updated);
-        localStorage.setItem('sms_communication_sent_logs', JSON.stringify(updated));
+        setStorageItem('sms_communication_sent_logs', updated);
       } else {
         setHandshakeResult({
           success: false,
@@ -232,11 +234,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
 
   // SMS logs list 
   const [smsLogs, setSmsLogs] = useState<DispatchLog[]>(() => {
-    const saved = localStorage.getItem('sms_communication_sent_logs');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* ignore */ }
-    }
-    return [];
+    return getStorageItem<DispatchLog[]>('sms_communication_sent_logs', []);
   });
 
   // Selected recipient IDs (individual student IDs to send to)
@@ -375,7 +373,39 @@ export default function CommunicationsTab({ theme, students }: Props) {
 
     setSmsLogs(prev => {
       const updatedLogs = [newLog, ...prev];
-      localStorage.setItem('sms_communication_sent_logs', JSON.stringify(updatedLogs));
+      setStorageItem('sms_communication_sent_logs', updatedLogs);
+      return updatedLogs;
+    });
+  };
+
+  // Construct standard WhatsApp dispatch URI
+  const getWhatsAppHref = (student: Student) => {
+    let phone = (student.guardianTelephone || '').trim().replace(/[\s\-\(\)\+]/g, '');
+    if (phone.startsWith('0') && phone.length === 10) {
+      phone = '233' + phone.substring(1);
+    }
+    const textMsg = compileMessage(student, templateText);
+    return `https://wa.me/${phone}?text=${encodeURIComponent(textMsg)}`;
+  };
+
+  const logWhatsAppDispatch = (student: Student) => {
+    const textMsg = compileMessage(student, templateText);
+    const newLog: DispatchLog = {
+      id: `WA_${Date.now()}_${student.id}`,
+      timestamp: new Date().toISOString(),
+      studentId: student.id,
+      studentName: `${student.firstName} ${student.lastName}`,
+      guardianName: student.guardianName || 'Guardian',
+      phoneNumber: student.guardianTelephone || '',
+      message: textMsg,
+      channel: 'WhatsApp Direct',
+      status: 'Initiated',
+      class: student.class
+    };
+
+    setSmsLogs(prev => {
+      const updatedLogs = [newLog, ...prev];
+      setStorageItem('sms_communication_sent_logs', updatedLogs);
       return updatedLogs;
     });
   };
@@ -455,7 +485,8 @@ export default function CommunicationsTab({ theme, students }: Props) {
             // Full background sync to pull fresh wallet balances
             await syncSmsBalance(true);
             
-            alert(`🎉 PAYMENT SUCCESSFUL! Your SMS carrier wallet has been credited with GHS ${data.data.amount} (+${Math.round(data.data.amount * 10)} Ghana MTN Carrier Credits).`);
+            const rate = school.smsRate || 20;
+            alert(`🎉 PAYMENT SUCCESSFUL! Your SMS carrier wallet has been credited with GHS ${data.data.amount} (+${Math.round(data.data.amount * rate)} Ghana MTN Carrier Credits).`);
           } else if (data.status === 'failed') {
             clearInterval(pollingTimerRef.current);
             setPaymentStatus('failed');
@@ -606,7 +637,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
 
         currentLogs = [newLog, ...currentLogs];
         setSmsLogs(currentLogs);
-        localStorage.setItem('sms_communication_sent_logs', JSON.stringify(currentLogs));
+        setStorageItem('sms_communication_sent_logs', currentLogs);
 
         // Fast pacing delay so updates feel instantaneous yet tangible
         await new Promise(r => setTimeout(r, activeChannel === 'ghana-sms' ? 250 : 600));
@@ -665,7 +696,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
           };
           const logs = [newLog, ...smsLogs];
           setSmsLogs(logs);
-          localStorage.setItem('sms_communication_sent_logs', JSON.stringify(logs));
+          setStorageItem('sms_communication_sent_logs', logs);
         } else {
           alert(`GSM Transmission Failure: ${result.error}`);
         }
@@ -693,7 +724,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
         };
         const logs = [newLog, ...smsLogs];
         setSmsLogs(logs);
-        localStorage.setItem('sms_communication_sent_logs', JSON.stringify(logs));
+        setStorageItem('sms_communication_sent_logs', logs);
       } else {
         alert(`Twilio Transmission Failure: ${result.error}`);
       }
@@ -704,7 +735,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
   const handleClearLogs = () => {
     if (window.confirm("Are you sure you want to permanently clear the dispatch transaction log ledger? This will erase all audit trails.")) {
       setSmsLogs([]);
-      localStorage.removeItem('sms_communication_sent_logs');
+      removeStorageItem('sms_communication_sent_logs');
     }
   };
 
@@ -712,7 +743,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
   const handleSaveTwilioSetting = (field: keyof TwilioConfig, value: any) => {
     const updated = { ...twilioConfig, [field]: value };
     setTwilioConfig(updated);
-    localStorage.setItem('geetech_twilio_config', JSON.stringify(updated));
+    setStorageItem('geetech_twilio_config', updated);
 
     // Persist to the core database School record
     try {
@@ -756,7 +787,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
             <button
               onClick={() => {
                 setActiveChannel('ghana-sms');
-                localStorage.setItem('geetech_active_sms_channel', 'ghana-sms');
+                setStorageItem('geetech_active_sms_channel', 'ghana-sms');
               }}
               className={`p-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeChannel === 'ghana-sms'
@@ -770,7 +801,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
             <button
               onClick={() => {
                 setActiveChannel('twilio');
-                localStorage.setItem('geetech_active_sms_channel', 'twilio');
+                setStorageItem('geetech_active_sms_channel', 'twilio');
               }}
               className={`p-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeChannel === 'twilio'
@@ -784,7 +815,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
             <button
               onClick={() => {
                 setActiveChannel('native-device');
-                localStorage.setItem('geetech_active_sms_channel', 'native-device');
+                setStorageItem('geetech_active_sms_channel', 'native-device');
               }}
               className={`p-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeChannel === 'native-device'
@@ -839,7 +870,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
                     className="p-2 px-3 bg-white hover:bg-amber-50/40 border border-amber-250 text-amber-950 rounded-xl text-xs font-bold transition shadow-8xs disabled:opacity-50 cursor-pointer text-left inline-flex flex-col"
                   >
                     <span className="font-mono">GHS 15.00</span>
-                    <span className="text-[9px] text-amber-600 font-semibold">+150 SMS credits</span>
+                    <span className="text-[9px] text-amber-600 font-semibold">+{15 * (school.smsRate || 20)} SMS credits</span>
                   </button>
                   <button
                     onClick={() => triggerSmsTopUp(50)}
@@ -847,7 +878,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
                     className="p-2 px-3 bg-white hover:bg-amber-50/40 border border-amber-250 text-amber-950 rounded-xl text-xs font-bold transition shadow-8xs disabled:opacity-50 cursor-pointer text-left inline-flex flex-col"
                   >
                     <span className="font-mono">GHS 50.00</span>
-                    <span className="text-[9px] text-amber-600 font-semibold">+550 SMS credits</span>
+                    <span className="text-[9px] text-amber-600 font-semibold">+{50 * (school.smsRate || 20)} SMS credits</span>
                   </button>
                   <button
                     onClick={() => triggerSmsTopUp(100)}
@@ -855,7 +886,7 @@ export default function CommunicationsTab({ theme, students }: Props) {
                     className="p-2 px-3 bg-white hover:bg-amber-50/40 border border-amber-250 text-amber-950 rounded-xl text-xs font-bold transition shadow-8xs disabled:opacity-50 cursor-pointer text-left inline-flex flex-col"
                   >
                     <span className="font-mono">GHS 100.00</span>
-                    <span className="text-[9px] text-amber-600 font-semibold">+1,200 SMS credits</span>
+                    <span className="text-[9px] text-amber-600 font-semibold">+{100 * (school.smsRate || 20)} SMS credits</span>
                   </button>
                   <button
                     onClick={() => triggerSmsTopUp(220)}
@@ -863,9 +894,23 @@ export default function CommunicationsTab({ theme, students }: Props) {
                     className="p-2 px-3 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-xl text-xs font-black transition shadow-7xs hover:opacity-90 disabled:opacity-50 cursor-pointer text-left inline-flex flex-col"
                   >
                     <span className="font-mono">GHS 220.00</span>
-                    <span className="text-[9px] text-amber-100 font-bold">+3,000 SMS credits</span>
+                    <span className="text-[9px] text-amber-100 font-bold">+{220 * (school.smsRate || 20)} SMS credits</span>
                   </button>
                 </div>
+              </div>
+            </div>
+
+            {/* Explanatory Charging Card */}
+            <div className="bg-amber-50/30 border border-amber-100 rounded-xl p-3 text-[11px] text-amber-900 flex gap-2.5 items-start">
+              <Info size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="space-y-1">
+                <span className="font-bold block">Wallet Billing Policy & Charging Model</span>
+                <p className="text-slate-600 leading-normal">
+                  <strong>Who is charged?</strong> This carrier wallet is funded exclusively by the school administration (not parents or teachers). Each dispatched SMS message deducts exactly 1 credit from this school balance. Parents receive notifications completely free of charge.
+                </p>
+                <p className="text-slate-500 text-[10px]">
+                  Current rate: <strong>GHS 1.00 = {school.smsRate || 20} SMS credits</strong> (only <strong>GHS {(1 / (school.smsRate || 20)).toFixed(3)}</strong> per message – highly lowered for optimal operational budget).
+                </p>
               </div>
             </div>
 
@@ -1189,6 +1234,18 @@ export default function CommunicationsTab({ theme, students }: Props) {
                           <td className="py-2.5 px-3 text-right pr-4">
                             {hasPhone ? (
                               <div className="flex items-center justify-end gap-1.5">
+                                {/* WhatsApp Direct Dispatch */}
+                                <a
+                                  href={getWhatsAppHref(student)}
+                                  onClick={() => logWhatsAppDispatch(student)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="p-1.5 border border-emerald-250 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold rounded-lg text-xs transition cursor-pointer flex items-center justify-center shadow-7xs"
+                                  title="Send compiled notice directly to parent via WhatsApp"
+                                >
+                                  <MessageCircle size={13} className="text-emerald-600" />
+                                </a>
+
                                 {activeChannel === 'native-device' ? (
                                   /* Free Local SMS via applet redirect */
                                   <a
@@ -1238,252 +1295,254 @@ export default function CommunicationsTab({ theme, students }: Props) {
       </div>
 
       {/* TWILIO AND API GATEWAY CONTROLS CARD */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-100 pb-4 gap-2">
-          <div>
-            <h3 className="text-xs font-black text-slate-950 uppercase tracking-wider flex items-center gap-1.5 font-display">
-              <Sliders className="text-indigo-600 animate-pulse" size={15} /> Twilio API Gateway Credentials Config Layer
-            </h3>
-            <p className="text-[11px] text-slate-500 leading-normal font-medium mt-0.5">
-              Integrate your custom Twilio cellular service. Authentic API keys allow bulk notifications to deliver directly to parent devices globally. Stored credentials remain protected inside your local secure workspace.
-            </p>
-          </div>
-          <div className="flex items-center">
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase border ${
-              twilioConfig.enabled 
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
-                : 'bg-slate-50 border-slate-200 text-slate-500'
-            }`}>
-              <span className={`w-2 h-2 rounded-full ${twilioConfig.enabled ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-              {twilioConfig.enabled ? 'Gateway Active' : 'Gateway Offline'}
-            </span>
-          </div>
-        </div>
-
-        {/* Outer responsive split grid for credentials configuration and live diagnostic handshaking */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          
-          {/* Column A: Credentials block (Left 7-spans) */}
-          <div className="lg:col-span-7 space-y-5">
-            <h4 className="text-[11px] font-black text-slate-800 uppercase tracking-wider flex items-center gap-1">
-              🔐 API Keys & Gateway Configuration
-            </h4>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Account SID */}
-              <div className="space-y-1">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Account SID:</label>
-                  {twilioConfig.accountSid && !twilioConfig.accountSid.trim().startsWith('AC') && (
-                    <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1 py-0.5 rounded">Must start with AC</span>
-                  )}
-                </div>
-                <input
-                  type="text"
-                  value={twilioConfig.accountSid}
-                  onChange={(e) => handleSaveTwilioSetting('accountSid', e.target.value)}
-                  placeholder="e.g. AC8fb180..."
-                  className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-800 text-left font-mono"
-                />
-              </div>
-
-              {/* Auth Token */}
-              <div className="space-y-1">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Auth Token:</label>
-                  {twilioConfig.authToken && twilioConfig.authToken.trim().length !== 32 && (
-                    <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1 py-0.5 rounded">Should be 32 chars</span>
-                  )}
-                </div>
-                <input
-                  type="password"
-                  value={twilioConfig.authToken}
-                  onChange={(e) => handleSaveTwilioSetting('authToken', e.target.value)}
-                  placeholder="••••••••••••••••••••••••••••"
-                  className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-800 text-left font-mono"
-                />
-              </div>
-
-              {/* Sender From Phone */}
-              <div className="space-y-1">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">From Twilio Number (E.164):</label>
-                  {twilioConfig.fromNumber && !twilioConfig.fromNumber.trim().startsWith('+') && (
-                    <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1 py-0.5 rounded">Must start with '+'</span>
-                  )}
-                </div>
-                <input
-                  type="text"
-                  value={twilioConfig.fromNumber}
-                  onChange={(e) => handleSaveTwilioSetting('fromNumber', e.target.value)}
-                  placeholder="e.g. +18146447281"
-                  className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-850 font-mono text-left"
-                />
-              </div>
-
-              {/* Gateway Toggle Switch */}
-              <div className="space-y-1 select-none">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider block">Integrity State:</label>
-                <div className="flex items-center gap-2 h-[41px] bg-slate-50 border border-slate-200 px-3 rounded-xl hover:bg-slate-100 transition cursor-pointer" onClick={() => handleSaveTwilioSetting('enabled', !twilioConfig.enabled)}>
-                  <input
-                    type="checkbox"
-                    id="twilio_enabled_flag"
-                    checked={twilioConfig.enabled}
-                    onChange={(e) => e.stopPropagation()} // Handled by div click
-                    className="w-4 h-4 accent-indigo-600 cursor-pointer flex-shrink-0"
-                  />
-                  <label htmlFor="twilio_enabled_flag" className="text-[11px] font-black text-slate-700 cursor-pointer">
-                    Enable Twilio Outbound Send
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            {/* Test credentials validator action button block */}
-            <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              <button
-                type="button"
-                onClick={handleTestTwilioCredentials}
-                disabled={isTestingTwilio || !twilioConfig.accountSid || !twilioConfig.authToken}
-                className="px-5 py-2.5 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-40 border border-indigo-200 text-indigo-700 font-bold rounded-xl text-xs transition cursor-pointer select-none flex items-center justify-center gap-1.5 active:translate-y-0.5 shadow-3xs"
-              >
-                {isTestingTwilio ? (
-                  <>
-                    <RefreshCw className="animate-spin text-indigo-600" size={14} />
-                    Verifying Credentials...
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw size={14} />
-                    Verify & Handshake Credentials
-                  </>
-                )}
-              </button>
-              
-              <p className="text-[10px] text-slate-400 font-medium">
-                Verify authorization keys against Twilio REST servers securely with 0 costs.
+      {isAdmin && (
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-100 pb-4 gap-2">
+            <div>
+              <h3 className="text-xs font-black text-slate-950 uppercase tracking-wider flex items-center gap-1.5 font-display">
+                <Sliders className="text-indigo-600 animate-pulse" size={15} /> Twilio API Gateway Credentials Config Layer
+              </h3>
+              <p className="text-[11px] text-slate-500 leading-normal font-medium mt-0.5">
+                Integrate your custom Twilio cellular service. Authentic API keys allow bulk notifications to deliver directly to parent devices globally. Stored credentials remain protected inside your local secure workspace.
               </p>
             </div>
-
-            {/* Diagnostic result logs display box */}
-            {twilioTestResult && (
-              <div className={`p-4 rounded-xl border transition-all ${
-                twilioTestResult.success 
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
-                  : 'bg-rose-50 border-rose-200 text-rose-800'
+            <div className="flex items-center">
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase border ${
+                twilioConfig.enabled 
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
+                  : 'bg-slate-50 border-slate-200 text-slate-500'
               }`}>
-                <div className="flex items-start gap-2.5">
-                  <div className="mt-0.5">
-                    {twilioTestResult.success ? (
-                      <CheckCircle className="text-emerald-600 flex-shrink-0" size={16} />
-                    ) : (
-                      <AlertTriangle className="text-rose-600 flex-shrink-0" size={16} />
+                <span className={`w-2 h-2 rounded-full ${twilioConfig.enabled ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                {twilioConfig.enabled ? 'Gateway Active' : 'Gateway Offline'}
+              </span>
+            </div>
+          </div>
+
+          {/* Outer responsive split grid for credentials configuration and live diagnostic handshaking */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* Column A: Credentials block (Left 7-spans) */}
+            <div className="lg:col-span-7 space-y-5">
+              <h4 className="text-[11px] font-black text-slate-800 uppercase tracking-wider flex items-center gap-1">
+                🔐 API Keys & Gateway Configuration
+              </h4>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Account SID */}
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Account SID:</label>
+                    {twilioConfig.accountSid && !twilioConfig.accountSid.trim().startsWith('AC') && (
+                      <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1 py-0.5 rounded">Must start with AC</span>
                     )}
                   </div>
-                  <div className="space-y-1 text-xs">
-                    <p className="font-bold leading-none">
-                      {twilioTestResult.success ? 'Credentials Validated Successfully' : 'Credentials Validation Failed'}
-                    </p>
-                    <p className="opacity-90 leading-normal">{twilioTestResult.message}</p>
-                    {twilioTestResult.success && (
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-emerald-200/50 mt-2 font-mono text-[10px] font-bold">
-                        <div>
-                          <span className="opacity-75 uppercase block text-[8px] font-sans">Account Friendly Name:</span>
-                          <span className="text-slate-800">{twilioTestResult.accountName}</span>
-                        </div>
-                        <div>
-                          <span className="opacity-75 uppercase block text-[8px] font-sans">Account Status:</span>
-                          <span className="text-emerald-700 capitalize">{twilioTestResult.status}</span>
-                        </div>
-                        <div>
-                          <span className="opacity-75 uppercase block text-[8px] font-sans">Account Plan Type:</span>
-                          <span className="text-indigo-700 capitalize">{twilioTestResult.type}</span>
-                        </div>
-                      </div>
+                  <input
+                    type="text"
+                    value={twilioConfig.accountSid}
+                    onChange={(e) => handleSaveTwilioSetting('accountSid', e.target.value)}
+                    placeholder="e.g. AC8fb180..."
+                    className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-800 text-left font-mono"
+                  />
+                </div>
+
+                {/* Auth Token */}
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Auth Token:</label>
+                    {twilioConfig.authToken && twilioConfig.authToken.trim().length !== 32 && (
+                      <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1 py-0.5 rounded">Should be 32 chars</span>
                     )}
+                  </div>
+                  <input
+                    type="password"
+                    value={twilioConfig.authToken}
+                    onChange={(e) => handleSaveTwilioSetting('authToken', e.target.value)}
+                    placeholder="••••••••••••••••••••••••••••"
+                    className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-800 text-left font-mono"
+                  />
+                </div>
+
+                {/* Sender From Phone */}
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">From Twilio Number (E.164):</label>
+                    {twilioConfig.fromNumber && !twilioConfig.fromNumber.trim().startsWith('+') && (
+                      <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1 py-0.5 rounded">Must start with '+'</span>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={twilioConfig.fromNumber}
+                    onChange={(e) => handleSaveTwilioSetting('fromNumber', e.target.value)}
+                    placeholder="e.g. +18146447281"
+                    className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-850 font-mono text-left"
+                  />
+                </div>
+
+                {/* Gateway Toggle Switch */}
+                <div className="space-y-1 select-none">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider block">Integrity State:</label>
+                  <div className="flex items-center gap-2 h-[41px] bg-slate-50 border border-slate-200 px-3 rounded-xl hover:bg-slate-100 transition cursor-pointer" onClick={() => handleSaveTwilioSetting('enabled', !twilioConfig.enabled)}>
+                    <input
+                      type="checkbox"
+                      id="twilio_enabled_flag"
+                      checked={twilioConfig.enabled}
+                      onChange={(e) => e.stopPropagation()} // Handled by div click
+                      className="w-4 h-4 accent-indigo-600 cursor-pointer flex-shrink-0"
+                    />
+                    <label htmlFor="twilio_enabled_flag" className="text-[11px] font-black text-slate-700 cursor-pointer">
+                      Enable Twilio Outbound Send
+                    </label>
                   </div>
                 </div>
               </div>
-            )}
-          </div>
 
-          {/* Column B: Sandbox SMS dispatch (Right 5-spans) */}
-          <div className="lg:col-span-5 bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4">
-            <div className="pb-2 border-b border-slate-200">
-              <h4 className="text-[11px] font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                <Smartphone className="text-indigo-600" size={14} /> Handshake SMS Sandbox
-              </h4>
-              <p className="text-[10px] text-slate-500 font-medium mt-0.5">
-                Send a real system test SMS to confirm final cellular route delivery on hand.
-              </p>
-            </div>
-
-            <div className="space-y-3">
-              {/* Destination Mobile Number */}
-              <div className="space-y-1">
-                <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">Recipient Mobile Number (E.164):</label>
-                <input
-                  type="text"
-                  value={testPhoneNumber}
-                  onChange={(e) => setTestPhoneNumber(e.target.value)}
-                  placeholder="e.g. +233241234567"
-                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg bg-white font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
+              {/* Test credentials validator action button block */}
+              <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleTestTwilioCredentials}
+                  disabled={isTestingTwilio || !twilioConfig.accountSid || !twilioConfig.authToken}
+                  className="px-5 py-2.5 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-40 border border-indigo-200 text-indigo-700 font-bold rounded-xl text-xs transition cursor-pointer select-none flex items-center justify-center gap-1.5 active:translate-y-0.5 shadow-3xs"
+                >
+                  {isTestingTwilio ? (
+                    <>
+                      <RefreshCw className="animate-spin text-indigo-600" size={14} />
+                      Verifying Credentials...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw size={14} />
+                      Verify & Handshake Credentials
+                    </>
+                  )}
+                </button>
+                
+                <p className="text-[10px] text-slate-400 font-medium">
+                  Verify authorization keys against Twilio REST servers securely with 0 costs.
+                </p>
               </div>
 
-              {/* Message Input */}
-              <div className="space-y-1">
-                <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">Standard Handshake Payload:</label>
-                <textarea
-                  value={testSmsMessage}
-                  onChange={(e) => setTestSmsMessage(e.target.value)}
-                  rows={2}
-                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none leading-normal"
-                />
-              </div>
-
-              {/* Sandbox dispatch trigger */}
-              <button
-                type="button"
-                onClick={handleSendHandshake}
-                disabled={isSendingHandshake || !testPhoneNumber || !twilioConfig.enabled}
-                className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold rounded-lg text-xs transition cursor-pointer select-none flex items-center justify-center gap-1.5"
-              >
-                {isSendingHandshake ? (
-                  <>
-                    <RefreshCw className="animate-spin text-white" size={13} />
-                    Processing Handshake...
-                  </>
-                ) : (
-                  <>
-                    <Send size={13} />
-                    Send Handshake SMS
-                  </>
-                )}
-              </button>
-
-              {/* Handshake Result Alert */}
-              {handshakeResult && (
-                <div className={`p-3 rounded-lg border text-[11px] leading-relaxed font-semibold ${
-                  handshakeResult.success 
+              {/* Diagnostic result logs display box */}
+              {twilioTestResult && (
+                <div className={`p-4 rounded-xl border transition-all ${
+                  twilioTestResult.success 
                     ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
                     : 'bg-rose-50 border-rose-200 text-rose-800'
                 }`}>
-                  <p className="font-bold">{handshakeResult.success ? '⚡ Dispatch Enqueued' : '❌ Gateway Rejected'}</p>
-                  <p className="mt-0.5">{handshakeResult.message}</p>
-                  {handshakeResult.sid && (
-                    <div className="mt-1 pt-1 border-t border-emerald-100 font-mono text-[9px] text-emerald-700 flex justify-between items-center">
-                      <span>Gateway SID:</span>
-                      <span className="font-bold">{handshakeResult.sid}</span>
+                  <div className="flex items-start gap-2.5">
+                    <div className="mt-0.5">
+                      {twilioTestResult.success ? (
+                        <CheckCircle className="text-emerald-600 flex-shrink-0" size={16} />
+                      ) : (
+                        <AlertTriangle className="text-rose-600 flex-shrink-0" size={16} />
+                      )}
                     </div>
-                  )}
+                    <div className="space-y-1 text-xs">
+                      <p className="font-bold leading-none">
+                        {twilioTestResult.success ? 'Credentials Validated Successfully' : 'Credentials Validation Failed'}
+                      </p>
+                      <p className="opacity-90 leading-normal">{twilioTestResult.message}</p>
+                      {twilioTestResult.success && (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-emerald-200/50 mt-2 font-mono text-[10px] font-bold">
+                          <div>
+                            <span className="opacity-75 uppercase block text-[8px] font-sans">Account Friendly Name:</span>
+                            <span className="text-slate-800">{twilioTestResult.accountName}</span>
+                          </div>
+                          <div>
+                            <span className="opacity-75 uppercase block text-[8px] font-sans">Account Status:</span>
+                            <span className="text-emerald-700 capitalize">{twilioTestResult.status}</span>
+                          </div>
+                          <div>
+                            <span className="opacity-75 uppercase block text-[8px] font-sans">Account Plan Type:</span>
+                            <span className="text-indigo-700 capitalize">{twilioTestResult.type}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
-          </div>
 
+            {/* Column B: Sandbox SMS dispatch (Right 5-spans) */}
+            <div className="lg:col-span-5 bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4">
+              <div className="pb-2 border-b border-slate-200">
+                <h4 className="text-[11px] font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                  <Smartphone className="text-indigo-600" size={14} /> Handshake SMS Sandbox
+                </h4>
+                <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                  Send a real system test SMS to confirm final cellular route delivery on hand.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {/* Destination Mobile Number */}
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">Recipient Mobile Number (E.164):</label>
+                  <input
+                    type="text"
+                    value={testPhoneNumber}
+                    onChange={(e) => setTestPhoneNumber(e.target.value)}
+                    placeholder="e.g. +233241234567"
+                    className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg bg-white font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+
+                {/* Message Input */}
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">Standard Handshake Payload:</label>
+                  <textarea
+                    value={testSmsMessage}
+                    onChange={(e) => setTestSmsMessage(e.target.value)}
+                    rows={2}
+                    className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none leading-normal"
+                  />
+                </div>
+
+                {/* Sandbox dispatch trigger */}
+                <button
+                  type="button"
+                  onClick={handleSendHandshake}
+                  disabled={isSendingHandshake || !testPhoneNumber || !twilioConfig.enabled}
+                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold rounded-lg text-xs transition cursor-pointer select-none flex items-center justify-center gap-1.5"
+                >
+                  {isSendingHandshake ? (
+                    <>
+                      <RefreshCw className="animate-spin text-white" size={13} />
+                      Processing Handshake...
+                    </>
+                  ) : (
+                    <>
+                      <Send size={13} />
+                      Send Handshake SMS
+                    </>
+                  )}
+                </button>
+
+                {/* Handshake Result Alert */}
+                {handshakeResult && (
+                  <div className={`p-3 rounded-lg border text-[11px] leading-relaxed font-semibold ${
+                    handshakeResult.success 
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+                      : 'bg-rose-50 border-rose-200 text-rose-800'
+                  }`}>
+                    <p className="font-bold">{handshakeResult.success ? '⚡ Dispatch Enqueued' : '❌ Gateway Rejected'}</p>
+                    <p className="mt-0.5">{handshakeResult.message}</p>
+                    {handshakeResult.sid && (
+                      <div className="mt-1 pt-1 border-t border-emerald-100 font-mono text-[9px] text-emerald-700 flex justify-between items-center">
+                        <span>Gateway SID:</span>
+                        <span className="font-bold">{handshakeResult.sid}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
         </div>
-      </div>
+      )}
 
       {/* DISPATCH HISTORY LOG TABLE */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">

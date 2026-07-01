@@ -1,18 +1,40 @@
-import React, { useState, useRef, ChangeEvent, FormEvent, useMemo } from 'react';
+import React, { useState, useRef, ChangeEvent, FormEvent, useMemo, useEffect } from 'react';
 import { 
   Student, ClassType, CLASSES, SectionType, SECTIONS, 
   AcademicYearType, ACADEMIC_YEARS, TermType, TERMS, UserRole,
-  BehavioralRemark
+  BehavioralRemark, SubjectType
 } from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, User, MapPin, PhoneCall, ShieldAlert, BadgeCheck, FileDown, RotateCcw, Eraser, Eye, FileSpreadsheet,
-  ChevronLeft, ChevronRight, IdCard, MessageSquare, AlertTriangle, Heart, Award, BookOpen
+  ChevronLeft, ChevronRight, IdCard, MessageSquare, AlertTriangle, Heart, Award, BookOpen, QrCode, Mail, Camera, Share2
 } from 'lucide-react';
+import CameraCapture from './CameraCapture';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { motion, AnimatePresence } from 'motion/react';
+import { QRCodeSVG } from 'qrcode.react';
+import { generateSecureToken, getWatermarkHtml, triggerToast } from '../utils';
+import { shareParentPortalWhatsApp } from '../App';
+
+const GHANA_CREST_SVG_SIMPLE = `
+<svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 250px; height: 250px; color: #000;">
+  <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" />
+  <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,32 L 68,32 C 68,32 68,58 50,74 C 32,58 32,32 32,32 Z" fill="none" stroke="currentColor" stroke-width="1.2" />
+  <path d="M 50,32 L 50,74" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,50 L 68,50" stroke="currentColor" stroke-width="0.6" />
+  <polygon points="50,45 52,49 57,49 53,52 55,56 50,54 45,56 47,52 43,49 48,49" fill="currentColor" opacity="0.6" />
+  <path d="M 53,36 L 65,36 L 65,46 L 53,46 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 53,41 L 65,41" stroke="currentColor" stroke-width="0.4" />
+  <line x1="41" y1="36" x2="41" y2="46" stroke="currentColor" stroke-width="1.2" />
+  <circle cx="41" cy="35" r="1.2" fill="currentColor" />
+  <path d="M 23,35 C 19,48 19,63 34,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 77,35 C 81,48 81,63 66,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 25,79 L 75,79 C 75,79 65,85 50,85 C 35,85 25,79 25,79 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+</svg>
+`;
 
 interface Props {
   theme: ThemeStyles;
@@ -24,7 +46,9 @@ interface Props {
   setSelectedYear?: (yr: AcademicYearType) => void;
   selectedTerm?: TermType;
   setSelectedTerm?: (tm: TermType) => void;
-  assignedClass?: ClassType | null;
+  assignedClass?: ClassType | 'None';
+  assignedClasses?: ClassType[];
+  assignedSubjects?: SubjectType[];
   userRole?: UserRole;
 }
 
@@ -42,6 +66,8 @@ const INITIAL_FORM: Partial<Student> = {
   guardianName: '',
   guardianTelephone: '',
   guardianOccupation: '',
+  guardianEmail: '',
+  email: '',
   residentialAddress: '',
   photoUrl: '',
   academicYear: '2026/2027',
@@ -58,27 +84,32 @@ export default function StudentsTab({
   setSelectedYear,
   selectedTerm,
   setSelectedTerm,
+  assignedClasses = [],
+  assignedSubjects = [],
   assignedClass,
   userRole
 }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClass, setSelectedClass] = useState<string>(() => {
-    return userRole === 'Teacher' ? (assignedClass || 'None') : 'All';
+    if (userRole === 'Teacher') {
+      return assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'None');
+    }
+    return 'All';
   });
   const [selectedSection, setSelectedSection] = useState<string>('All');
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (userRole === 'Teacher') {
-      setSelectedClass(assignedClass || 'None');
+      setSelectedClass(assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'None'));
     }
-  }, [assignedClass, userRole]);
+  }, [assignedClass, assignedClasses, userRole]);
   
   // Pagination states
   const [studentPage, setStudentPage] = useState(1);
   const [studentPageSize, setStudentPageSize] = useState(12);
 
   // Reset page when search or filters change
-  React.useEffect(() => {
+  useEffect(() => {
     setStudentPage(1);
   }, [searchTerm, selectedClass, selectedSection, selectedYear, selectedTerm]);
   
@@ -88,7 +119,59 @@ export default function StudentsTab({
   const [showFormModal, setShowFormModal] = useState(false);
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Enrollment confirmation & toast notice states
+  const [pendingStudent, setPendingStudent] = useState<Student | null>(null);
+  const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+    setToastMessage({ text, type });
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // QR Code states
+  const [selectedQrStudent, setSelectedQrStudent] = useState<Student | null>(null);
+  const [showQrModal, setShowQrModal] = useState(false);
+
+  // Bulk QR states
+  const [showBulkQrModal, setShowBulkQrModal] = useState(false);
+  const [bulkQrClassFilter, setBulkQrClassFilter] = useState<string>('All');
+  const [bulkQrSearch, setBulkQrSearch] = useState<string>('');
+  const [selectedBulkStudents, setSelectedBulkStudents] = useState<string[]>([]);
+  const [bulkQrFormat, setBulkQrFormat] = useState<'id_card' | 'sticker' | 'avery_label'>('id_card');
+  const [bulkQrCols, setBulkQrCols] = useState<number>(3);
+  const [includePortalToken, setIncludePortalToken] = useState<boolean>(true);
+
+  const handleOpenBulkQrModal = () => {
+    setBulkQrClassFilter('All');
+    setBulkQrSearch('');
+    setSelectedBulkStudents(students.map(s => s.id));
+    setShowBulkQrModal(true);
+  };
+
+  const filteredBulkStudents = useMemo(() => {
+    return students.filter(s => {
+      const matchesClass = bulkQrClassFilter === 'All' || s.class === bulkQrClassFilter;
+      const fullName = `${s.firstName || ''} ${s.middleName || ''} ${s.lastName || ''}`.toLowerCase();
+      const matchesSearch = !bulkQrSearch || 
+        fullName.includes(bulkQrSearch.toLowerCase()) || 
+        s.id.toLowerCase().includes(bulkQrSearch.toLowerCase());
+      return matchesClass && matchesSearch;
+    });
+  }, [students, bulkQrClassFilter, bulkQrSearch]);
+
+  const handlePrintBulkQrCodes = () => {
+    if (selectedBulkStudents.length === 0) {
+      alert("Please select at least one student to generate QR codes.");
+      return;
+    }
+    const printArea = document.getElementById('bulk-qr-print-area');
+    if (!printArea) return;
+
+    window.print();
+  };
 
   // ID Card states
   const [selectedIdCardStudent, setSelectedIdCardStudent] = useState<Student | null>(null);
@@ -417,13 +500,24 @@ export default function StudentsTab({
 
   // Filter students dynamically with academicYear and term support with high-performance memoization
   const filteredStudents = useMemo(() => {
+    const term = searchTerm?.toLowerCase() || '';
     return students.filter(std => {
-      const fullName = `${std.firstName} ${std.middleName || ''} ${std.lastName}`.toLowerCase();
-      const matchesSearch = fullName.includes(searchTerm.toLowerCase()) || std.id.includes(searchTerm);
+      if (!std) return false;
+      const fullName = `${std.firstName || ''} ${std.middleName || ''} ${std.lastName || ''}`.toLowerCase();
+      const matchesSearch = fullName.includes(term) || (std.id?.toLowerCase() || '').includes(term);
       
       let matchesClass = false;
       if (userRole === 'Teacher') {
-        matchesClass = std.class === assignedClass;
+        const teacherClasses = [...assignedClasses];
+        if (assignedClass && assignedClass !== 'None' && !teacherClasses.includes(assignedClass)) {
+          teacherClasses.push(assignedClass);
+        }
+        
+        if (teacherClasses.length === 0) {
+          matchesClass = false; // No access if no assignments
+        } else {
+          matchesClass = teacherClasses.includes(std.class);
+        }
       } else {
         matchesClass = selectedClass === 'All' || std.class === selectedClass;
       }
@@ -652,6 +746,8 @@ export default function StudentsTab({
       guardianName: formState.guardianName || '',
       guardianTelephone: formState.guardianTelephone || '',
       guardianOccupation: formState.guardianOccupation || '',
+      guardianEmail: formState.guardianEmail || '',
+      email: formState.email || '',
       residentialAddress: formState.residentialAddress || '',
       photoUrl: formState.photoUrl || '',
       academicYear: formState.academicYear || selectedYear || '2026/2027',
@@ -659,7 +755,25 @@ export default function StudentsTab({
       createdAt: formState.createdAt || new Date().toISOString()
     };
 
+    // Save immediately as requested
     DbController.saveStudent(payload);
+    onRefresh();
+    
+    if (isAutoSave) {
+      // Auto save feedback
+    } else {
+      onManualSave();
+    }
+
+    triggerToast(isEditing ? `Successfully updated student record for ${payload.firstName} ${payload.lastName}.` : `Successfully enrolled student ${payload.firstName} ${payload.lastName} and secured record with client-side AES encryption.`, "success");
+    setPendingStudent(null);
+    setShowFormModal(false);
+  };
+
+  const handleConfirmSave = () => {
+    // This is now integrated into handleSaveSubmit for immediate action
+    if (!pendingStudent) return;
+    DbController.saveStudent(pendingStudent);
     onRefresh();
     setShowFormModal(false);
     
@@ -668,6 +782,9 @@ export default function StudentsTab({
     } else {
       onManualSave();
     }
+
+    showToast(isEditing ? `Successfully updated student record for ${pendingStudent.firstName} ${pendingStudent.lastName}.` : `Successfully enrolled student ${pendingStudent.firstName} ${pendingStudent.lastName} and secured record with client-side AES encryption.`, "success");
+    setPendingStudent(null);
   };
 
   const [printBlocked, setPrintBlocked] = useState(false);
@@ -683,15 +800,124 @@ export default function StudentsTab({
   };
 
   const handlePrintIdCard = () => {
+    if (!selectedIdCardStudent) return;
+    const badgeElement = document.getElementById('student-id-card-print-area');
+    if (!badgeElement) {
+      try {
+        window.print();
+      } catch (e) {
+        console.warn("Direct print restricted inside sandbox iframe:", e);
+        setPrintBlocked(true);
+      }
+      return;
+    }
+
     try {
-      window.print();
+      // Open a clean blank tab for printing to bypass iframe restrictions
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        // Fallback if popup is blocked
+        window.print();
+        return;
+      }
+
+      // Extract all current styles from the main document to preserve Tailwind classes & custom styling perfectly
+      let stylesHtml = '';
+      const styleSheets = document.head.querySelectorAll('style, link[rel="stylesheet"]');
+      styleSheets.forEach((el) => {
+        stylesHtml += el.outerHTML;
+      });
+
+      const badgeHtml = badgeElement.outerHTML;
+
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>ID Badge - ${selectedIdCardStudent.firstName} ${selectedIdCardStudent.lastName}</title>
+            ${stylesHtml}
+            <style>
+              body {
+                margin: 0;
+                padding: 0;
+                background-color: #ffffff;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 100vh;
+                font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+              }
+              /* Center the badge card on print layout */
+              @media print {
+                @page {
+                  size: portrait;
+                  margin: 0;
+                }
+                body {
+                  background-color: #ffffff;
+                  min-height: auto;
+                  display: block;
+                  margin: 0;
+                  padding: 0;
+                }
+                #student-id-card-print-area {
+                  position: absolute;
+                  top: 50%;
+                  left: 50%;
+                  transform: translate(-50%, -50%) scale(1.1) !important;
+                  box-shadow: none !important;
+                  border: 1px solid #1e293b !important;
+                  border-radius: 12px !important;
+                  page-break-inside: avoid !important;
+                  page-break-after: avoid !important;
+                }
+              }
+            </style>
+          </head>
+          <body>
+            ${badgeHtml}
+            <script>
+              window.addEventListener('load', () => {
+                setTimeout(() => {
+                  window.focus();
+                  window.print();
+                  window.onafterprint = () => {
+                    window.close();
+                  };
+                }, 500);
+              });
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
     } catch (e) {
-      console.warn("Direct print restricted inside sandbox iframe:", e);
-      setPrintBlocked(true);
+      console.warn("Popup blocked or direct print restricted:", e);
+      try {
+        window.print();
+      } catch (err) {
+        setPrintBlocked(true);
+      }
     }
   };
 
-  if (userRole === 'Teacher' && !assignedClass) {
+  const handlePrintQrCode = () => {
+    if (!selectedQrStudent) return;
+    const qrElement = document.getElementById('student-qr-print-area');
+    if (!qrElement) return;
+
+    window.print();
+  };
+
+  const handleShareParentLinkWhatsApp = (student: any) => {
+    const yr = student.academicYear || selectedYear || '2026/2027';
+    const tm = student.term || selectedTerm || 'Term 1';
+    shareParentPortalWhatsApp(student, yr, tm);
+  };
+
+  const hasAnyAssignment = (assignedClasses.length > 0) || (assignedSubjects.length > 0) || (assignedClass && assignedClass !== 'None');
+
+  if (userRole === 'Teacher' && !hasAnyAssignment) {
     return (
       <div className="bg-amber-50/50 border border-amber-200 text-amber-800 p-8 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-12 shadow-sm">
         <ShieldAlert size={48} className="text-amber-500 mx-auto animate-bounce" />
@@ -793,6 +1019,13 @@ export default function StudentsTab({
             <Upload size={15} /> Bulk Import CSV
           </button>
           <button
+            onClick={handleOpenBulkQrModal}
+            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 border border-indigo-600 text-white hover:bg-indigo-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+            title="Generate and bulk-print student QR codes"
+          >
+            <QrCode size={15} /> Bulk QR Codes
+          </button>
+          <button
             onClick={() => setShowPdfGuide(!showPdfGuide)}
             className="flex items-center gap-1.5 px-3 py-2 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer"
           >
@@ -871,6 +1104,23 @@ export default function StudentsTab({
                   <span className="truncate">{std.guardianName || 'Guardian'}: {std.guardianTelephone}</span>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setSelectedQrStudent(std);
+                      setShowQrModal(true);
+                    }}
+                    className="p-1 hover:bg-emerald-50 hover:text-emerald-600 rounded text-slate-600 cursor-pointer transition"
+                    title="Generate QR Code Portal Link"
+                  >
+                    <QrCode size={12} />
+                  </button>
+                  <button
+                    onClick={() => handleShareParentLinkWhatsApp(std)}
+                    className="p-1 hover:bg-emerald-50 hover:text-emerald-600 rounded text-emerald-650 cursor-pointer transition"
+                    title="Share Parent Access Link via WhatsApp"
+                  >
+                    <Share2 size={12} />
+                  </button>
                   <button
                     onClick={() => handleOpenRemarks(std)}
                     className="p-1 hover:bg-amber-50 hover:text-amber-600 rounded text-slate-600 cursor-pointer transition"
@@ -1002,8 +1252,9 @@ export default function StudentsTab({
       )}
 
       {/* COMPACT PRINT-ONLY SHEET (Meets date of birth, section, status print requirements perfectly!) */}
-      <div className="hidden print:block font-sans max-w-6xl mx-auto p-4 bg-white text-black">
-        <div className="text-center pb-6 border-b-2 border-slate-900 mb-6">
+      <div className="hidden print:block font-sans max-w-6xl mx-auto p-4 bg-white text-black relative">
+        <div className="absolute inset-0 z-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(DbController.getSchoolInfo().crestUrl) }} />
+        <div className="text-center pb-6 border-b-2 border-slate-900 mb-6 relative z-10">
           <h1 className="text-2xl font-bold uppercase tracking-wide">
             {DbController.getSchoolInfo().name}
           </h1>
@@ -1127,6 +1378,13 @@ export default function StudentsTab({
                       className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded font-medium shadow-2xs transition flex items-center gap-1 cursor-pointer"
                     >
                       Use Image Link
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsCameraOpen(true)}
+                      className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded font-medium shadow-2xs transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <Camera size={13} /> Take Live Photo
                     </button>
                     {formState.photoUrl && (
                       <button
@@ -1313,7 +1571,7 @@ export default function StudentsTab({
               <div className="space-y-4 pt-1">
                 <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider pb-1 border-b border-slate-100">Guardian / Family Contacts</h4>
                 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                   <div>
                     <label className="block text-slate-600 font-medium mb-1">Guardian Full Name</label>
                     <input
@@ -1333,6 +1591,17 @@ export default function StudentsTab({
                       onChange={(e) => setFormState(prev => ({ ...prev, guardianTelephone: e.target.value }))}
                       className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none"
                       placeholder="Phone digits"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-600 font-medium mb-1">Guardian Email</label>
+                    <input
+                      type="email"
+                      value={formState.guardianEmail}
+                      onChange={(e) => setFormState(prev => ({ ...prev, guardianEmail: e.target.value, email: e.target.value }))}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none"
+                      placeholder="e.g. parent@email.com"
                     />
                   </div>
 
@@ -1427,10 +1696,26 @@ export default function StudentsTab({
             
             {/* Left: Document Live Preview */}
             <div className="flex-1 p-6 overflow-y-auto bg-slate-700 flex flex-col justify-between items-center space-y-4">
-              <span className="text-white text-xs font-mono tracking-widest uppercase opacity-70">Interactive Page Print Draft Preview</span>
+              <div className="text-center space-y-1 select-none">
+                <span className="text-amber-400 text-xs font-black tracking-wider uppercase block font-sans">
+                  Print Preview & Document Layout Align
+                </span>
+                <span className="text-white/60 text-[9px] font-sans block max-w-md">
+                  Optimize margins, branding, and paper size before submitting to printer
+                </span>
+              </div>
               
-              <div id="students-roster-preview-card" className="w-full max-w-[650px] aspect-[1.414/1] bg-white p-6 text-black border shadow-2xl text-[8px] space-y-3 font-sans rounded-none overflow-y-auto">
-                <div className="text-center pb-3 border-b-2 border-slate-800 mb-3">
+              <div id="students-roster-preview-card" className="relative w-full max-w-[650px] aspect-[1.414/1] bg-white p-6 text-black border shadow-2xl text-[8px] space-y-3 font-sans rounded-none overflow-y-auto">
+                {/* Transparent School Crest Watermark */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.045] z-0">
+                  {DbController.getSchoolInfo().crestUrl ? (
+                    <img src={DbController.getSchoolInfo().crestUrl} className="w-[280px] h-[280px] object-contain" alt="Watermark Crest" referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-[280px] h-[280px]" dangerouslySetInnerHTML={{ __html: GHANA_CREST_SVG_SIMPLE }} />
+                  )}
+                </div>
+
+                <div className="relative z-10 text-center pb-3 border-b-2 border-slate-800 mb-3">
                   <h3 className="text-xs font-bold uppercase tracking-wide text-stone-900">
                     {DbController.getSchoolInfo().name}
                   </h3>
@@ -2500,6 +2785,621 @@ export default function StudentsTab({
         </div>
       </div>
 
+      {/* STUDENT PORTAL QR CODE MODAL */}
+      <AnimatePresence>
+        {showQrModal && selectedQrStudent && (
+          <div 
+            onClick={() => setShowQrModal(false)}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print overflow-y-auto cursor-pointer font-sans"
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-[24px] border border-slate-200/50 shadow-2xl max-w-lg w-full overflow-hidden my-8 cursor-default"
+            >
+              <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5 leading-none">
+                    <QrCode className="text-emerald-600" size={18} />
+                    Individual Portal Access QR
+                  </h3>
+                  <p className="text-[10px] text-slate-400 mt-1">Scan to access private report card and fee payment portal</p>
+                </div>
+                <button
+                  onClick={() => setShowQrModal(false)}
+                  className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-650 transition cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-8 flex flex-col items-center space-y-6 text-center">
+                <div 
+                  id="student-qr-print-area"
+                  className="p-8 bg-white border border-slate-200 rounded-[32px] shadow-sm flex flex-col items-center space-y-4"
+                >
+                  <div className="text-center space-y-1">
+                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-tight">
+                      {selectedQrStudent.firstName} {selectedQrStudent.lastName}
+                    </h4>
+                    <p className="text-[10px] font-mono text-slate-500">ID: {selectedQrStudent.id} • {selectedQrStudent.class}</p>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-inner">
+                    <QRCodeSVG 
+                      value={(() => {
+                        const yr = selectedQrStudent.academicYear || selectedYear || '2026/2027';
+                        const tm = selectedQrStudent.term || selectedTerm || 'Term 1';
+                        const token = generateSecureToken(selectedQrStudent.id, yr, tm);
+                        return `${window.location.origin}/?studentId=${selectedQrStudent.id}&year=${encodeURIComponent(yr)}&term=${encodeURIComponent(tm)}&token=${token}&parentMode=true`;
+                      })()}
+                      size={200}
+                      level="H"
+                      includeMargin={true}
+                    />
+                  </div>
+
+                  <div className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full uppercase tracking-widest border border-emerald-100">
+                    Institutional Secure Access Portal
+                  </div>
+                </div>
+
+                <div className="space-y-2 w-full">
+                  <p className="text-xs text-slate-500 leading-relaxed px-4">
+                    This QR code provides direct access to the parent portal for <strong>{selectedQrStudent.firstName} {selectedQrStudent.lastName}</strong>. It is encrypted and unique to the current academic session.
+                  </p>
+                  
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex flex-col items-center space-y-2">
+                    <span className="text-[9px] uppercase font-black text-slate-400 tracking-widest">Portal Token</span>
+                    <code className="text-[11px] font-mono font-bold text-slate-800 bg-white px-3 py-1 rounded-lg border border-slate-200">
+                      {generateSecureToken(
+                        selectedQrStudent.id, 
+                        selectedQrStudent.academicYear || selectedYear || '2026/2027', 
+                        selectedQrStudent.term || selectedTerm || 'Term 1'
+                      )}
+                    </code>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowQrModal(false)}
+                  className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-500 font-bold rounded-xl transition cursor-pointer text-xs"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleShareParentLinkWhatsApp(selectedQrStudent)}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-xl shadow-md shadow-indigo-600/10 transition cursor-pointer text-xs flex items-center gap-2 active:scale-95"
+                >
+                  <Share2 size={14} /> Share via WhatsApp
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePrintQrCode}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-md shadow-emerald-600/10 transition cursor-pointer text-xs flex items-center gap-2 active:scale-95"
+                >
+                  <Printer size={14} /> Print QR Access Card
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Dynamic Feedback Toast */}
+      <AnimatePresence>
+        {toastMessage && (
+          <div className={`fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-xl text-white transition-all duration-300 transform translate-y-0 ${
+            toastMessage.type === 'success' ? 'bg-emerald-600' : 'bg-rose-600'
+          }`}>
+            <Check className="h-5 w-5 shrink-0" />
+            <span className="text-sm font-medium">{toastMessage.text}</span>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ENROLLMENT/SAVE CONFIRMATION MODAL */}
+      <AnimatePresence>
+        {pendingStudent && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setPendingStudent(null);
+            }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-50 no-print cursor-pointer"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-slate-900 font-sans cursor-default space-y-4"
+              id="student-enrollment-confirmation-modal"
+            >
+              <div className="flex flex-col items-center text-center space-y-3">
+                <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center text-emerald-600">
+                  <BadgeCheck size={28} />
+                </div>
+                
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide">
+                    {isEditing ? "Confirm Record Updates" : "Confirm Student Enrollment"}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {isEditing ? "Verify and confirm updates to this student profile:" : "Please verify the enrollment registry information below before finalizing:"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-2.5 text-xs">
+                <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
+                  <span className="text-slate-500 font-medium">Full Name</span>
+                  <span className="text-slate-800 font-semibold">{pendingStudent.firstName} {pendingStudent.middleName ? pendingStudent.middleName + ' ' : ''}{pendingStudent.lastName}</span>
+                </div>
+                <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
+                  <span className="text-slate-500 font-medium">Class Level</span>
+                  <span className="text-slate-800 font-semibold">{pendingStudent.class}</span>
+                </div>
+                <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
+                  <span className="text-slate-500 font-medium">Gender / Status</span>
+                  <span className="text-slate-800 font-semibold">{pendingStudent.gender} / {pendingStudent.status}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Date of Birth</span>
+                  <span className="text-slate-800 font-semibold">{pendingStudent.dateOfBirth}</span>
+                </div>
+              </div>
+
+              <div className="text-[10px] text-slate-400 bg-indigo-50/50 p-2 rounded-lg border border-indigo-100 text-center">
+                🛡️ This student record is secured using client-side AES-256 encryption.
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPendingStudent(null)}
+                  className="flex-1 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl font-bold font-sans text-xs transition cursor-pointer text-center bg-white"
+                >
+                  Go Back
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmSave}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold font-sans text-xs transition cursor-pointer text-center"
+                >
+                  Confirm & Save
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* BULK STUDENT QR CODES GENERATOR & PRINTER MODAL */}
+      <AnimatePresence>
+        {showBulkQrModal && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowBulkQrModal(false);
+            }}
+            className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print overflow-y-auto cursor-pointer font-sans"
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-slate-50 rounded-[28px] border border-slate-200/50 shadow-2xl max-w-6xl w-full flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200 overflow-hidden my-8 max-h-[90vh] cursor-default"
+            >
+              
+              {/* Left Configuration Panel */}
+              <div className="w-full md:w-[350px] p-6 bg-white flex flex-col justify-between overflow-y-auto select-none">
+                <div className="space-y-6">
+                  <div className="flex justify-between items-start border-b border-slate-100 pb-4">
+                    <div>
+                      <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5 leading-none">
+                        <QrCode className="text-indigo-600 animate-pulse" size={18} />
+                        Bulk QR Generator
+                      </h3>
+                      <p className="text-[10px] text-slate-400 mt-1">Bulk-generate secure parent portal QR access keys</p>
+                    </div>
+                  </div>
+
+                  {/* Format Selector */}
+                  <div className="space-y-2">
+                    <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Print Format Type</span>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setBulkQrFormat('id_card')}
+                        className={`py-2 px-1 text-[10px] font-bold rounded-xl border transition cursor-pointer text-center flex flex-col items-center gap-1 ${bulkQrFormat === 'id_card' ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-2 ring-indigo-500/10' : 'bg-slate-50/50 border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                      >
+                        <IdCard size={14} />
+                        <span>ID Card</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBulkQrFormat('sticker')}
+                        className={`py-2 px-1 text-[10px] font-bold rounded-xl border transition cursor-pointer text-center flex flex-col items-center gap-1 ${bulkQrFormat === 'sticker' ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-2 ring-indigo-500/10' : 'bg-slate-50/50 border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                      >
+                        <QrCode size={14} />
+                        <span>Sticker</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBulkQrFormat('avery_label');
+                          setBulkQrCols(3);
+                        }}
+                        className={`py-2 px-1 text-[10px] font-bold rounded-xl border transition cursor-pointer text-center flex flex-col items-center gap-1 ${bulkQrFormat === 'avery_label' ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-2 ring-indigo-500/10' : 'bg-slate-50/50 border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                        title="Print student contact info as Avery 5160 address labels"
+                      >
+                        <Mail size={14} />
+                        <span>Avery Label</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Filtering Controls */}
+                  <div className="space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Target Filter</span>
+                    
+                    {/* Class Filter */}
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-slate-500 block">Class Level</label>
+                      <select
+                        value={bulkQrClassFilter}
+                        onChange={(e) => setBulkQrClassFilter(e.target.value)}
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white font-medium"
+                      >
+                        <option value="All">All Classes ({students.length} Students)</option>
+                        {CLASSES.map(cls => {
+                          const count = students.filter(s => s.class === cls).length;
+                          return (
+                            <option key={cls} value={cls}>{cls} ({count})</option>
+                          );
+                        })}
+                      </select>
+                    </div>
+
+                    {/* Search Field */}
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-slate-500 block">Search Student</label>
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-2.5 text-slate-400" size={12} />
+                        <input
+                          type="text"
+                          value={bulkQrSearch}
+                          onChange={(e) => setBulkQrSearch(e.target.value)}
+                          placeholder="Search name or ID..."
+                          className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-hidden"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Print Parameters */}
+                  <div className="space-y-3">
+                    <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Print Options</span>
+                    
+                    {/* Grid Columns */}
+                    <div className="flex justify-between items-center bg-slate-50/50 p-3 rounded-xl border border-slate-150">
+                      <span className="text-xs font-semibold text-slate-700">Cards/Columns per Row</span>
+                      <select
+                        value={bulkQrCols}
+                        onChange={(e) => setBulkQrCols(Number(e.target.value))}
+                        className="text-xs px-2 py-1 border border-slate-200 rounded-lg bg-white font-bold text-slate-800"
+                      >
+                        <option value={2}>2 Columns</option>
+                        <option value={3}>3 Columns</option>
+                        <option value={4}>4 Columns</option>
+                      </select>
+                    </div>
+
+                    {/* Toggle Portal Code text */}
+                    <label className="flex items-center gap-2 px-3 py-2 bg-slate-50/50 rounded-xl border border-slate-150 cursor-pointer">
+                      <input 
+                        type="checkbox"
+                        checked={includePortalToken}
+                        onChange={(e) => setIncludePortalToken(e.target.checked)}
+                        className="rounded text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                      />
+                      <span className="text-xs font-semibold text-slate-700">Include parent secure token text</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-6 border-t border-slate-100">
+                  <div className="text-center">
+                    <span className="text-[10px] font-bold text-indigo-600">
+                      {selectedBulkStudents.length} of {filteredBulkStudents.length} Selected
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handlePrintBulkQrCodes}
+                    disabled={selectedBulkStudents.length === 0}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl font-bold font-sans text-xs transition cursor-pointer flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
+                  >
+                    <Printer size={16} />
+                    Trigger QR Code Printer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowBulkQrModal(false)}
+                    className="w-full py-2 border border-slate-250 text-slate-500 hover:bg-slate-50 rounded-xl font-bold font-sans text-xs transition cursor-pointer text-center bg-white"
+                  >
+                    Cancel / Exit
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Selection & Preview Layout */}
+              <div className="flex-1 p-6 overflow-y-auto flex flex-col justify-between max-h-[90vh]">
+                <div className="space-y-6">
+                  {/* Select Actions header */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                    <div>
+                      <h4 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider">Select Profiles ({filteredBulkStudents.length})</h4>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Toggle checkboxes below to filter print sheets</p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBulkStudents(filteredBulkStudents.map(s => s.id))}
+                        className="text-[10px] font-black text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50/50 px-2.5 py-1 rounded-lg border border-indigo-150 transition cursor-pointer bg-white"
+                      >
+                        Select All Filtered
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBulkStudents([])}
+                        className="text-[10px] font-black text-slate-500 hover:text-slate-600 hover:bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200 transition cursor-pointer bg-white"
+                      >
+                        Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Checklist of students */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-[220px] overflow-y-auto p-3 border border-slate-200/60 bg-white rounded-2xl shadow-inner">
+                    {filteredBulkStudents.length === 0 ? (
+                      <p className="text-xs text-slate-400 text-center col-span-full py-6">No matching students found with current filters.</p>
+                    ) : (
+                      filteredBulkStudents.map(student => {
+                        const isChecked = selectedBulkStudents.includes(student.id);
+                        return (
+                          <label 
+                            key={student.id} 
+                            className={`flex items-start gap-2 p-2 rounded-xl border cursor-pointer select-none transition ${isChecked ? 'bg-indigo-50/30 border-indigo-200 ring-1 ring-indigo-200/50' : 'bg-slate-50/50 border-slate-100 hover:bg-slate-50'}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {
+                                if (isChecked) {
+                                  setSelectedBulkStudents(prev => prev.filter(id => id !== student.id));
+                                } else {
+                                  setSelectedBulkStudents(prev => [...prev, student.id]);
+                                }
+                              }}
+                              className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5 shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <p className="text-[10.5px] font-black text-slate-800 leading-tight truncate">{student.firstName} {student.lastName}</p>
+                              <p className="text-[8.5px] font-mono font-medium text-slate-400 truncate mt-0.5">ID: {student.id}</p>
+                            </div>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Print Preview Canvas */}
+                  <div className="space-y-3">
+                    <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Live Print Canvas Preview</span>
+                    
+                    <div className="border border-slate-250 bg-slate-200 rounded-3xl p-6 shadow-inner max-h-[350px] overflow-y-auto">
+                      <div 
+                        id="bulk-qr-print-area" 
+                        className="grid gap-6 bg-white p-8 rounded-2xl w-full text-slate-900 font-sans"
+                        style={{
+                          gridTemplateColumns: `repeat(${bulkQrCols}, minmax(0, 1fr))`
+                        }}
+                      >
+                        {students.filter(s => selectedBulkStudents.includes(s.id)).map(student => {
+                          const yr = student.academicYear || selectedYear || '2026/2027';
+                          const tm = student.term || selectedTerm || 'Term 1';
+                          const token = generateSecureToken(student.id, yr, tm);
+                          const portalUrl = `${window.location.origin}/?studentId=${student.id}&year=${encodeURIComponent(yr)}&term=${encodeURIComponent(tm)}&token=${token}&parentMode=true`;
+
+                          if (bulkQrFormat === 'id_card') {
+                            return (
+                              <div 
+                                key={student.id} 
+                                className="qr-card-item bg-white text-slate-950 rounded-2xl border border-slate-300 shadow-sm flex flex-col justify-between overflow-hidden relative"
+                                style={{ minHeight: '380px' }}
+                              >
+                                {/* Header banner */}
+                                <div className="bg-indigo-950 text-white p-2 text-center relative overflow-hidden flex flex-col items-center justify-center min-h-[55px]">
+                                  <div className="relative z-10 flex items-center gap-1.5 max-w-[95%] justify-center">
+                                    {DbController.getSchoolInfo().logoUrl ? (
+                                      <img 
+                                        src={DbController.getSchoolInfo().logoUrl} 
+                                        alt="School Logo" 
+                                        className="w-5 h-5 object-contain rounded-full bg-white p-0.5"
+                                        referrerPolicy="no-referrer"
+                                      />
+                                    ) : (
+                                      <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[7px] font-bold text-white">SCH</div>
+                                    )}
+                                    <div className="text-left flex-1 min-w-0">
+                                      <h4 className="text-[7.5px] font-black uppercase tracking-wide truncate leading-tight">
+                                        {DbController.getSchoolInfo().name}
+                                      </h4>
+                                    </div>
+                                  </div>
+                                  <div className="absolute bottom-0 right-0 left-0 bg-amber-500 text-[5px] font-extrabold uppercase tracking-widest py-0.5 text-center text-slate-950 z-10">
+                                    Parent Portal Access Key
+                                  </div>
+                                </div>
+
+                                {/* Body */}
+                                <div className="flex-1 p-3 flex flex-col items-center justify-center space-y-2 relative z-10 bg-radial from-white to-slate-50/30">
+                                  {/* Student Photo or Icon */}
+                                  <div className="w-14 h-14 rounded-full border border-indigo-900 overflow-hidden bg-slate-100 flex items-center justify-center shadow-xs">
+                                    {student.photoUrl ? (
+                                      <img 
+                                        src={student.photoUrl} 
+                                        alt={`${student.firstName} Photo`} 
+                                        className="w-full h-full object-cover"
+                                        referrerPolicy="no-referrer"
+                                      />
+                                    ) : (
+                                      <User size={24} className="text-slate-350" />
+                                    )}
+                                  </div>
+
+                                  <div className="text-center">
+                                    <h3 className="text-[10px] font-black text-slate-900 tracking-tight leading-tight uppercase truncate max-w-[150px]">
+                                      {student.firstName} {student.lastName}
+                                    </h3>
+                                    <p className="text-[6.5px] font-mono font-bold text-indigo-700 tracking-wider mt-0.5">
+                                      ID: {student.id}
+                                    </p>
+                                    <p className="text-[7.5px] font-semibold text-slate-500 mt-0.5">
+                                      {student.class}
+                                    </p>
+                                  </div>
+
+                                  {/* QR Code Container */}
+                                  <div className="bg-white p-2 rounded-xl border border-slate-100 shadow-xs flex items-center justify-center">
+                                    <QRCodeSVG 
+                                      value={portalUrl}
+                                      size={100}
+                                      level="M"
+                                      includeMargin={true}
+                                    />
+                                  </div>
+                                </div>
+
+                                {/* Footer secure line */}
+                                {includePortalToken && (
+                                  <div className="p-2 bg-slate-50 border-t border-slate-150 flex flex-col items-center justify-center gap-0.5 text-center">
+                                    <span className="text-[5.5px] font-black text-slate-400 uppercase tracking-widest">SECURE ACCESS TOKEN</span>
+                                    <code className="text-[7px] font-mono font-bold text-slate-800 bg-white border border-slate-200 px-1 rounded truncate max-w-[150px]">
+                                      {token}
+                                    </code>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          } else if (bulkQrFormat === 'avery_label') {
+                            return (
+                              <div 
+                                key={student.id} 
+                                className="qr-card-item bg-white text-slate-950 rounded-lg border border-dashed border-slate-300 p-2.5 flex items-start gap-2 overflow-hidden text-left relative font-sans"
+                                style={{ height: '96px', maxHeight: '96px', boxSizing: 'border-box' }}
+                              >
+                                {/* Left: Minimal QR mailing locator */}
+                                <div className="shrink-0 bg-white p-1 rounded border border-slate-150 flex items-center justify-center">
+                                  <QRCodeSVG 
+                                    value={portalUrl}
+                                    size={45}
+                                    level="L"
+                                    includeMargin={false}
+                                  />
+                                </div>
+
+                                {/* Right: Address and mailing information */}
+                                <div className="min-w-0 flex-1 flex flex-col justify-between h-full select-all text-slate-800">
+                                  <div>
+                                    <div className="flex items-center justify-between gap-1 leading-none">
+                                      <p className="text-[9px] font-black text-slate-900 truncate uppercase">
+                                        {student.guardianName ? `TO: ${student.guardianName}` : 'TO: Parent / Guardian'}
+                                      </p>
+                                      <span className="text-[7px] bg-indigo-50 text-indigo-700 font-extrabold px-1 rounded-sm shrink-0 uppercase font-mono">
+                                        {student.class}
+                                      </span>
+                                    </div>
+                                    <p className="text-[7.5px] font-medium text-slate-500 leading-tight mt-0.5 truncate">
+                                      c/o {student.firstName} {student.lastName} {student.middleName ? `${student.middleName} ` : ''}(ID: {student.id})
+                                    </p>
+                                    <p className="text-[8px] font-bold text-slate-700 leading-tight mt-1 truncate">
+                                      {student.residentialAddress || 'No Residential Address Listed'}
+                                    </p>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[7px] text-slate-400 font-mono border-t border-slate-100 pt-1 leading-none">
+                                    <span className="truncate">Parent Portal QR Key</span>
+                                    <span className="font-bold text-slate-600">{student.guardianTelephone || 'No Contact Phone'}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          } else {
+                            {/* STICKER FORMAT */}
+                            return (
+                              <div 
+                                key={student.id} 
+                                className="qr-card-item bg-white text-slate-950 rounded-xl border border-slate-300 p-3.5 flex flex-col items-center justify-between text-center space-y-2 relative shadow-xs"
+                                style={{ minHeight: '220px' }}
+                              >
+                                <div className="space-y-0.5 min-w-0">
+                                  <h4 className="text-[10px] font-black text-slate-900 uppercase tracking-tight truncate leading-tight max-w-[150px]">
+                                    {student.firstName} {student.lastName}
+                                  </h4>
+                                  <p className="text-[7.5px] font-semibold text-slate-500">{student.class}</p>
+                                  <p className="text-[6px] font-mono text-slate-400 font-bold">ID: {student.id}</p>
+                                </div>
+
+                                <div className="bg-white p-1.5 rounded-lg border border-slate-100 shadow-inner flex items-center justify-center">
+                                  <QRCodeSVG 
+                                    value={portalUrl}
+                                    size={95}
+                                    level="M"
+                                    includeMargin={true}
+                                  />
+                                </div>
+
+                                {includePortalToken ? (
+                                  <div className="w-full flex flex-col items-center gap-0.5">
+                                    <span className="text-[5px] uppercase font-black text-slate-400 tracking-widest">Token Key</span>
+                                    <code className="text-[6.5px] font-mono font-black text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded truncate max-w-[140px]">
+                                      {token}
+                                    </code>
+                                  </div>
+                                ) : (
+                                  <span className="text-[5.5px] font-mono uppercase tracking-widest text-slate-400 font-bold">Scan to Access Portal</span>
+                                )}
+                              </div>
+                            );
+                          }
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {isCameraOpen && (
+        <CameraCapture 
+          onCapture={(url) => setFormState(prev => ({ ...prev, photoUrl: url }))} 
+          onClose={() => setIsCameraOpen(false)} 
+        />
+      )}
     </div>
   );
 }

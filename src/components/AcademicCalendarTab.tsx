@@ -506,6 +506,77 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
 
               <hr className="border-slate-800" />
 
+              {/* Sessions Duration Summary */}
+              <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800 space-y-3 text-left">
+                <span className="flex items-center gap-1.5 text-[10px] uppercase font-mono font-black text-indigo-400">
+                  <CalendarDays size={13} /> Academic Session Duration Summary
+                </span>
+                <p className="text-[11px] text-slate-300 font-sans leading-normal">
+                  Overview of the operational calendar timeline and term lengths for the current active academic year <strong className="text-amber-400 font-mono">{calendar.activeAcademicYear}</strong>:
+                </p>
+                <div className="space-y-2.5 text-[10px] font-sans">
+                  {(() => {
+                    const activeYCfg = calendar.years[calendar.activeAcademicYear];
+                    if (!activeYCfg) return null;
+                    
+                    const getDaysDifference = (startStr: string, endStr: string) => {
+                      const s = new Date(startStr);
+                      const e = new Date(endStr);
+                      const diffTime = Math.abs(e.getTime() - s.getTime());
+                      return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // inclusive
+                    };
+
+                    const totalYearDays = getDaysDifference(activeYCfg.startDate, activeYCfg.endDate);
+                    
+                    return (
+                      <div className="space-y-2.5">
+                        <div className="grid grid-cols-2 gap-2 bg-slate-900/40 p-2.5 rounded-lg border border-slate-850">
+                          <div>
+                            <span className="text-slate-500 block text-[9px] uppercase font-mono">Session Start</span>
+                            <span className="font-bold text-slate-200">{new Date(activeYCfg.startDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 block text-[9px] uppercase font-mono">Session End</span>
+                            <span className="font-bold text-slate-200">{new Date(activeYCfg.endDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                          </div>
+                          <div className="col-span-2 border-t border-slate-800 pt-1.5 mt-0.5 flex justify-between items-center text-slate-400 font-mono">
+                            <span>Total Year Length:</span>
+                            <strong className="text-indigo-300 font-bold text-[11px]">{totalYearDays} Days</strong>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <span className="text-slate-400 font-bold uppercase text-[9px] tracking-wider block font-mono">Active Terms Breakdown</span>
+                          {termsOptions.map(t => {
+                            const tDates = activeYCfg.terms[t];
+                            if (!tDates) return null;
+                            const termDays = getDaysDifference(tDates.startDate, tDates.endDate);
+                            const isCurrent = calendar.activeTerm === t;
+                            
+                            return (
+                              <div key={t} className={`flex items-center justify-between p-2 rounded-lg border ${isCurrent ? 'bg-indigo-950/20 border-indigo-900/40 text-indigo-200' : 'bg-slate-900/20 border-slate-850 text-slate-450'}`}>
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${isCurrent ? 'bg-indigo-400' : 'bg-slate-600'}`} />
+                                  <span className="font-bold text-slate-300">{t} Duration</span>
+                                </div>
+                                <div className="text-right">
+                                  <span className="font-mono font-bold text-slate-200">{termDays} Days</span>
+                                  <span className="block text-[8px] text-slate-500 font-mono">
+                                    {new Date(tDates.startDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - {new Date(tDates.endDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              <hr className="border-slate-800" />
+
               <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800 space-y-2">
                 <span className="flex items-center gap-1 text-[10px] uppercase font-mono font-bold text-amber-500">
                   <Info size={12} /> Expiry Bounds Impact

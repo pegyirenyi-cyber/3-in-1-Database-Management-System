@@ -1,40 +1,68 @@
-import { useState, useEffect, FormEvent, useMemo, ReactNode, DragEvent } from 'react';
+import React, { useState, useEffect, FormEvent, useMemo, ReactNode, DragEvent, useCallback } from 'react';
 import { 
   SchoolInfo, Student, Teacher, UserAccount, UserRole, ThemeType,
-  AcademicYearType, TermType, WebAuthnCredential
+  AcademicYearType, TermType, WebAuthnCredential, AttendanceRecord, StudentAssessment, TeacherReflection
 } from './types';
 import { DbController } from './db';
 import { onAuthStateChanged } from 'firebase/auth';
 import { THEME_CONFIGS, ThemeStyles } from './components/ThemeWrapper';
 import DeveloperStatus from './components/DeveloperStatus';
 // @ts-ignore
-import developerLogo from './assets/images/developer_logo_1781333279532.jpg';
-import SchoolProfileTab from './components/SchoolProfileTab';
-import ParentPortal from './components/ParentPortal';
+import geetechLogo from './assets/images/geetech_new_logo_1782900372763.jpg';
+const SchoolProfileTab = React.lazy(() => import('./components/SchoolProfileTab'));
+const ParentPortal = React.lazy(() => import('./components/ParentPortal'));
 import { generateSecureToken } from './utils';
-import StudentsTab from './components/StudentsTab';
-import TeachersTab from './components/TeachersTab';
-import AttendanceTab from './components/AttendanceTab';
-import AssessmentTab from './components/AssessmentTab';
-import SettingsTab from './components/SettingsTab';
-import SchoolFeesTab from './components/SchoolFeesTab';
-import DashboardSummaryTab from './components/DashboardSummaryTab';
-import CommunicationsTab from './components/CommunicationsTab';
-import AcademicCalendarTab from './components/AcademicCalendarTab';
-import EmisTab from './components/EmisTab';
-import PaystackManagementTab from './components/PaystackManagementTab';
+
+// WhatsApp sharing utility as requested
+export const shareParentPortalWhatsApp = (student: Student, year: string, term: string) => {
+  const token = generateSecureToken(student.id, year, term);
+  const parentUrl = `${window.location.origin}/?studentId=${student.id}&year=${encodeURIComponent(year)}&term=${encodeURIComponent(term)}&token=${token}&parentMode=true`;
+  
+  const message = `Hello ${student.guardianName || 'Guardian'},\n\n` +
+    `Here is the secure Parent Portal link for *${student.firstName} ${student.lastName}* (${student.id}) to securely view and download the:\n` +
+    `• *Official Term Report Card*\n` +
+    `• *School Fees Statement & Payment Receipts*\n` +
+    `• *Academic Performance Analytics & Remarks*\n\n` +
+    `Access Link: ${parentUrl}\n\n` +
+    `Thank you.`;
+
+  let formattedPhone = (student.guardianTelephone || '').trim().replace(/[\s\-\(\)\+]/g, '');
+  if (formattedPhone.startsWith('0') && formattedPhone.length === 10) {
+    formattedPhone = '233' + formattedPhone.substring(1);
+  }
+  
+  const whatsappUrl = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
+  window.open(whatsappUrl, '_blank');
+};
+
+const StudentsTab = React.lazy(() => import('./components/StudentsTab'));
+const TeachersTab = React.lazy(() => import('./components/TeachersTab'));
+const AttendanceTab = React.lazy(() => import('./components/AttendanceTab'));
+const AssessmentTab = React.lazy(() => import('./components/AssessmentTab'));
+const SettingsTab = React.lazy(() => import('./components/SettingsTab'));
+const SchoolFeesTab = React.lazy(() => import('./components/SchoolFeesTab'));
+const DashboardSummaryTab = React.lazy(() => import('./components/DashboardSummaryTab'));
+const TeacherDashboardTab = React.lazy(() => import('./components/TeacherDashboardTab'));
+const CommunicationsTab = React.lazy(() => import('./components/CommunicationsTab'));
+const AcademicCalendarTab = React.lazy(() => import('./components/AcademicCalendarTab'));
+const EmisTab = React.lazy(() => import('./components/EmisTab'));
+const PaystackManagementTab = React.lazy(() => import('./components/PaystackManagementTab'));
+const AdminDashboardTab = React.lazy(() => import('./components/AdminDashboardTab'));
 import { evaluateSubscription } from './subscription';
 import SubscriptionLockModal from './components/SubscriptionLockModal';
+import { PrintPreviewModal } from './components/PrintPreviewModal';
+import QuickSearchModal from './components/QuickSearchModal';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Landmark, Users, UserCheck, CalendarCheck, FileSpreadsheet, Settings, 
   LogOut, ShieldAlert, Lock, Mail, User, BookOpen, GraduationCap, Sparkles, Coins, RotateCcw,
   ChevronDown, MoreHorizontal, TrendingUp, Power, Smartphone, CalendarDays, Menu, X, ClipboardCheck,
-  CreditCard, Fingerprint, Check, Save, Database, GripVertical
+  CreditCard, Fingerprint, Check, Save, Database, GripVertical, Eye, EyeOff, Search, Share, RefreshCw
 } from 'lucide-react';
 
 const AVAILABLE_TABS = [
   { id: 'dashboard', label: 'Dashboard Summary', icon: TrendingUp, refresh: true },
+  { id: 'admin_dashboard', label: 'Admin Panel', icon: ShieldAlert, refresh: false },
   { id: 'school_profile', label: 'School Profile', icon: Landmark, refresh: false },
   { id: 'calendar', label: 'Academic Calendar', icon: CalendarDays, refresh: false },
   { id: 'students', label: 'Student Profiles', icon: Users, refresh: false },
@@ -48,21 +76,15 @@ const AVAILABLE_TABS = [
   { id: 'settings', label: 'System Controls', icon: Settings, refresh: false }
 ];
 
-export default function App() {
+
+function AppContent() {
   // Global Session Identity State
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(DbController.getCurrentUser());
   
-  const isAdmin = currentUser?.role === 'Admin' || currentUser?.email.toLowerCase().trim() === 'pegyirenyi@gmail.com';
-  const visibleTabs = AVAILABLE_TABS.filter(tab => {
-    if (currentUser?.role === 'Teacher') {
-      return ['dashboard', 'students', 'attendance', 'assessments', 'calendar'].includes(tab.id);
-    }
-    if (tab.id === 'paystack') return isAdmin;
-    return true;
-  });
-
   const subscriptionStatus = currentUser ? evaluateSubscription(currentUser) : null;
   const [isFirebaseChecking, setIsFirebaseChecking] = useState(DbController.isFirebaseEnabled());
+
+  const isAdmin = currentUser?.role === 'Admin';
 
   // Parent Access Portal State
   const [parentPortalState, setParentPortalState] = useState<{
@@ -96,29 +118,219 @@ export default function App() {
   const [schoolInfo, setSchoolInfo] = useState<SchoolInfo>(DbController.getSchoolInfo());
   const [students, setStudents] = useState<Student[]>(DbController.getStudents());
   const [teachers, setTeachers] = useState<Teacher[]>(DbController.getTeachers());
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>(DbController.getAllAttendance());
+  const [assessments, setAssessments] = useState<StudentAssessment[]>(DbController.getAssessments());
+  const [reflections, setReflections] = useState<TeacherReflection[]>(DbController.getTeacherReflections());
 
-  const assignedClass = useMemo(() => {
+  const teacherProfile = useMemo(() => {
     if (!currentUser || currentUser.role !== 'Teacher') return null;
-    const teacherProfile = teachers.find(
-      t => t.email?.toLowerCase().trim() === currentUser.email.toLowerCase().trim()
-    );
-    return teacherProfile?.assignedClass && teacherProfile.assignedClass !== 'None' 
-      ? teacherProfile.assignedClass 
-      : null;
+    const teachersList = Array.isArray(teachers) ? teachers : [];
+    const userEmail = currentUser.email?.toLowerCase().trim();
+    if (!userEmail) return null;
+    return teachersList.find(
+      t => t.email?.toLowerCase().trim() === userEmail
+    ) || null;
   }, [currentUser, teachers]);
+
+  const assignedClasses = useMemo(() => {
+    const classesList: string[] = [];
+    if (teacherProfile) {
+      if (Array.isArray(teacherProfile.assignedClasses)) {
+        classesList.push(...teacherProfile.assignedClasses);
+      }
+      if (
+        teacherProfile.assignedClass && 
+        teacherProfile.assignedClass !== 'None' && 
+        !classesList.includes(teacherProfile.assignedClass)
+      ) {
+        classesList.push(teacherProfile.assignedClass);
+      }
+    }
+    return classesList;
+  }, [teacherProfile]);
+
+  const assignedSubjects = useMemo(() => {
+    if (!teacherProfile || !Array.isArray(teacherProfile.assignedSubjects)) return [];
+    return teacherProfile.assignedSubjects;
+  }, [teacherProfile]);
+
+  const visibleTabs = useMemo(() => {
+    const classes = Array.isArray(assignedClasses) ? assignedClasses : [];
+    const subjects = Array.isArray(assignedSubjects) ? assignedSubjects : [];
+
+    return AVAILABLE_TABS.filter(tab => {
+      if (subscriptionStatus && subscriptionStatus.isLocked) {
+        return tab.id === 'settings';
+      }
+      if (currentUser?.role === 'Teacher') {
+        const hasAssignments = classes.length > 0 || subjects.length > 0;
+        const allowedTabs = ['dashboard', 'students', 'attendance', 'assessments'];
+        if (hasAssignments) {
+          allowedTabs.push('calendar');
+        }
+        return allowedTabs.includes(tab.id);
+      }
+      if (tab.id === 'admin_dashboard') return isAdmin;
+      if (tab.id === 'paystack') return isAdmin;
+      return true;
+    }).map(tab => {
+      if (subscriptionStatus && subscriptionStatus.isLocked && tab.id === 'settings') {
+        return { ...tab, label: 'Buy Subscription / Renewal' };
+      }
+      return tab;
+    });
+  }, [subscriptionStatus, currentUser, assignedClasses, assignedSubjects, isAdmin]);
 
   // Settings & Customization
   const [activeTheme, setActiveTheme] = useState<ThemeType>('Sophisticated Dark');
   const [isAutoSave, setIsAutoSave] = useState<boolean>(true);
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      return q.get('tab') || 'dashboard';
+    } catch {
+      return 'dashboard';
+    }
+  });
+  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers'>('general');
+  const [showBillingEvenIfLocked, setShowBillingEvenIfLocked] = useState<boolean>(false);
   const [selectedYear, setSelectedYear] = useState<AcademicYearType>('2026/2027');
   const [selectedTerm, setSelectedTerm] = useState<TermType>('Term 1');
   const [isMoreDropdownOpen, setIsMoreDropdownOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
 
   // Drag and Drop Tab Reordering State & Handlers
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [tabOrder, setTabOrder] = useState<string[]>([]);
+
+  // Global Advanced Print Preview System State
+  const [globalPrintPreview, setGlobalPrintPreview] = useState<{
+    isOpen: boolean;
+    elementId?: string;
+    customHtml?: string;
+    documentTitle: string;
+    isLandscape?: boolean;
+  }>({
+    isOpen: false,
+    documentTitle: 'Academic Document',
+  });
+
+  // Sync state if subscription is locked
+  useEffect(() => {
+    if (subscriptionStatus && subscriptionStatus.isLocked) {
+      setActiveTab('settings');
+      setSettingsSubTab('billing');
+    }
+  }, [subscriptionStatus]);
+
+  // Intercept all print requests in the app and route to custom Print Preview Modal
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'sms_user') {
+        // We no longer force reload for sms_user changes to allow multiple users in different tabs
+        // via partitioned sessionStorage.
+        return;
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  // Periodic cross-device background sync
+  useEffect(() => {
+    if (!currentUser || !navigator.onLine) return;
+    
+    // Sync immediately on login/online
+    DbController.syncAllDataFromFirebase().catch(e => console.warn("Initial background sync failed:", e));
+    
+    const interval = setInterval(() => {
+      if (navigator.onLine) {
+        DbController.syncAllDataFromFirebase().catch(e => console.warn("Periodic background sync failed:", e));
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+    
+    return () => clearInterval(interval);
+  }, [currentUser]);
+
+  useEffect(() => {
+    const originalPrint = window.print;
+    
+    window.print = () => {
+      // List of all print areas across the application
+      const printTargets = [
+        { id: 'teacher-registry-print-area', title: 'Faculty & Staff Register', landscape: true },
+        { id: 'teachers-roster-preview-card', title: 'Staff Directory Mini-Draft', landscape: true },
+        { id: 'students-roster-preview-card', title: 'Student Directory Roster', landscape: true },
+        { id: 'assessment-roster-preview-landscape', title: 'Academic Assessment Gradebook', landscape: true },
+        { id: 'fee-receipt-print-area', title: 'Official Payment Receipt', landscape: false },
+        { id: 'fee-ledger-print-area', title: 'Student Financial Ledger Statement', landscape: false },
+        { id: 'fees-reminder-notice-canvas', title: 'GES Academic Payment Reminder', landscape: false },
+        { id: 'school-profile-print-area', title: 'School Official Profile Document', landscape: false },
+        { id: 'school-profile-preview-card', title: 'School Official Profile Document', landscape: false },
+        { id: 'student-id-card-print-area', title: 'Student Identification Badge', landscape: false },
+        { id: 'student-qr-print-area', title: 'Student Portal Access QR Code', landscape: false },
+        { id: 'bulk-qr-print-area', title: 'Bulk Student Portal Access Keys', landscape: false },
+        { id: 'emis-census-print-area', title: 'GES EMIS Official Census Report', landscape: false },
+        { id: 'attendance-roster-print-area', title: 'Class Attendance Roster', landscape: false },
+      ];
+
+      let foundTargetId: string | undefined = undefined;
+      let foundTitle = 'School Official Document';
+      let foundLandscape = false;
+      let foundHtml = '';
+
+      for (const target of printTargets) {
+        if (target.id) {
+          const el = document.getElementById(target.id);
+          if (el && el.innerHTML.trim().length > 0) {
+            foundTargetId = target.id;
+            foundTitle = target.title;
+            foundLandscape = target.landscape;
+            break;
+          }
+        }
+      }
+
+      // Check class selectors if ID is not found (like single or bulk report cards)
+      if (!foundTargetId) {
+        const reportCardBulk = document.querySelector('.bulk-report-card-print-page');
+        if (reportCardBulk && reportCardBulk.innerHTML.trim().length > 0) {
+          // If bulk reports exist, grab all of them
+          const pages = document.querySelectorAll('.bulk-report-card-print-page');
+          const wrapper = document.createElement('div');
+          pages.forEach(p => {
+            const clone = p.cloneNode(true) as HTMLElement;
+            clone.classList.remove('hidden', 'print:block');
+            wrapper.appendChild(clone);
+          });
+          foundHtml = wrapper.innerHTML;
+          foundTitle = 'Bulk Student Report Cards';
+          foundLandscape = false;
+        } else {
+          const reportCardSingle = document.querySelector('.report-card-print-container');
+          if (reportCardSingle && reportCardSingle.innerHTML.trim().length > 0) {
+            foundHtml = reportCardSingle.outerHTML;
+            foundTitle = 'Student Terminal Report Card';
+            foundLandscape = false;
+          }
+        }
+      }
+
+      // Trigger the custom high-fidelity layout preview modal
+      setGlobalPrintPreview({
+        isOpen: true,
+        elementId: foundTargetId,
+        customHtml: foundHtml || undefined,
+        documentTitle: foundTitle,
+        isLandscape: foundLandscape
+      });
+    };
+
+    return () => {
+      window.print = originalPrint;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -175,21 +387,16 @@ export default function App() {
   const CurrentActiveIcon = currentActiveTab.icon;
 
   // Login & Registration state for both Local and secure full-stack Firebase Authentication
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [loginRole, setLoginRole] = useState<UserRole>('Headteacher');
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
+  const [showRegPassword, setShowRegPassword] = useState(false);
   const [regRole, setRegRole] = useState<UserRole>('Headteacher');
   const [authError, setAuthError] = useState<ReactNode | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
-  const [googleNewUser, setGoogleNewUser] = useState<UserAccount | null>(null);
-  const [googleSelectedRole, setGoogleSelectedRole] = useState<UserRole>('Headteacher');
   const [wipeSuccessMessage, setWipeSuccessMessage] = useState<string | null>(null);
   const [isExited, setIsExited] = useState(false);
-  const [showEmailLogin, setShowEmailLogin] = useState(false);
 
   // Password Reset modal states
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
@@ -209,36 +416,136 @@ export default function App() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [printNotification, setPrintNotification] = useState<string | null>(null);
 
+  // Contact Support Modal states
+  const [isContactModalOpen, setIsContactModalOpen] = useState(false);
+  const [isContactSubmitting, setIsContactSubmitting] = useState(false);
+  const [contactForm, setContactForm] = useState({ nameRole: '', contactInfo: '', description: '' });
+
+  // === GLOBAL TOAST NOTIFICATION SYSTEM ===
+  interface Toast {
+    id: string;
+    text: string;
+    type: 'success' | 'error' | 'info';
+  }
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  
+  // === ACTIVE SESSION SECURITY WATCHDOG ===
+  // Ensures that if an admin deletes a user, that user is immediately kicked out
+  useEffect(() => {
+    if (!currentUser) return;
+    
+    // Hardcoded root admin accounts are completely immune to security revocation
+    const userEmail = currentUser?.email?.toLowerCase().trim() || '';
+    const isRootAdmin = false;
+      
+    if (isRootAdmin || !userEmail) return;
+    
+    let failureCount = 0;
+    
+    // Check if user still exists in database
+    const checkUserPersistence = () => {
+      try {
+        const allUsers = DbController.getRegisteredUsers();
+        
+        // If users list is empty or only contains the default admin fallback account,
+        // it means the database is still initializing, syncing, or in a fallback state.
+        // We do not revoke sessions during this transient state.
+        if (allUsers.length > 1) {
+          const stillExists = allUsers.some(u => 
+            u.uid === currentUser.uid || 
+            u.email.toLowerCase().trim() === currentUser.email.toLowerCase().trim()
+          );
+          
+          if (!stillExists) {
+            failureCount++;
+            // Require 5 consecutive failures (almost 2 minutes) to avoid transient logout on heavy storage writes
+            if (failureCount >= 5) {
+              console.warn("Security Watchdog: User not found in directory. Revoking session.");
+              showToast('Your session has been terminated by a system administrator.', 'error');
+              setTimeout(() => handleLogout(), 2500);
+            }
+          } else {
+            failureCount = 0; 
+          }
+        }
+      } catch (err) {
+        console.warn("Security Watchdog: Check failed", err);
+      }
+    };
+
+    // Run check periodically (every 25 seconds)
+    const interval = setInterval(checkUserPersistence, 25000);
+    
+    return () => {
+      clearInterval(interval);
+    };
+  }, [currentUser]);
+
+  const showToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { id, text, type }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4000);
+  };
+
+  useEffect(() => {
+    const handleToastEvent = (e: any) => {
+      if (e.detail && typeof e.detail.text === 'string') {
+        showToast(e.detail.text, e.detail.type || 'success');
+      }
+    };
+    window.addEventListener('app-toast' as any, handleToastEvent);
+
+    // Capture standard window.alert calls and route them through the beautiful toast system
+    const originalAlert = window.alert;
+    window.alert = (message: string) => {
+      const lower = message.toLowerCase();
+      let type: 'success' | 'error' | 'info' = 'info';
+      if (
+        lower.includes('error') || 
+        lower.includes('fail') || 
+        lower.includes('invalid') || 
+        lower.includes('unauthorized') || 
+        lower.includes('blocked') || 
+        lower.includes('suspended') || 
+        lower.includes('exhausted') ||
+        lower.includes('insufficient') ||
+        lower.includes('deficit')
+      ) {
+        type = 'error';
+      } else if (
+        lower.includes('success') || 
+        lower.includes('saved') || 
+        lower.includes('updated') || 
+        lower.includes('registered') || 
+        lower.includes('cleared') || 
+        lower.includes('populated') || 
+        lower.includes('received') || 
+        lower.includes('🎉') ||
+        lower.includes('complete') ||
+        lower.includes('enrolled')
+      ) {
+        type = 'success';
+      }
+      showToast(message, type);
+    };
+
+    return () => {
+      window.removeEventListener('app-toast' as any, handleToastEvent);
+      window.alert = originalAlert;
+    };
+  }, []);
+
   // Connection status & offline sync queue monitors
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
-  // --- MANUAL SAVE & TAB RELOAD STATES ---
+  // --- MANUAL SAVE STATES ---
   const [isManualSaving, setIsManualSaving] = useState(false);
   const [manualSaveStep, setManualSaveStep] = useState(0);
-  const [isTabReloading, setIsTabReloading] = useState(false);
-  const [showRefreshFeedback, setShowRefreshFeedback] = useState(false);
-
-  const handleReloadActiveTab = async () => {
-    setIsTabReloading(true);
-    try {
-      if (isOnline && DbController.isFirebaseEnabled()) {
-        await DbController.syncAllDataFromFirebase();
-      }
-      refreshAllLogs();
-      setShowRefreshFeedback(true);
-      setTimeout(() => {
-        setShowRefreshFeedback(false);
-      }, 3500);
-    } catch (error) {
-      console.warn("Error reloading tab data:", error);
-    } finally {
-      setTimeout(() => {
-        setIsTabReloading(false);
-      }, 850);
-    }
-  };
 
   const handleManualSaveProgress = async () => {
     setIsManualSaving(true);
@@ -398,14 +705,15 @@ export default function App() {
             const remoteProfile = await DbController.getFirebaseUserProfile(firebaseUser.uid);
             if (remoteProfile) {
               setCurrentUser(remoteProfile);
-              localStorage.setItem('sms_user', JSON.stringify(remoteProfile));
+              // We do not set localStorage here to avoid triggering reloads in other tabs
+              // and to allow multi-user session isolation per tab.
             } else {
               // Create default fallback profile
               const fallback: UserAccount = {
                 uid: firebaseUser.uid,
                 email: firebaseUser.email || '',
                 name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
-                role: 'Headteacher',
+                role: (firebaseUser.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com') ? 'Admin' : 'Teacher',
                 createdAt: new Date().toISOString()
               };
               await DbController.saveGoogleProfile(fallback);
@@ -433,6 +741,40 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Automatic Scheduled Backup background checking task
+  useEffect(() => {
+    try {
+      DbController.performScheduledBackupCheck();
+    } catch (e) {
+      console.warn("Scheduled backup startup check error:", e);
+    }
+
+    const interval = setInterval(() => {
+      try {
+        DbController.performScheduledBackupCheck();
+      } catch (e) {
+        console.warn("Scheduled backup check error:", e);
+      }
+    }, 300000); // 5 minutes checking interval
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Keyboard Shortcut listener for Quick-Search modal (Ctrl+K or Cmd+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key?.toLowerCase() === 'k') {
+        const isAdmin = currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher';
+        if (isAdmin) {
+          e.preventDefault();
+          setIsSearchOpen(prev => !prev);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentUser]);
+
   // Background-sync Firestore ledger data if user state changes after auth ready
   useEffect(() => {
     if (currentUser && DbController.isFirebaseEnabled() && !isFirebaseChecking) {
@@ -447,27 +789,143 @@ export default function App() {
     }
   }, [currentUser, isFirebaseChecking]);
 
-  const refreshAllLogs = () => {
+  const refreshAllLogs = useCallback(() => {
     setSchoolInfo(DbController.getSchoolInfo());
     setStudents(DbController.getStudents());
     setTeachers(DbController.getTeachers());
+    setAttendance(DbController.getAllAttendance());
+    setAssessments(DbController.getAssessments());
+    setReflections(DbController.getTeacherReflections());
     const config = DbController.getSystemSettings();
     setActiveTheme(config.theme || 'Sophisticated Dark');
     setIsAutoSave(true);
-  };
+  }, []);
+
+  const handleShare = useCallback(() => {
+    if (navigator.share) {
+      navigator.share({
+        title: 'GEETECH Multimedia System',
+        url: window.location.href,
+      }).catch((err) => console.error('Error sharing:', err));
+    } else {
+      alert('Sharing is not supported in your browser.');
+    }
+  }, []);
+
+  const prevAssignmentsRef = React.useRef<{ classes: string[]; subjects: string[] } | null>(null);
+
+  // Monitor teacher class/subject assignments for real-time alert notifications
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'Teacher' || !teacherProfile) {
+      prevAssignmentsRef.current = null;
+      return;
+    }
+
+    const currentClasses = [...assignedClasses].sort();
+    const currentSubjects = [...assignedSubjects].sort();
+
+    if (prevAssignmentsRef.current === null) {
+      // First load, just record the initial state
+      prevAssignmentsRef.current = { classes: currentClasses, subjects: currentSubjects };
+      return;
+    }
+
+    const classesChanged = JSON.stringify(prevAssignmentsRef.current.classes) !== JSON.stringify(currentClasses);
+    const subjectsChanged = JSON.stringify(prevAssignmentsRef.current.subjects) !== JSON.stringify(currentSubjects);
+
+    if (classesChanged || subjectsChanged) {
+      const classListText = currentClasses.length > 0 ? currentClasses.join(', ') : 'None';
+      const subjectListText = currentSubjects.length > 0 ? currentSubjects.join(', ') : 'None';
+
+      showToast(
+        `🔔 REAL-TIME ASSIGNMENT RECEIVED!\n\nThe Headteacher has updated your academic assignments in real-time:\n\n• Assigned Classes: ${classListText}\n• Assigned Subjects: ${subjectListText}`,
+        'info'
+      );
+
+      // Play a subtle notification sound
+      try {
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+        oscillator.frequency.setValueAtTime(880, audioCtx.currentTime + 0.1); // A5
+        gainNode.gain.setValueAtTime(0.08, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+        oscillator.start(audioCtx.currentTime);
+        oscillator.stop(audioCtx.currentTime + 0.45);
+      } catch (e) {
+        // AudioContext browser restrictions
+      }
+
+      prevAssignmentsRef.current = { classes: currentClasses, subjects: currentSubjects };
+    }
+  }, [currentUser, teacherProfile, assignedClasses, assignedSubjects]);
+
+  // Listen for real-time synchronization updates across tabs and windows
+  useEffect(() => {
+    const handleSyncMessage = (eventData: { type: string; payload: any }) => {
+      console.log(`[Real-time Sync Channel] Event Received:`, eventData.type);
+
+      // Clear memory cache so it retrieves fresh values from localStorage
+      DbController.clearCache();
+
+      // Trigger re-fetch of datasets in App.tsx
+      refreshAllLogs();
+    };
+
+    // Handler for local custom window events
+    const handleLocalSyncEvent = (e: any) => {
+      if (e.detail) {
+        handleSyncMessage(e.detail);
+      }
+    };
+
+    // Handler for cross-tab BroadcastChannel events
+    let broadcastChannel: BroadcastChannel | null = null;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        broadcastChannel = new BroadcastChannel('school-system-realtime-channel');
+        broadcastChannel.onmessage = (e) => {
+          if (e.data) {
+            handleSyncMessage(e.data);
+          }
+        };
+      }
+    } catch (err) {
+      console.warn("[Real-time Sync] BroadcastChannel init error:", err);
+    }
+
+    // Handler for fallback StorageEvents (cross-tab localstorage changes)
+    const handleStorageSyncEvent = (e: StorageEvent) => {
+      if (e.key === 'sms_teachers' || e.key === 'sms_users_list') {
+        DbController.clearCache();
+        refreshAllLogs();
+      }
+    };
+
+    window.addEventListener('school-system-sync' as any, handleLocalSyncEvent);
+    window.addEventListener('storage', handleStorageSyncEvent);
+
+    return () => {
+      window.removeEventListener('school-system-sync' as any, handleLocalSyncEvent);
+      window.removeEventListener('storage', handleStorageSyncEvent);
+      if (broadcastChannel) {
+        broadcastChannel.close();
+      }
+    };
+  }, [refreshAllLogs]);
 
   const handleResetAndClear = () => {
     // Clear all fields State
-    setLoginEmail('');
-    setLoginPassword('');
-    setLoginRole('Headteacher');
     setIsRegisterMode(false);
     setRegName('');
     setRegEmail('');
     setRegPassword('');
     setRegRole('Headteacher');
     setAuthError(null);
-    setGoogleNewUser(null);
     
     // Clear the active session and trigger storage wipe
     DbController.clearAllData();
@@ -487,32 +945,30 @@ export default function App() {
     }, 6000);
   };
 
-  const handleLoginSubmit = async (e: FormEvent) => {
+  const handleContactSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!loginEmail) return;
-    setAuthError(null);
-    setAuthLoading(true);
+    if (isContactSubmitting) return;
 
-    try {
-      if (DbController.isFirebaseEnabled()) {
-        const account = await DbController.firebaseLogin(loginEmail, loginPassword);
-        setCurrentUser(account);
-        DbController.syncAllDataFromFirebase().then(() => {
-          refreshAllLogs();
-        }).catch(err => {
-          console.warn("Post-login sync error:", err);
-        });
-      } else {
-        const account = DbController.login(loginEmail, loginRole);
-        setCurrentUser(account);
-      }
-      refreshAllLogs();
-    } catch (err: any) {
-      console.error(err);
-      setAuthError(err.message || "Invalid credentials. Please verify your email and password.");
-    } finally {
-      setAuthLoading(false);
-    }
+    setIsContactSubmitting(true);
+    const adminEmail = "pegyirenyi@gmail.com";
+    const subject = encodeURIComponent(`Support Request from ${contactForm.nameRole}`);
+    const body = encodeURIComponent(
+      `Name/Role: ${contactForm.nameRole}\n` +
+      `Contact Info: ${contactForm.contactInfo}\n\n` +
+      `Description of Issue/Request:\n${contactForm.description}`
+    );
+    const mailtoUrl = `mailto:${adminEmail}?subject=${subject}&body=${body}`;
+    
+    // Launch mail client
+    window.location.href = mailtoUrl;
+
+    // Small delay to allow UI to show loading and then close
+    setTimeout(() => {
+      setIsContactModalOpen(false);
+      setIsContactSubmitting(false);
+      setContactForm({ nameRole: '', contactInfo: '', description: '' });
+      showToast("Opening your default mail client...", "success");
+    }, 800);
   };
 
   // === BIOMETRICS AUTHENTICATION TRIGGERS ===
@@ -614,6 +1070,13 @@ export default function App() {
     e.preventDefault();
     if (!regName || !regEmail) return;
     setAuthError(null);
+
+    const passwordRegex = /^(?=.*[0-9])(?=.*[!@#$%^&*.,])[a-zA-Z0-9!@#$%^&*.,]{8,}$/;
+    if (!passwordRegex.test(regPassword)) {
+      setAuthError("Password must be at least 8 characters long, include numbers and special characters.");
+      return;
+    }
+
     setAuthLoading(true);
 
     try {
@@ -676,16 +1139,16 @@ export default function App() {
     setAuthLoading(true);
     try {
       const result = await DbController.firebaseGoogleLogin();
-      if (result.isNew) {
-        setGoogleNewUser(result.user);
-      } else {
-        setCurrentUser(result.user);
-        DbController.syncAllDataFromFirebase().then(() => {
-          refreshAllLogs();
-        }).catch(err => {
-          console.warn("Post-Google sync error:", err);
-        });
-      }
+      const finalUser = result.isNew 
+        ? await DbController.saveGoogleProfile(result.user) 
+        : result.user;
+      
+      setCurrentUser(finalUser);
+      DbController.syncAllDataFromFirebase().then(() => {
+        refreshAllLogs();
+      }).catch(err => {
+        console.warn("Post-Google sync error:", err);
+      });
     } catch (err: any) {
       console.error(err);
       if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
@@ -701,100 +1164,13 @@ export default function App() {
     }
   };
 
-  const handleMicrosoftLogin = async () => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      const result = await DbController.firebaseMicrosoftLogin();
-      if (result.isNew) {
-        setGoogleNewUser(result.user);
-      } else {
-        setCurrentUser(result.user);
-        DbController.syncAllDataFromFirebase().then(() => {
-          refreshAllLogs();
-        }).catch(err => {
-          console.warn("Post-Microsoft sync error:", err);
-        });
-      }
-    } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
-        setAuthError(renderUnauthorizedDomainError());
-      } else {
-        setAuthError(
-          err.message || 
-          "Sign in with Microsoft cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
-        );
-      }
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const handleAppleLogin = async () => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      const result = await DbController.firebaseAppleLogin();
-      if (result.isNew) {
-        setGoogleNewUser(result.user);
-      } else {
-        setCurrentUser(result.user);
-        DbController.syncAllDataFromFirebase().then(() => {
-          refreshAllLogs();
-        }).catch(err => {
-          console.warn("Post-Apple sync error:", err);
-        });
-      }
-    } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
-        setAuthError(renderUnauthorizedDomainError());
-      } else {
-        setAuthError(
-          err.message || 
-          "Sign in with Apple cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
-        );
-      }
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const handleConfirmGoogleRole = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!googleNewUser) return;
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      const assignedRole: UserRole = googleNewUser.email.toLowerCase().trim() === 'pegyirenyi@gmail.com' ? 'Admin' : 'Headteacher';
-      const finalizedUser = {
-        ...googleNewUser,
-        role: assignedRole
-      };
-      const account = await DbController.saveGoogleProfile(finalizedUser);
-      setCurrentUser(account);
-      setGoogleNewUser(null);
-      DbController.syncAllDataFromFirebase().then(() => {
-        refreshAllLogs();
-      }).catch(err => {
-        console.warn("Post-confirm-role sync error:", err);
-      });
-    } catch (err: any) {
-      console.error(err);
-      setAuthError(err.message || "Failed to provision Google account details.");
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
   const handleLogout = () => {
     DbController.logout();
     setCurrentUser(null);
   };
 
   // Get active branding styles
-  const themeStyles = THEME_CONFIGS[activeTheme];
+  const themeStyles = THEME_CONFIGS[activeTheme] || THEME_CONFIGS['Sophisticated Dark'];
 
   if (isExited) {
     return (
@@ -833,19 +1209,21 @@ export default function App() {
   // Parent Access Secure Portal override
   if (parentPortalState.isActive) {
     return (
-      <ParentPortal 
-        studentId={parentPortalState.studentId}
-        year={parentPortalState.year}
-        term={parentPortalState.term}
-        token={parentPortalState.token}
-        onExit={() => {
-          setParentPortalState({ isActive: false, studentId: '', year: '', term: '', token: '' });
-          if (typeof window !== 'undefined') {
-            const cleanUrl = window.location.origin + window.location.pathname;
-            window.history.replaceState({}, document.title, cleanUrl);
-          }
-        }}
-      />
+      <React.Suspense fallback={<div className="p-8 flex justify-center w-full"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>}>
+        <ParentPortal 
+          studentId={parentPortalState.studentId}
+          year={parentPortalState.year}
+          term={parentPortalState.term}
+          token={parentPortalState.token}
+          onExit={() => {
+            setParentPortalState({ isActive: false, studentId: '', year: '', term: '', token: '' });
+            if (typeof window !== 'undefined') {
+              const cleanUrl = window.location.origin + window.location.pathname;
+              window.history.replaceState({}, document.title, cleanUrl);
+            }
+          }}
+        />
+      </React.Suspense>
     );
   }
 
@@ -860,19 +1238,15 @@ export default function App() {
         <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl relative z-10 space-y-6 fade-in text-slate-100">
           
           <div className="text-center space-y-1.5">
-            <div className="relative w-20 h-20 rounded-2xl border border-slate-700/85 overflow-hidden mx-auto mb-3.5 bg-slate-850 flex items-center justify-center shadow-lg">
+            <div className="relative w-32 h-32 rounded-3xl border border-slate-700/50 overflow-hidden mx-auto mb-6 bg-white flex items-center justify-center shadow-2xl p-2">
               <img 
-                src={developerLogo} 
+                src={geetechLogo} 
                 alt="GEETECH MULTIMEDIA Logo" 
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  const target = e.currentTarget;
-                  target.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'><rect width='80' height='80' fill='%230f172a' stroke='%2338bdf8' stroke-width='2' rx='16'/><text x='40' y='46' font-size='24' text-anchor='middle' fill='%2338bdf8' font-family='monospace'>GT</text></svg>";
-                }}
+                className="w-full h-full object-contain"
               />
             </div>
-            <h1 className="text-lg font-display font-black tracking-tight uppercase text-amber-400">GEETECH MULTIMEDIA</h1>
-            <p className="text-xs text-slate-400 font-mono">All in 1 School Database & Assessment Center</p>
+            <h1 className="text-2xl font-display font-black tracking-tight text-white mb-1">GEETECH MULTIMEDIA</h1>
+            <p className="text-xs text-slate-500 font-mono uppercase tracking-widest">Innovative Solutions, Creative Media</p>
           </div>
 
           {authError && (
@@ -894,56 +1268,7 @@ export default function App() {
           )}
 
           <AnimatePresence mode="wait">
-            {googleNewUser ? (
-              // STEP: Google Role Assignment Form
-              <motion.form
-                key="google-role-form"
-                initial={{ opacity: 0, y: 5 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -5 }}
-                onSubmit={handleConfirmGoogleRole}
-                className="space-y-4 text-xs"
-              >
-                <div className="space-y-2">
-                  <div className="p-3.5 bg-indigo-950/20 border border-indigo-900/30 rounded-xl space-y-1">
-                    <div className="text-[10px] text-indigo-400 font-mono tracking-wider uppercase font-bold">Google Session Authenticated</div>
-                    <div className="text-sm font-bold text-slate-100">{googleNewUser.name}</div>
-                    <div className="text-[11px] text-slate-400 font-mono">{googleNewUser.email}</div>
-                  </div>
-                  
-                  <div className="text-slate-300 leading-relaxed">
-                    Welcome! To provision your account credentials and initialize synchronization, your access role has been configured automatically:
-                  </div>
-                </div>
-
-                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                  <span className="block text-[10px] text-slate-400 uppercase font-mono mb-1">Administrative Access Role</span>
-                  {googleNewUser.email.toLowerCase().trim() === 'pegyirenyi@gmail.com' ? (
-                    <div className="text-indigo-400 font-bold text-sm">System Administrator Level</div>
-                  ) : (
-                    <div className="text-teal-400 font-bold text-sm">Headteacher Level Role</div>
-                  )}
-                </div>
-
-                <button 
-                  type="submit"
-                  disabled={authLoading}
-                  className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 text-white font-bold rounded-xl transition shadow-md cursor-pointer active:translate-y-0.5 disabled:opacity-50 text-xs"
-                >
-                  {authLoading ? "Initializing Sync..." : "Confirm & Launch System Setup"}
-                </button>
-
-                <div className="text-center pt-1">
-                  <button 
-                    type="button" 
-                    onClick={() => setGoogleNewUser(null)}
-                    className="text-slate-500 hover:text-slate-300 transition underline text-[11px]"
-                  >
-                    Cancel Setup
-                  </button>
-                </div>
-              </motion.form>
-            ) : !isRegisterMode ? (
+            {!isRegisterMode ? (
               // STEP: Standard / Firebase Login form
               <motion.div 
                 key="login-form"
@@ -952,13 +1277,60 @@ export default function App() {
                 exit={{ opacity: 0, y: -5 }}
                 className="space-y-4 text-xs"
               >
-                {!showEmailLogin ? (
-                  /* Standard / Professional View: Google Login is Primary */
-                  <div className="space-y-5">
-                    <div className="text-center text-slate-400 pb-2 text-[11px] leading-relaxed">
-                      Select a professional authentication method to securely manage your school profiles, grades, and fee records.
-                    </div>
+                {DbController.isFirebaseEnabled() ? (
+                  <button 
+                    type="button"
+                    onClick={handleGoogleLogin}
+                    disabled={authLoading}
+                    className="w-full py-3.5 bg-white hover:bg-slate-100 text-slate-900 border border-slate-200 rounded-xl transition-all shadow-md flex items-center justify-center gap-2.5 font-bold text-xs cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+                  >
+                    <svg className="w-4.5 h-4.5 flex-shrink-0" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22c-.62-.06-1.19-.28-1.68-.63z"/>
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53 z"/>
+                    </svg>
+                    <span>Login with Google</span>
+                  </button>
+                ) : (
+                  <div className="text-center text-xs text-amber-500 font-semibold p-4 bg-amber-500/10 rounded-xl">
+                    Firebase is offline. Google Login unavailable.
+                  </div>
+                )}
 
+                <div className="pt-2 flex flex-col gap-3">
+                  <button 
+                    type="button"
+                    onClick={handleBiometricLoginTrigger}
+                    disabled={authLoading}
+                    className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold rounded-xl transition shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 text-xs border border-slate-700"
+                  >
+                    <Fingerprint size={14} className="text-indigo-400" />
+                    <span>Login with Biometric Key</span>
+                  </button>
+
+                  <button 
+                    type="button"
+                    onClick={() => setIsExited(true)}
+                    className="w-full py-2.5 bg-rose-950/20 hover:bg-rose-950/30 text-rose-400 hover:text-rose-350 border border-rose-900/30 rounded-xl transition font-semibold flex items-center justify-center gap-1.5 cursor-pointer text-xs"
+                  >
+                    <Power size={11} />
+                    <span>Exit Platform</span>
+                  </button>
+                </div>
+
+
+              </motion.div>
+            ) : (
+              <motion.div
+                key="register-form"
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -5 }}
+                className="space-y-4 text-xs"
+              >
+                {DbController.isFirebaseEnabled() && (
+                  <>
                     <button 
                       type="button"
                       onClick={handleGoogleLogin}
@@ -971,171 +1343,20 @@ export default function App() {
                         <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22c-.62-.06-1.19-.28-1.68-.63z"/>
                         <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53 z"/>
                       </svg>
-                      <span>Login from Google Account</span>
+                      <span>Sign Up with Google</span>
                     </button>
-
-                    <button 
-                      type="button"
-                      onClick={handleBiometricLoginTrigger}
-                      disabled={authLoading}
-                      className="w-full py-3.5 bg-gradient-to-r from-violet-600 via-indigo-600 to-indigo-700 hover:from-violet-700 hover:via-indigo-700 hover:to-indigo-800 text-white rounded-xl transition-all shadow-md flex items-center justify-center gap-2.5 font-black text-xs cursor-pointer disabled:opacity-50 active:scale-[0.99] border border-indigo-500/30"
-                    >
-                      <Fingerprint size={16} className="text-white animate-pulse" />
-                      <span>🔑 One-Click Biometric Login</span>
-                    </button>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <button 
-                        type="button"
-                        onClick={handleMicrosoftLogin}
-                        disabled={authLoading}
-                        className="py-2.5 bg-[#252526] hover:bg-[#2d2d30] text-slate-100 border border-slate-800 rounded-xl transition-all flex items-center justify-center gap-2 font-semibold text-xs cursor-pointer disabled:opacity-50 active:scale-[0.98]"
-                      >
-                        <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 23 23">
-                          <path fill="#F25022" d="M1 1h10v10H1z"/>
-                          <path fill="#7FBA00" d="M12 1h10v10H12z"/>
-                          <path fill="#00A4EF" d="M1 12h10v10H1z"/>
-                          <path fill="#FFB900" d="M12 12h10v10H12z"/>
-                        </svg>
-                        <span>Microsoft</span>
-                      </button>
-
-                      <button 
-                        type="button"
-                        onClick={handleAppleLogin}
-                        disabled={authLoading}
-                        className="py-2.5 bg-black hover:bg-zinc-900 text-white border border-zinc-850 rounded-xl transition-all flex items-center justify-center gap-2 font-semibold text-xs cursor-pointer disabled:opacity-50 active:scale-[0.98]"
-                      >
-                        <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.54 9.103 1.51 12.06 1.01 1.454 2.187 3.078 3.766 3.017 1.524-.06 2.099-.982 3.937-.982 1.829 0 2.355.982 3.937.95 1.612-.027 2.651-1.464 3.634-2.9 1.137-1.656 1.61-3.255 1.636-3.337-.035-.013-3.14-1.201-3.175-4.786-.03-2.985 2.444-4.417 2.557-4.482-1.4-2.047-3.56-2.277-4.327-2.333-1.879-.153-3.754 1.149-4.708 1.149V6.896zm2.348-4.815c.8-1.002 1.341-2.08 1.189-3.081-.883.037-1.954.588-2.587 1.334-.541.62-.997 1.72-.818 2.709.98.077 1.979-.475 2.416-.962z"/>
-                        </svg>
-                        <span>Apple ID</span>
-                      </button>
-                    </div>
 
                     <div className="relative flex items-center justify-center py-2">
                       <div className="absolute inset-x-0 h-px bg-slate-800/60" />
-                      <span className="relative px-3 bg-slate-900 text-slate-500 font-mono text-[9px] uppercase tracking-widest leading-none">or</span>
+                      <span className="relative px-3 bg-slate-900 text-slate-500 font-mono text-[9px] uppercase tracking-widest leading-none">or email</span>
                     </div>
-
-                    <button 
-                      type="button"
-                      onClick={() => setShowEmailLogin(true)}
-                      className="w-full py-3 bg-slate-950 hover:bg-slate-900 text-slate-200 border border-slate-800/80 rounded-xl transition flex items-center justify-center gap-2 font-medium text-xs cursor-pointer active:scale-[0.99]"
-                    >
-                      <Mail size={14} className="text-slate-400" />
-                      <span>Login in with other Email Account</span>
-                    </button>
-
-                    <div className="flex justify-center pt-2">
-                      <button 
-                        type="button"
-                        onClick={() => setIsExited(true)}
-                        className="py-2 px-4 bg-rose-950/20 hover:bg-rose-950/30 text-rose-400 hover:text-rose-350 border border-rose-900/30 rounded-xl transition font-semibold flex items-center justify-center gap-1.5 cursor-pointer text-[10px]"
-                      >
-                        <Power size={11} />
-                        <span>Exit Platform</span>
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  /* Secondary View: Clean email login inputs */
-                  <form onSubmit={handleLoginSubmit} className="space-y-4">
-                    <div>
-                      <label className="block text-slate-400 font-semibold mb-1">Email Address</label>
-                      <div className="relative">
-                        <Mail className="absolute left-3 top-2.5 text-slate-600" size={15} />
-                        <input 
-                          type="email" 
-                          required
-                          placeholder="e.g. name@domain.com"
-                          value={loginEmail}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setLoginEmail(val);
-                            if (val.toLowerCase().trim() === 'pegyirenyi@gmail.com') {
-                              setLoginRole('Admin');
-                            } else {
-                              setLoginRole('Headteacher');
-                            }
-                          }}
-                          className="w-full pl-9 pr-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono text-xs"
-                        />
-                      </div>
-                    </div>
-
-                    {DbController.isFirebaseEnabled() && (
-                      <div>
-                        <div className="flex justify-between items-center mb-1">
-                          <label className="block text-slate-400 font-semibold">Password</label>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setResetEmail(loginEmail);
-                              setResetError(null);
-                              setResetSuccess(null);
-                              setIsResetModalOpen(true);
-                            }}
-                            className="text-[10px] text-indigo-400 hover:text-indigo-300 hover:underline font-bold transition cursor-pointer"
-                          >
-                            Forgot Password?
-                          </button>
-                        </div>
-                        <div className="relative">
-                          <Lock className="absolute left-3 top-2.5 text-slate-600" size={15} />
-                          <input 
-                            type="password" 
-                            required
-                            placeholder="••••••••"
-                            value={loginPassword}
-                            onChange={(e) => setLoginPassword(e.target.value)}
-                            className="w-full pl-9 pr-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono text-xs"
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-3 pt-2">
-                      <button 
-                        type="submit"
-                        disabled={authLoading}
-                        className="py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white font-bold rounded-xl transition shadow-md cursor-pointer active:translate-y-0.5 disabled:opacity-50 text-xs"
-                      >
-                        {authLoading ? "Initializing..." : "Confirm Login"}
-                      </button>
-
-                      <button 
-                        type="button"
-                        onClick={() => setShowEmailLogin(false)}
-                        className="py-2.5 bg-slate-950 hover:bg-slate-900 text-slate-350 hover:text-white border border-slate-850 rounded-xl transition font-medium flex items-center justify-center gap-1.5 cursor-pointer text-xs"
-                      >
-                        <span>Back to Google</span>
-                      </button>
-                    </div>
-                  </form>
+                  </>
                 )}
 
-                <div className="text-center pt-2">
-                  <span className="text-slate-500">Need another administrative account? </span>
-                  <button 
-                    type="button" 
-                    onClick={() => { setIsRegisterMode(true); setAuthError(null); }}
-                    className="text-indigo-400 hover:underline font-bold"
-                  >
-                    Register here
-                  </button>
-                </div>
-              </motion.div>
-            ) : (
-              // STEP: Registration Form
-              <motion.form 
-                key="register-form"
-                initial={{ opacity: 0, y: 5 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -5 }}
-                onSubmit={handleRegisterSubmit} 
-                className="space-y-4 text-xs"
-              >
+                <form 
+                  onSubmit={handleRegisterSubmit} 
+                  className="space-y-4"
+                >
                 <div>
                   <label className="block text-slate-400 font-semibold mb-1">Account Full Name</label>
                   <div className="relative">
@@ -1163,11 +1384,7 @@ export default function App() {
                       onChange={(e) => {
                         const val = e.target.value;
                         setRegEmail(val);
-                        if (val.toLowerCase().trim() === 'pegyirenyi@gmail.com') {
-                          setRegRole('Admin');
-                        } else {
-                          setRegRole('Headteacher');
-                        }
+                        setRegRole('Headteacher');
                       }}
                       className="w-full pl-9 pr-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
                     />
@@ -1180,13 +1397,21 @@ export default function App() {
                     <div className="relative">
                       <Lock className="absolute left-3 top-2.5 text-slate-600" size={15} />
                       <input 
-                        type="password" 
+                        type={showRegPassword ? "text" : "password"} 
                         required
                         placeholder="••••••••"
                         value={regPassword}
                         onChange={(e) => setRegPassword(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                        className="w-full pl-9 pr-10 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowRegPassword(!showRegPassword)}
+                        className="absolute right-3 top-2 text-slate-600 hover:text-slate-400 transition cursor-pointer"
+                        title={showRegPassword ? "Hide password" : "Show password"}
+                      >
+                        {showRegPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
                     </div>
                   </div>
                 )}
@@ -1199,23 +1424,6 @@ export default function App() {
                   >
                     {authLoading ? "Provisioning System Setup..." : "Create and Provision Account"}
                   </button>
-
-                  {DbController.isFirebaseEnabled() && (
-                    <button 
-                      type="button"
-                      onClick={handleGoogleLogin}
-                      disabled={authLoading}
-                      className="w-full py-2.5 bg-slate-950 hover:bg-slate-900 text-slate-100 hover:text-white border border-slate-850 rounded-xl transition flex items-center justify-center gap-2 font-bold cursor-pointer disabled:opacity-50"
-                    >
-                      <svg className="w-4 h-4" viewBox="0 0 24 24">
-                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22c-.62-.06-1.19-.28-1.68-.63z"/>
-                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53 z"/>
-                      </svg>
-                      Sign Up with Google
-                    </button>
-                  )}
                 </div>
 
                 <div className="text-center pt-2">
@@ -1228,14 +1436,15 @@ export default function App() {
                     Login here
                   </button>
                 </div>
-              </motion.form>
+                </form>
+              </motion.div>
             )}
           </AnimatePresence>
 
           <div className="pt-4 border-t border-slate-800 text-center font-mono text-[10px] text-slate-500">
             <div>
               <p>EGYIRENYI PAUL | GEETECH MULTIMEDIA</p>
-              <p>pegiyrenyi@gmail.com | 0544052717</p>
+              <p>+233 544 052 717 | pegyirenyi@gmail.com | © 2026</p>
             </div>
           </div>
         </div>
@@ -1444,12 +1653,14 @@ export default function App() {
             </motion.div>
           </div>
         )}
+
+
       </div>
     );
   }
 
   // License Authorization & Renewal Check Gate (locks app if subscription expired/expiring)
-  if (subscriptionStatus && subscriptionStatus.isLocked) {
+  if (subscriptionStatus && subscriptionStatus.isLocked && !showBillingEvenIfLocked) {
     return (
       <SubscriptionLockModal 
         user={currentUser}
@@ -1457,6 +1668,11 @@ export default function App() {
           setCurrentUser(updatedUser);
         }}
         onLogout={handleLogout}
+        onShowBilling={() => {
+          setSettingsSubTab('billing');
+          setActiveTab('settings');
+          setShowBillingEvenIfLocked(true);
+        }}
       />
     );
   }
@@ -1486,6 +1702,148 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Contact Support Modal Overlay */}
+      {isContactModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4 text-slate-100 relative"
+          >
+            <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                  <Mail size={16} />
+                </div>
+                <h3 className="font-bold text-slate-200">Contact Support</h3>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setIsContactModalOpen(false)}
+                className="text-slate-500 hover:text-slate-300 transition text-sm font-bold border-0 bg-transparent cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleContactSubmit} className="space-y-4 text-xs font-sans">
+              <p className="text-slate-400 leading-normal font-sans">
+                Submit an issue or request to our technical team.
+              </p>
+
+              <div className="space-y-1 text-left">
+                <label className="block text-slate-400 font-semibold mb-1">Your Name / Role</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="e.g. John Doe (Teacher)"
+                  value={contactForm.nameRole}
+                  onChange={(e) => setContactForm({ ...contactForm, nameRole: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm"
+                />
+              </div>
+
+              <div className="space-y-1 text-left">
+                <label className="block text-slate-400 font-semibold mb-1">Contact Number / Email</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="e.g. john@example.com or +233..."
+                  pattern="^([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[+]?[\d\s-]{9,})$"
+                  title="Please enter a valid email address or phone number"
+                  value={contactForm.contactInfo}
+                  onChange={(e) => setContactForm({ ...contactForm, contactInfo: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm"
+                />
+              </div>
+
+              <div className="space-y-1 text-left">
+                <label className="block text-slate-400 font-semibold mb-1">Description of Issue / Request</label>
+                <textarea
+                  required
+                  rows={4}
+                  minLength={20}
+                  placeholder="Please describe your issue or request in detail (min 20 chars)..."
+                  value={contactForm.description}
+                  onChange={(e) => setContactForm({ ...contactForm, description: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm resize-none"
+                ></textarea>
+              </div>
+
+              <div className="flex gap-2.5 justify-end pt-2 font-sans">
+                <button
+                  type="button"
+                  disabled={isContactSubmitting}
+                  onClick={() => setIsContactModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold rounded-xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isContactSubmitting}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed min-w-[140px] justify-center"
+                >
+                  {isContactSubmitting ? (
+                    <>
+                      <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                      Processing...
+                    </>
+                  ) : (
+                    'Send to Support'
+                  )}
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Global Stacked Toast Notifications */}
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 max-w-sm w-full no-print pointer-events-none">
+        <AnimatePresence>
+          {toasts.map((toast) => (
+            <motion.div
+              key={toast.id}
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.95, transition: { duration: 0.2 } }}
+              layout
+              className={`pointer-events-auto flex items-start gap-3 p-4 rounded-xl shadow-2xl border text-white transition-colors duration-300 ${
+                toast.type === 'success' 
+                  ? 'bg-emerald-600/95 border-emerald-500/30' 
+                  : toast.type === 'error' 
+                    ? 'bg-rose-600/95 border-rose-500/30' 
+                    : 'bg-indigo-600/95 border-indigo-500/30'
+              }`}
+            >
+              <div className="mt-0.5 flex-shrink-0">
+                {toast.type === 'success' ? (
+                  <Check className="h-4 w-4 text-emerald-100" />
+                ) : toast.type === 'error' ? (
+                  <ShieldAlert className="h-4 w-4 text-rose-100" />
+                ) : (
+                  <Sparkles className="h-4 w-4 text-indigo-100 animate-pulse" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0 text-left">
+                <p className="text-xs font-semibold tracking-wide">
+                  {toast.type === 'success' ? 'Success Notification' : toast.type === 'error' ? 'System Alert / Error' : 'System Information'}
+                </p>
+                <p className="text-[11px] text-white/90 leading-relaxed mt-0.5 whitespace-pre-line">{toast.text}</p>
+              </div>
+              <button 
+                onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+                className="text-white/60 hover:text-white transition p-0.5 hover:bg-white/10 rounded-lg flex-shrink-0 cursor-pointer"
+              >
+                <X size={12} />
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
 
       {/* Dynamic Institutional Board Header */}
       <header className={`bg-gradient-to-r ${themeStyles.gradientHeader} text-white shadow-md py-4 px-6 no-print`}>
@@ -1544,6 +1902,14 @@ export default function App() {
             </div>
             
             <button
+              onClick={() => setIsContactModalOpen(true)}
+              className="bg-indigo-600/50 hover:bg-indigo-500/80 active:translate-y-0.5 transition px-3 py-1.5 rounded-lg border border-indigo-400/30 hover:border-indigo-400/60 cursor-pointer flex items-center gap-1 font-bold text-white shadow-sm"
+              title="Contact Technical Support"
+            >
+              <Mail size={13} /> Contact Support
+            </button>
+
+            <button
               onClick={handleLogout}
               className="bg-white/10 hover:bg-white/20 active:translate-y-0.5 transition px-3 py-1.5 rounded-lg border border-white/20 hover:border-white/40 cursor-pointer flex items-center gap-1 font-bold"
               title="Sign out of panel"
@@ -1599,19 +1965,58 @@ export default function App() {
               );
             })}
 
-            {tabOrder.length > 0 && (
+            {/* Right-aligned ribbon utilities */}
+            <div className="ml-auto flex items-center gap-2">
+              {(currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher') && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setIsSearchOpen(true)}
+                    className="flex items-center justify-between gap-3 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200/80 rounded-lg text-slate-400 hover:text-slate-600 transition cursor-pointer text-[11px] font-medium min-w-[170px]"
+                    title="Quick-Search System Registry (Ctrl+K)"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Search size={13} className="text-indigo-500 animate-pulse" />
+                      <span>Search records...</span>
+                    </span>
+                    <kbd className="hidden lg:inline-flex items-center gap-0.5 px-1.5 py-0.2 text-[9px] font-mono font-bold bg-white border border-slate-200 rounded-md shrink-0 text-slate-400">
+                      Ctrl+K
+                    </kbd>
+                  </button>
+
+                </>
+              )}
+
+              {tabOrder.length > 0 && (
+                <button
+                  onClick={() => {
+                    setTabOrder([]);
+                    localStorage.removeItem(`tab_order_${currentUser?.email || 'guest'}`);
+                  }}
+                  className="px-2.5 py-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg border border-slate-100 hover:border-slate-200 transition cursor-pointer flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider font-mono shrink-0"
+                  title="Reset workspace tab order to default"
+                >
+                  <RotateCcw size={11} />
+                  <span>Reset Order</span>
+                </button>
+              )}
+
+              <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 mx-0.5" />
               <button
+                type="button"
                 onClick={() => {
-                  setTabOrder([]);
-                  localStorage.removeItem(`tab_order_${currentUser?.email || 'guest'}`);
+                  setIsRefreshing(true);
+                  refreshAllLogs();
+                  showToast("Local database state refreshed successfully!", "success");
+                  setTimeout(() => setIsRefreshing(false), 800);
                 }}
-                className="ml-auto px-2.5 py-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg border border-slate-100 hover:border-slate-200 transition cursor-pointer flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider font-mono"
-                title="Reset workspace tab order to default"
+                disabled={isRefreshing}
+                className="p-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200/80 rounded-lg text-slate-500 hover:text-slate-700 transition cursor-pointer flex items-center justify-center shrink-0"
+                title="Force-reload local database state"
               >
-                <RotateCcw size={11} />
-                <span>Reset Order</span>
+                <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-indigo-500' : ''} />
               </button>
-            )}
+            </div>
           </div>
 
           {/* Mobile version: Hamburger triggers the drawer navigation list */}
@@ -1628,13 +2033,25 @@ export default function App() {
               </div>
             </div>
 
-            <button
-              onClick={() => setIsMobileMenuOpen(true)}
-              className="p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-100 text-slate-700 transition cursor-pointer flex items-center gap-1.5 active:scale-95"
-            >
-              <Menu size={16} />
-              <span className="text-[10px] font-bold uppercase tracking-wider font-mono">Menu</span>
-            </button>
+            <div className="flex items-center gap-1.5">
+              {(currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher') && (
+                <button
+                  type="button"
+                  onClick={() => setIsSearchOpen(true)}
+                  className="p-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 text-indigo-700 transition cursor-pointer flex items-center justify-center active:scale-95 shrink-0"
+                  title="Quick Search"
+                >
+                  <Search size={16} />
+                </button>
+              )}
+              <button
+                onClick={() => setIsMobileMenuOpen(true)}
+                className="p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-100 text-slate-700 transition cursor-pointer flex items-center gap-1.5 active:scale-95"
+              >
+                <Menu size={16} />
+                <span className="text-[10px] font-bold uppercase tracking-wider font-mono">Menu</span>
+              </button>
+            </div>
           </div>
 
           {/* Slide-out Mobile Drawer */}
@@ -1735,31 +2152,20 @@ export default function App() {
           </AnimatePresence>
         </nav>
 
-        {/* Active Tab Control Toolbar (Reload + Save Progress) */}
+        {/* Active Tab Control Toolbar (Save Progress) */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 no-print select-none">
           
           {/* Workspace Title & Metadata */}
           <div className="flex items-center gap-3">
             <div className={`p-2.5 rounded-xl ${themeStyles.primaryBg || 'bg-indigo-600'} text-white shadow-xs`}>
-              <CurrentActiveIcon size={20} className={isTabReloading ? 'animate-spin' : ''} />
+              <CurrentActiveIcon size={20} />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-xs font-bold tracking-tight text-slate-800 dark:text-slate-100 uppercase">
                   {currentActiveTab.label} Workspace
                 </h2>
-                <AnimatePresence>
-                  {showRefreshFeedback && (
-                    <motion.span
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      className="bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-black border border-emerald-200 dark:border-emerald-900/50 flex items-center gap-1"
-                    >
-                      <Check size={10} className="stroke-[3]" /> Tab Updated
-                    </motion.span>
-                  )}
-                </AnimatePresence>
+                {/* AnimatePresence for tab status */}
               </div>
               <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 font-sans leading-none">
                 GEETECH aligned live database interface. Sync status: {isOnline ? "Online Connected" : "Local Backup Mode"}
@@ -1788,17 +2194,6 @@ export default function App() {
                 <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
               )}
             </button>
-
-            {/* Reload or Refresh Button */}
-            <button
-              onClick={handleReloadActiveTab}
-              disabled={isTabReloading}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-black rounded-xl text-xs transition active:scale-95 cursor-pointer shadow-sm disabled:opacity-50 select-none border border-indigo-500/30"
-              title="Fetch and reload latest workspace records from database"
-            >
-              <RotateCcw size={14} className={isTabReloading ? "animate-spin" : ""} />
-              <span>{isTabReloading ? "Reloading..." : "Reload Tab"}</span>
-            </button>
           </div>
 
         </div>
@@ -1812,16 +2207,38 @@ export default function App() {
             exit={{ opacity: 0, y: -3 }}
             transition={{ duration: 0.15 }}
           >
-            {activeTab === 'dashboard' && (
-              <DashboardSummaryTab 
-                theme={themeStyles} 
-                students={students}
-                onRefresh={refreshAllLogs}
-                setActiveTab={setActiveTab}
-                assignedClass={assignedClass}
-                userRole={currentUser?.role}
-              />
-            )}
+            <React.Suspense fallback={<div className="p-8 flex justify-center w-full"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>}>
+              {activeTab === 'dashboard' && (
+                currentUser?.role === 'Teacher' && teacherProfile ? (
+                  <TeacherDashboardTab 
+                    teacherProfile={teacherProfile}
+                    students={students}
+                    attendance={attendance}
+                    assessments={assessments}
+                    reflections={reflections}
+                    schoolInfo={schoolInfo}
+                    calendar={DbController.getAcademicCalendar()}
+                    themeStyles={themeStyles}
+                    onNavigate={(tabId) => {
+                      setActiveTab(tabId);
+                      refreshAllLogs();
+                    }}
+                    onRefresh={refreshAllLogs}
+                  />
+                ) : (
+                  <DashboardSummaryTab 
+                    theme={themeStyles} 
+                    students={students}
+                    onRefresh={refreshAllLogs}
+                    setActiveTab={setActiveTab}
+                    setSettingsSubTab={setSettingsSubTab}
+                    assignedClasses={assignedClasses}
+                    assignedSubjects={assignedSubjects}
+                    assignedClass={assignedClasses[0] || 'None'}
+                    userRole={currentUser?.role}
+                  />
+                )
+              )}
 
             {activeTab === 'school_profile' && (
               <SchoolProfileTab 
@@ -1855,7 +2272,9 @@ export default function App() {
                 setSelectedYear={handleYearChange}
                 selectedTerm={selectedTerm}
                 setSelectedTerm={handleTermChange}
-                assignedClass={assignedClass}
+                assignedClasses={assignedClasses}
+                assignedSubjects={assignedSubjects}
+                assignedClass={assignedClasses[0] || 'None'}
                 userRole={currentUser?.role}
               />
             )}
@@ -1867,6 +2286,7 @@ export default function App() {
                 onRefresh={refreshAllLogs}
                 isAutoSave={isAutoSave}
                 onManualSave={() => setHasUnsavedChanges(true)}
+                userRole={currentUser?.role}
               />
             )}
 
@@ -1875,8 +2295,11 @@ export default function App() {
                 theme={themeStyles} 
                 isAutoSave={isAutoSave}
                 onManualSave={() => setHasUnsavedChanges(false)}
-                assignedClass={assignedClass}
+                assignedClasses={assignedClasses}
+                assignedSubjects={assignedSubjects}
+                assignedClass={assignedClasses[0] || 'None'}
                 userRole={currentUser?.role}
+                teacherPermissions={teacherProfile?.permissions}
               />
             )}
 
@@ -1890,8 +2313,11 @@ export default function App() {
                 setSelectedYear={handleYearChange}
                 selectedTerm={selectedTerm}
                 setSelectedTerm={handleTermChange}
-                assignedClass={assignedClass}
+                assignedClasses={assignedClasses}
+                assignedSubjects={assignedSubjects}
+                assignedClass={assignedClasses[0] || 'None'}
                 userRole={currentUser?.role}
+                teacherPermissions={teacherProfile?.permissions}
               />
             )}
 
@@ -1909,6 +2335,12 @@ export default function App() {
               />
             )}
 
+            {activeTab === 'admin_dashboard' && isAdmin && (
+              <AdminDashboardTab 
+                theme={themeStyles} 
+              />
+            )}
+
             {activeTab === 'paystack' && isAdmin && (
               <PaystackManagementTab 
                 themeStyles={themeStyles} 
@@ -1919,6 +2351,7 @@ export default function App() {
               <CommunicationsTab 
                 theme={themeStyles} 
                 students={students} 
+                isAdmin={isAdmin}
               />
             )}
 
@@ -1935,8 +2368,11 @@ export default function App() {
                 isAutoSave={isAutoSave}
                 onAutoSaveToggle={setIsAutoSave}
                 onRefresh={refreshAllLogs}
+                settingsSubTab={settingsSubTab}
+                setSettingsSubTab={setSettingsSubTab}
               />
             )}
+            </React.Suspense>
           </motion.div>
         </AnimatePresence>
 
@@ -2055,6 +2491,105 @@ export default function App() {
         </div>
       )}
 
+      {/* Advanced Global Print Preview System */}
+      <AnimatePresence>
+        {globalPrintPreview.isOpen && (
+          <PrintPreviewModal
+            isOpen={globalPrintPreview.isOpen}
+            onClose={() => setGlobalPrintPreview(prev => ({ ...prev, isOpen: false }))}
+            elementId={globalPrintPreview.elementId}
+            customHtml={globalPrintPreview.customHtml}
+            documentTitle={globalPrintPreview.documentTitle}
+            isLandscapeDefault={globalPrintPreview.isLandscape}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Global Quick Search Overlay */}
+      <AnimatePresence>
+        {isSearchOpen && (
+          <QuickSearchModal
+            isOpen={isSearchOpen}
+            onClose={() => setIsSearchOpen(false)}
+            students={students}
+            teachers={teachers}
+            theme={themeStyles}
+            onNavigate={(tabId) => setActiveTab(tabId)}
+          />
+        )}
+      </AnimatePresence>
+
     </div>
+  );
+}
+
+// --- ERROR BOUNDARY ---
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  public state: ErrorBoundaryState;
+  public props: ErrorBoundaryProps;
+
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("Critical Layout Error caught by ErrorBoundary:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-center text-slate-100 font-sans">
+          <div className="max-w-md bg-slate-900 p-8 rounded-3xl border border-rose-500/20 shadow-2xl space-y-6">
+            <div className="w-16 h-16 bg-rose-500/10 border border-rose-500/20 text-rose-500 rounded-full flex items-center justify-center mx-auto">
+              <span className="text-2xl font-bold">⚠️</span>
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-lg font-bold text-rose-400">Application Error</h2>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                The application encountered a layout or state synchronization issue.
+              </p>
+              {this.state.error && (
+                <pre className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-[10px] text-rose-300 font-mono text-left overflow-auto max-h-32">
+                  {this.state.error.message}
+                </pre>
+              )}
+            </div>
+            <button 
+              onClick={() => {
+                localStorage.clear();
+                window.location.reload();
+              }}
+              className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-xl text-xs font-bold transition"
+            >
+              Reset Session Cache & Reload
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }

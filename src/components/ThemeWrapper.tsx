@@ -130,5 +130,53 @@ export const THEME_CONFIGS: Record<ThemeType, ThemeStyles> = {
     secondaryBtnColors: 'bg-white/50 hover:bg-white/75 text-slate-800 border border-white/60 backdrop-blur-xs font-semibold',
     gradientHeader: 'from-slate-900/95 via-indigo-950/90 to-sky-950/90 backdrop-blur-md border-b border-white/10',
     heroBg: 'bg-gradient-to-tr from-slate-100 via-sky-50 to-indigo-50'
+  },
+  'Midnight': {
+    name: 'Midnight',
+    primaryBg: 'bg-slate-900',
+    primaryHover: 'hover:bg-slate-800',
+    accentText: 'text-indigo-400',
+    lightBg: 'bg-slate-950/50',
+    badgeBg: 'bg-slate-800',
+    badgeText: 'text-indigo-300',
+    cardBorder: 'border-slate-800',
+    shadowColor: 'shadow-slate-950/50',
+    accentBorder: 'border-indigo-500/30',
+    btnColors: 'bg-slate-700 hover:bg-slate-600 text-slate-100',
+    secondaryBtnColors: 'bg-slate-800 hover:bg-slate-700 text-slate-300',
+    gradientHeader: 'from-slate-950 to-slate-900',
+    heroBg: 'bg-slate-900'
+  },
+  'Sunset': {
+    name: 'Sunset',
+    primaryBg: 'bg-orange-500',
+    primaryHover: 'hover:bg-orange-600',
+    accentText: 'text-orange-600',
+    lightBg: 'bg-orange-50/50',
+    badgeBg: 'bg-orange-100',
+    badgeText: 'text-orange-800',
+    cardBorder: 'border-orange-100',
+    shadowColor: 'shadow-orange-50',
+    accentBorder: 'border-orange-500',
+    btnColors: 'bg-orange-500 hover:bg-orange-600 text-white',
+    secondaryBtnColors: 'bg-slate-100 hover:bg-slate-200 text-slate-800',
+    gradientHeader: 'from-orange-600 to-amber-700',
+    heroBg: 'bg-gradient-to-r from-orange-50 to-amber-50'
+  },
+  'Ocean': {
+    name: 'Ocean',
+    primaryBg: 'bg-cyan-600',
+    primaryHover: 'hover:bg-cyan-700',
+    accentText: 'text-cyan-600',
+    lightBg: 'bg-cyan-50/50',
+    badgeBg: 'bg-cyan-100',
+    badgeText: 'text-cyan-800',
+    cardBorder: 'border-cyan-100',
+    shadowColor: 'shadow-cyan-50',
+    accentBorder: 'border-cyan-500',
+    btnColors: 'bg-cyan-600 hover:bg-cyan-700 text-white',
+    secondaryBtnColors: 'bg-slate-100 hover:bg-slate-200 text-slate-800',
+    gradientHeader: 'from-cyan-700 to-blue-800',
+    heroBg: 'bg-gradient-to-r from-cyan-50 to-blue-50'
   }
 };

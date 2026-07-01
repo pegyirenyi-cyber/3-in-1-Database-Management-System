@@ -19,9 +19,7 @@ service cloud.firestore {
     function isBootstrappedAdmin() {
       return isSignedIn() && 
         (
-          request.auth.token.email == 'pegyirenyi@gmail.com' || 
-          request.auth.token.email == 'admin@ges.edu' || 
-          request.auth.token.email == 'headteacher@ges.edu'
+          request.auth.token.email == 'pegyirenyi@gmail.com'
         );
     }
 
@@ -37,10 +35,13 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_ \\-.()]+$');
     }
 
-    // Schools access (Public read, Admin/Head write)
+    // Schools access (Public read except school_secrets which requires Admin role, Admin/Head write except school_secrets which requires Admin)
     match /schools/{schoolId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(schoolId);
+      allow read: if isSignedIn() && (schoolId != 'school_secrets' || isUserRole('Admin'));
+      allow write: if isSignedIn() && (
+        (schoolId == 'school_secrets' && isUserRole('Admin')) || 
+        (schoolId != 'school_secrets' && isAdminOrHead())
+      ) && isValidId(schoolId);
     }
 
     // Students access (Admin/Head full access)
@@ -67,16 +68,18 @@ service cloud.firestore {
       allow write: if isSignedIn() && isAdminOrHead() && isValidId(assessmentId);
     }
 
-    // Fees access (Admin/Head full access, plus parent portal payment writes)
+    // Fees access (Admin/Head full access, plus parent portal payment writes, delete restricted to Admin/Head)
     match /fees/{feeId} {
       allow read: if isSignedIn() || isValidId(feeId);
-      allow write: if (isSignedIn() && isAdminOrHead() && isValidId(feeId)) || isValidId(feeId);
+      allow create, update: if (isSignedIn() && isAdminOrHead() && isValidId(feeId)) || isValidId(feeId);
+      allow delete: if isSignedIn() && isAdminOrHead() && isValidId(feeId);
     }
 
-    // Paystack logs (Registered by Webhook and Client checkout)
+    // Paystack logs (Registered by Webhook and Client checkout, delete restricted to Admin/Head)
     match /paystack_payments/{paymentId} {
       allow read: if isSignedIn() || isValidId(paymentId);
-      allow write: if isValidId(paymentId);
+      allow create, update: if isValidId(paymentId);
+      allow delete: if isSignedIn() && isAdminOrHead() && isValidId(paymentId);
     }
 
     // Staff attendance access (Admin/Head full access)
@@ -95,6 +98,14 @@ service cloud.firestore {
     match /emis/{emisId} {
       allow read: if isSignedIn();
       allow write: if isSignedIn() && isAdminOrHead() && isValidId(emisId);
+    }
+
+    // Real-time synchronization
+    match /teacher_headteacher_sync/{syncId} {
+      allow read: if isSignedIn() && isAdminOrHead();
+      allow create: if isSignedIn() && isUserRole('Teacher');
+      allow delete: if isSignedIn() && isAdminOrHead();
+      allow update: if false;
     }
 
     // Users credentials registry access (User can read and write their own or Admin can write)

@@ -12,11 +12,13 @@ import {
   FeePayment, 
   SchoolInfo 
 } from '../types';
-import { DbController } from '../db';
+import { DbController, getStorageItem, setStorageItem } from '../db';
+import { QRCodeSVG } from 'qrcode.react';
 import PaystackPaymentTrigger from './PaystackPaymentTrigger';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import { ThemeStyles } from './ThemeWrapper';
 import { generateSecureToken } from '../utils';
+import { getWatermarkHtml } from '../utils';
 import { 
   DollarSign, 
   Plus, 
@@ -27,6 +29,7 @@ import {
   Check, 
   Save, 
   FileDown, 
+  FileSpreadsheet,
   Coins, 
   Receipt, 
   CreditCard, 
@@ -99,6 +102,8 @@ export default function SchoolFeesTab({
   // Selected payment for receipt viewing/generation
   const [activeReceiptPayment, setActiveReceiptPayment] = useState<{ bill: StudentFeeBill; payment: FeePayment } | null>(null);
   const [activeLedgerStudent, setActiveLedgerStudent] = useState<StudentFeeBill | null>(null);
+  const [receiptEmailOverride, setReceiptEmailOverride] = useState('');
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
 
   // Payment Reminder states
   const [showReminderModal, setShowReminderModal] = useState(false);
@@ -127,15 +132,13 @@ export default function SchoolFeesTab({
 
   // SMS Logs for delivery tracking
   const [smsLogs, setSmsLogs] = useState<{ sid: string; studentName: string; phone: string; status: string; sentAt: number }[]>(() => {
-    try {
-      const saved = localStorage.getItem('smsLogs_fees_reminders');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return [];
+    return getStorageItem('smsLogs_fees_reminders', []);
   });
 
+  const [bulkReceiptData, setBulkReceiptData] = useState<{ bill: StudentFeeBill; payment: FeePayment }[]>([]);
+
   useEffect(() => {
-    localStorage.setItem('smsLogs_fees_reminders', JSON.stringify(smsLogs));
+    setStorageItem('smsLogs_fees_reminders', smsLogs);
   }, [smsLogs]);
 
   useEffect(() => {
@@ -159,6 +162,44 @@ export default function SchoolFeesTab({
     return () => clearInterval(interval);
   }, [smsLogs]);
 
+  useEffect(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const urlStudentId = q.get('studentId');
+      const urlReceiptNo = q.get('receiptNo');
+      
+      if (urlStudentId) {
+        setActiveStudentId(urlStudentId);
+        
+        if (urlReceiptNo) {
+          // Find if there is a bill containing this payment receipt
+          const foundBill = feeBills.find(b => 
+            b.studentId === urlStudentId && 
+            b.payments.some(p => p.receiptNo === urlReceiptNo)
+          );
+          if (foundBill) {
+            const foundPayment = foundBill.payments.find(p => p.receiptNo === urlReceiptNo);
+            if (foundPayment) {
+              setActiveReceiptPayment({ bill: foundBill, payment: foundPayment });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to parse URL query params for ledger", err);
+    }
+  }, [feeBills]);
+
+  useEffect(() => {
+    if (activeReceiptPayment) {
+      const studentObj = students.find(s => s.id === activeReceiptPayment.bill.studentId);
+      const emailVal = studentObj?.guardianEmail || studentObj?.email || '';
+      setReceiptEmailOverride(emailVal);
+    } else {
+      setReceiptEmailOverride('');
+    }
+  }, [activeReceiptPayment, students]);
+
   // Form handling state for currently active selected student
   const activeStudent = useMemo(() => students.find(s => s.id === activeStudentId), [students, activeStudentId]);
   
@@ -176,14 +217,42 @@ export default function SchoolFeesTab({
     return { expected, paid, bal };
   }, [activeStudent, activeBill]);
 
+  const compileReminderMessage = (templateText: string) => {
+    if (!activeStudent) return templateText;
+    const { bal } = activeExpectedAndPaid;
+    const token = generateSecureToken(activeStudent.id, selectedAcademicYear, selectedTerm);
+    const parentUrl = `${window.location.origin}/?studentId=${activeStudent.id}&year=${encodeURIComponent(selectedAcademicYear)}&term=${encodeURIComponent(selectedTerm)}&token=${token}`;
+    
+    return templateText
+      .replace(/{guardianName}/g, activeStudent.guardianName || 'Guardian')
+      .replace(/{firstName}/g, activeStudent.firstName)
+      .replace(/{lastName}/g, activeStudent.lastName)
+      .replace(/{studentId}/g, activeStudent.id)
+      .replace(/{balance}/g, bal.toFixed(2))
+      .replace(/{term}/g, selectedTerm)
+      .replace(/{academicYear}/g, selectedAcademicYear)
+      .replace(/{reportLink}/g, parentUrl);
+  };
+
+  const compileRandomReminderMessage = (templateText: string) => {
+    return templateText
+      .replace(/{guardianName}/g, 'Abigail Owusu')
+      .replace(/{firstName}/g, 'Emmanuel')
+      .replace(/{lastName}/g, 'Mensah')
+      .replace(/{studentId}/g, 'STU-8821-XP')
+      .replace(/{balance}/g, '150.00')
+      .replace(/{term}/g, 'Term 1')
+      .replace(/{academicYear}/g, '2026/2027')
+      .replace(/{reportLink}/g, 'https://geetech.edu/portal?id=demo&token=secure_example');
+  };
+
   const handleOpenReminderModal = () => {
     if (!activeStudent || !activeBill) return;
-    const { expected, paid, bal } = activeExpectedAndPaid;
 
     setReminderRecipientPhone(activeStudent.guardianTelephone || '');
     setReminderSmsSuccess(null);
     setReminderCustomMessage(
-      `Dear ${activeStudent.guardianName || 'Guardian'}, this is a payment reminder for ${activeStudent.firstName} ${activeStudent.lastName} (${activeStudent.id}). Our school ledger shows an outstanding balance of GHS ${bal.toFixed(2)} for ${selectedTerm}, ${selectedAcademicYear}. Kindly arrange to settle this amount. You can securely view/download the full bill & receipt ledger here: ${window.location.origin}/?studentId=${activeStudent.id}&year=${encodeURIComponent(selectedAcademicYear)}&term=${encodeURIComponent(selectedTerm)}&token=${generateSecureToken(activeStudent.id, selectedAcademicYear, selectedTerm)}`
+      `Dear {guardianName}, this is a payment reminder for {firstName} {lastName} ({studentId}). Our school ledger shows an outstanding balance of GHS {balance} for {term}, {academicYear}. Kindly arrange to settle this amount. You can securely view/download the full bill & receipt ledger here: {reportLink}`
     );
     setShowReminderModal(true);
   };
@@ -219,7 +288,7 @@ export default function SchoolFeesTab({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: reminderRecipientPhone.trim(),
-          body: reminderCustomMessage
+          body: compileReminderMessage(reminderCustomMessage)
         })
       });
 
@@ -257,6 +326,40 @@ export default function SchoolFeesTab({
     }
 
     setReminderSendingSms(false);
+  };
+
+  const handleSendReminderWhatsApp = () => {
+    if (!reminderRecipientPhone) return;
+    
+    let phone = reminderRecipientPhone.trim().replace(/[\s\-\(\)\+]/g, '');
+    if (phone.startsWith('0') && phone.length === 10) {
+      phone = '233' + phone.substring(1);
+    }
+    
+    const whatsappUrl = `https://wa.me/${phone}?text=${encodeURIComponent(compileReminderMessage(reminderCustomMessage))}`;
+    
+    const sName = activeStudent ? `${activeStudent.firstName} ${activeStudent.lastName}` : 'Student';
+    const sGuardian = activeStudent?.guardianName || 'Guardian';
+    
+    setSmsLogs(prev => [
+      { sid: `WA_${Date.now()}`, studentName: sName, phone: reminderRecipientPhone, status: 'WhatsApp Sent', sentAt: Date.now() },
+      ...prev
+    ]);
+
+    if (activeStudent && activeStudent.guardianTelephone !== reminderRecipientPhone) {
+      try {
+        const updatedStudent = {
+          ...activeStudent,
+          guardianTelephone: reminderRecipientPhone
+        };
+        DbController.saveStudent(updatedStudent);
+      } catch (err) {
+        console.warn("Failed to sync guardian telephone updates:", err);
+      }
+    }
+
+    window.open(whatsappUrl, '_blank');
+    setReminderSmsSuccess(`Formatted WhatsApp reminder opened in standard secure web chat view!`);
   };
 
   // Notification / Feedback Toast states
@@ -498,11 +601,39 @@ export default function SchoolFeesTab({
     }
   };
 
+  const handleBulkPrintReceipts = () => {
+    const data = filteredStudents
+      .map(student => {
+        const bill = getStudentBill(student);
+        if (bill.payments.length === 0) return null;
+        // Get the latest payment
+        const latestPayment = [...bill.payments].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+        return { bill, payment: latestPayment };
+      })
+      .filter(item => item !== null) as { bill: StudentFeeBill; payment: FeePayment }[];
+
+    if (data.length === 0) {
+      showToast("No payments found for the selected students in this term.", "error");
+      return;
+    }
+
+    setBulkReceiptData(data);
+    showToast(`Generating bulk receipts for ${data.length} students...`, "success");
+    
+    // Give it a bit of time to render the hidden print area then trigger print
+    setTimeout(() => {
+      handlePrintStandard('bulk-receipts-print-area');
+      // We don't clear immediately to allow print window to read it
+      setTimeout(() => setBulkReceiptData([]), 2000);
+    }, 1000);
+  };
+
   const filenameFriendly = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
 
   const handleExportFeesPDF = async (elementId: string, filename: string) => {
     try {
-      const result = await generatePdfFromHtml(elementId, filename, false);
+      const isReceipt = elementId === 'fee-receipt-print-area' || elementId === 'bulk-receipts-print-area';
+      const result = await generatePdfFromHtml(elementId, filename, isReceipt); // Use landscape (isReceipt) for DL
       downloadBlobLocally(result.blob, result.filename);
       showToast("PDF report generated successfully!");
     } catch (e: any) {
@@ -514,6 +645,7 @@ export default function SchoolFeesTab({
     const printContent = document.getElementById(elementId);
     if (!printContent) return;
     try {
+      const isReceipt = elementId === 'fee-receipt-print-area' || elementId === 'bulk-receipts-print-area';
       const windowUrl = 'about:blank';
       const uniqueName = new Date().getTime().toString();
       const printWindow = window.open(windowUrl, uniqueName, 'left=100,top=100,width=900,height=900');
@@ -530,19 +662,32 @@ export default function SchoolFeesTab({
             <script src="https://cdn.tailwindcss.com"></script>
             <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
             <style>
-              body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; padding: 24px; }
+              body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; padding: 24px; position: relative; }
               .font-mono { font-family: 'JetBrains Mono', monospace; }
+              .receipt-container { margin-bottom: 20px; page-break-after: always; }
               @media print {
                 body { padding: 0; }
                 button { display: none; }
+                @page { 
+                  size: ${isReceipt ? '220mm 110mm' : 'A4'}; 
+                  margin: 0; 
+                }
+                #fee-receipt-print-area, .bulk-receipt-item {
+                  width: 220mm !important;
+                  height: 110mm !important;
+                  padding: 8mm 10mm !important;
+                  overflow: hidden !important;
+                  page-break-after: always;
+                }
               }
             </style>
           </head>
           <body>
-            <div class="max-w-4xl mx-auto">${printContent.innerHTML}</div>
+            ${getWatermarkHtml(schoolInfo.crestUrl)}
+            <div class="${isReceipt ? 'w-[220mm]' : 'max-w-4xl'} mx-auto">${printContent.innerHTML}</div>
             <script>
               window.onload = function() {
-                setTimeout(function(){ window.print(); window.close(); }, 500);
+                setTimeout(function(){ window.print(); window.close(); }, 800);
               }
             </script>
           </body>
@@ -553,6 +698,139 @@ export default function SchoolFeesTab({
       console.error("Window print exception: ", err);
       showToast("Browser sandboxing blocks direct print popups. Please export PDF.", "error");
     }
+  };
+
+  const handleSendReceiptEmail = async () => {
+    if (!activeReceiptPayment) return;
+    if (!receiptEmailOverride || !receiptEmailOverride.trim()) {
+      showToast("Please specify a valid parent/guardian email address.", "error");
+      return;
+    }
+
+    setIsSendingEmail(true);
+    try {
+      const response = await fetch('/api/communications/send-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          to: receiptEmailOverride.trim(),
+          studentName: activeReceiptPayment.bill.studentName,
+          studentId: activeReceiptPayment.bill.studentId,
+          receiptNo: activeReceiptPayment.payment.receiptNo,
+          amount: activeReceiptPayment.payment.amount,
+          component: activeReceiptPayment.payment.component,
+          method: activeReceiptPayment.payment.method,
+          date: activeReceiptPayment.payment.date
+        })
+      });
+
+      const result = await response.json();
+      if (response.ok && result.success) {
+        showToast(`Digital copy of receipt ${activeReceiptPayment.payment.receiptNo} successfully sent to ${receiptEmailOverride.trim()}`, "success");
+      } else {
+        showToast(result.message || "Failed to dispatch digital receipt copy.", "error");
+      }
+    } catch (err: any) {
+      console.error("Failed to send receipt email:", err);
+      showToast(err.message || "Network error occurred while connecting to email gateway.", "error");
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const handleExportLedgerCSV = (student: StudentFeeBill) => {
+    if (!student) return;
+
+    // Build chronological debits and credits list
+    const debits = [
+      { date: student.academicYear + " - " + student.term, desc: "Standard School Tuition Fees", debit: student.schoolFees, credit: 0 },
+      { date: student.academicYear + " - " + student.term, desc: "Utility and Maintenance levy", debit: student.utilityBill, credit: 0 },
+      { date: student.academicYear + " - " + student.term, desc: "Sports development dues", debit: student.sportsFees, credit: 0 },
+      { date: student.academicYear + " - " + student.term, desc: "PTA annual dues allocation", debit: student.ptaDues, credit: 0 },
+    ];
+    if (student.otherFee > 0) {
+      debits.push({
+        date: student.academicYear + " - " + student.term,
+        desc: `Other Levy / Miscellaneous (${student.otherFeeDescription || 'Other'})`,
+        debit: student.otherFee,
+        credit: 0
+      });
+    }
+
+    const credits = student.payments.map((p) => ({
+      date: p.date,
+      desc: `Payment Receipt: ${p.receiptNo} (${p.component} via ${p.method})`,
+      debit: 0,
+      credit: p.amount
+    }));
+
+    const ledgerEntries = [...debits, ...credits];
+
+    const csvRows: string[][] = [];
+
+    // Metadata
+    csvRows.push(["STUDENT TRANSACTION STATEMENT & LEDGER"]);
+    csvRows.push([]);
+    csvRows.push(["Student Name", student.studentName]);
+    csvRows.push(["Student ID", student.studentId]);
+    csvRows.push(["Class/Division", student.class]);
+    csvRows.push(["Academic Year", student.academicYear]);
+    csvRows.push(["Term", student.term]);
+    csvRows.push(["Statement Generated Date", new Date().toISOString().split('T')[0]]);
+    csvRows.push([]);
+
+    // Headers
+    csvRows.push(["Transaction Date", "Description/Reference", "Debit (Charge) GHS", "Credit (Payment) GHS", "Running Balance GHS"]);
+
+    let runningBalance = 0;
+    ledgerEntries.forEach((entry) => {
+      runningBalance += entry.debit - entry.credit;
+      csvRows.push([
+        entry.date,
+        entry.desc,
+        entry.debit > 0 ? entry.debit.toFixed(2) : "0.00",
+        entry.credit > 0 ? entry.credit.toFixed(2) : "0.00",
+        runningBalance.toFixed(2)
+      ]);
+    });
+
+    csvRows.push([]);
+    
+    const expectedTotal = student.schoolFees + student.utilityBill + student.sportsFees + student.ptaDues + student.otherFee;
+    const totalPaid = student.payments.reduce((sum, p) => sum + p.amount, 0);
+    const outstanding = expectedTotal - totalPaid;
+
+    csvRows.push(["SUMMARY BALANCE"]);
+    csvRows.push(["Total Expected Charges (Debits)", expectedTotal.toFixed(2)]);
+    csvRows.push(["Total Payments Received (Credits)", totalPaid.toFixed(2)]);
+    csvRows.push(["Outstanding Cumulative Balance Due", outstanding.toFixed(2)]);
+
+    const csvContent = csvRows
+      .map((row) =>
+        row
+          .map((value) => {
+            const escaped = String(value).replace(/"/g, '""');
+            return `"${escaped}"`;
+          })
+          .join(",")
+      )
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    const filename = `ledger_${filenameFriendly(student.studentName || student.studentId)}.csv`;
+    
+    link.setAttribute("href", url);
+    link.setAttribute("download", filename);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    showToast(`Ledger CSV statement exported successfully!`);
   };
 
   // Filter students based on state selections
@@ -723,6 +1001,13 @@ export default function SchoolFeesTab({
             className="text-xs inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-900 text-white py-1.5 px-3 rounded-lg font-medium transition"
           >
             <Plus className="h-3.5 w-3.5" /> Initialize Standard Billing
+          </button>
+
+          <button
+            onClick={handleBulkPrintReceipts}
+            className="text-xs inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1.5 px-3 rounded-lg font-medium transition border border-indigo-200"
+          >
+            <Printer className="h-3.5 w-3.5" /> Bulk Print Receipts
           </button>
 
           <button
@@ -1443,82 +1728,97 @@ export default function SchoolFeesTab({
                 </div>
               </div>
 
-            <div className="flex-1 overflow-y-auto p-8" id="fee-receipt-print-area">
-              <div className="border-[3px] border-double border-slate-800 p-6 space-y-6 bg-white text-slate-900 text-left">
+              {/* Inline parent/guardian email dispatch controls */}
+              <div className="px-6 py-2.5 bg-slate-50 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 no-print">
+                <div className="flex items-center gap-2">
+                  <Mail className="h-4 w-4 text-[#059669]" />
+                  <span className="font-medium">Send to Parent:</span>
+                  <input 
+                    type="email" 
+                    value={receiptEmailOverride}
+                    onChange={(e) => setReceiptEmailOverride(e.target.value)}
+                    placeholder="parent@email.com"
+                    className="px-2.5 py-1 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none w-48 font-medium text-slate-800"
+                  />
+                </div>
+                <button
+                  onClick={handleSendReceiptEmail}
+                  disabled={isSendingEmail}
+                  className="px-3 py-1.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs transition cursor-pointer flex items-center gap-1 shadow-xs disabled:opacity-50"
+                >
+                  {isSendingEmail ? (
+                    <>Sending...</>
+                  ) : (
+                    <>
+                      <Mail className="h-3.5 w-3.5" /> Dispatch Receipt
+                    </>
+                  )}
+                </button>
+              </div>
+
+            <div className="flex-1 overflow-y-auto p-4" id="fee-receipt-print-area">
+              <div className="relative border-[2px] border-double border-slate-800 p-4 space-y-3 bg-white text-slate-900 text-left h-full flex flex-col justify-between overflow-hidden">
+                {/* Watermark */}
+                <div className="absolute inset-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo.crestUrl) }} />
                 
-                {/* Official Crest & School metadata */}
-                <div className="flex justify-between items-start pb-4 border-b-2 border-slate-800">
-                  <div className="space-y-1">
-                    <h1 className="text-md font-bold tracking-tight text-slate-950 uppercase">{schoolInfo.name}</h1>
-                    <p className="text-[10px] font-semibold text-slate-500 tracking-wider">Motto: "{schoolInfo.motto}"</p>
-                    <p className="text-[10px] text-slate-700">{schoolInfo.gpsAddress} • Tel: {schoolInfo.telephone}</p>
-                    <p className="text-[9px] text-slate-500 font-mono uppercase">EMIS CODE: {schoolInfo.emisCode} • CIRCUIT: {schoolInfo.circuit}</p>
+                <div className="relative z-10 flex flex-col h-full justify-between">
+                {/* Official Crest & School metadata - Compact for DL */}
+                <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+                  <div className="space-y-0.5">
+                    <h1 className="text-sm font-bold tracking-tight text-slate-950 uppercase leading-tight">{schoolInfo.name}</h1>
+                    <p className="text-[9px] font-semibold text-slate-500 tracking-wider">Motto: "{schoolInfo.motto}"</p>
+                    <p className="text-[9px] text-slate-700 leading-tight">{schoolInfo.gpsAddress} • Tel: {schoolInfo.telephone}</p>
                   </div>
                   {schoolInfo.logoUrl ? (
-                    <img referrerPolicy="no-referrer" src={schoolInfo.logoUrl} className="h-16 w-16 object-contain" alt="School Crest" />
+                    <img referrerPolicy="no-referrer" src={schoolInfo.logoUrl} className="h-10 w-10 object-contain" alt="School Crest" />
                   ) : (
-                    <div className="p-2 border border-slate-200 rounded bg-slate-50 text-slate-400">
-                      <Receipt className="h-8 w-8" />
+                    <div className="p-1 border border-slate-200 rounded bg-slate-50 text-slate-400">
+                      <Receipt className="h-6 w-6" />
                     </div>
                   )}
                 </div>
 
-                {/* Receipt Title with Reference No */}
-                <div className="text-center py-2 bg-slate-100 border-b border-t border-slate-300">
-                  <h2 className="text-sm font-bold uppercase tracking-widest text-slate-950">OFFICIAL TRANSACTION RECEIPT (INSTALLMENT)</h2>
+                {/* Receipt Title - Slimmer */}
+                <div className="text-center py-1 bg-slate-50 border-b border-slate-200">
+                  <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-950">OFFICIAL PAYMENT RECEIPT</h2>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 text-xs font-sans">
-                  <div className="space-y-1.5">
-                    <p><span className="text-slate-500 font-medium">RECEIPT CODE:</span> <span className="font-mono font-bold text-slate-950">{activeReceiptPayment.payment.receiptNo}</span></p>
-                    <p><span className="text-slate-500 font-medium">NAME OF STUDENT:</span> <span className="font-bold text-slate-950 capitalize">{activeReceiptPayment.bill.studentName}</span></p>
-                    <p><span className="text-slate-500 font-medium">STUDENT ID:</span> <span className="font-semibold font-mono text-slate-950">{activeReceiptPayment.bill.studentId}</span></p>
-                    <p><span className="text-slate-500 font-medium">CLASS / DIVISION:</span> <span className="font-semibold text-slate-950">{activeReceiptPayment.bill.class}</span></p>
+                <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[10px] font-sans">
+                  <div className="space-y-1">
+                    <p><span className="text-slate-500">CODE:</span> <span className="font-mono font-bold">{activeReceiptPayment.payment.receiptNo}</span></p>
+                    <p><span className="text-slate-500">STUDENT:</span> <span className="font-bold uppercase">{activeReceiptPayment.bill.studentName}</span></p>
+                    <p><span className="text-slate-500">ID:</span> <span className="font-semibold font-mono">{activeReceiptPayment.bill.studentId}</span></p>
                   </div>
 
-                  <div className="space-y-1.5 text-right">
-                    <p><span className="text-slate-500 font-medium">PAYMENT DATE:</span> <span className="font-semibold font-mono text-slate-950">{activeReceiptPayment.payment.date}</span></p>
-                    <p><span className="text-slate-500 font-medium font-sans">ACADEMIC DIVISION:</span> <span className="font-semibold text-slate-950">{activeReceiptPayment.bill.academicYear} • {activeReceiptPayment.bill.term}</span></p>
-                    <p><span className="text-slate-500 font-medium">PAYMENT METHOD:</span> <span className="font-bold text-slate-950">{activeReceiptPayment.payment.method}</span></p>
+                  <div className="space-y-1 text-right">
+                    <p><span className="text-slate-500">DATE:</span> <span className="font-semibold font-mono">{activeReceiptPayment.payment.date}</span></p>
+                    <p><span className="text-slate-500">TERM:</span> <span className="font-semibold">{activeReceiptPayment.bill.academicYear} • {activeReceiptPayment.bill.term}</span></p>
+                    <p><span className="text-slate-500">METHOD:</span> <span className="font-bold">{activeReceiptPayment.payment.method}</span></p>
                   </div>
                 </div>
 
-                {/* Main receipt ledger breakdown item details */}
+                {/* Main receipt ledger breakdown - Ultra compact */}
                 <div className="border border-slate-800 rounded overflow-hidden">
-                  <table className="w-full text-xs">
+                  <table className="w-full text-[10px]">
                     <thead>
-                      <tr className="bg-slate-200 text-slate-700 font-bold uppercase border-b border-slate-800 text-[10px]">
-                        <th className="p-2.5">Category Allocation details</th>
-                        <th className="p-2.5 text-right">Total expected</th>
-                        <th className="p-2.5 text-right">This installment GHS</th>
+                      <tr className="bg-slate-100 text-slate-700 font-bold uppercase border-b border-slate-800 text-[9px]">
+                        <th className="p-1.5 text-left pl-3">Description</th>
+                        <th className="p-1.5 text-right pr-3">Amount (GHS)</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-300">
+                    <tbody>
                       <tr>
-                        <td className="p-3">
-                          <p className="font-semibold text-slate-920 uppercase text-[11px]">{activeReceiptPayment.payment.component}</p>
-                          <p className="text-[10px] text-slate-400">Installment payments to {activeReceiptPayment.payment.component} database category</p>
+                        <td className="p-2 pl-3">
+                          <p className="font-bold text-slate-900 uppercase">{activeReceiptPayment.payment.component}</p>
                         </td>
-                        <td className="p-3 text-right font-mono text-slate-700">
-                          {(() => {
-                            const comp = activeReceiptPayment.payment.component;
-                            let limit = 0;
-                            if (comp === 'School Fees') limit = activeReceiptPayment.bill.schoolFees;
-                            else if (comp === 'Utility Bill') limit = activeReceiptPayment.bill.utilityBill;
-                            else if (comp === 'Sports Fees') limit = activeReceiptPayment.bill.sportsFees;
-                            else if (comp === 'PTA dues') limit = activeReceiptPayment.bill.ptaDues;
-                            else if (comp === 'Other Fee') limit = activeReceiptPayment.bill.otherFee;
-                            return `GHS ${limit.toFixed(2)}`;
-                          })()}
-                        </td>
-                        <td className="p-3 text-right font-mono font-bold text-slate-900 bg-slate-50">
-                          GHS {activeReceiptPayment.payment.amount.toFixed(2)}
+                        <td className="p-2 text-right pr-3 font-mono font-bold text-slate-900 bg-slate-50">
+                          {activeReceiptPayment.payment.amount.toFixed(2)}
                         </td>
                       </tr>
                       {activeReceiptPayment.payment.remarks && (
                         <tr>
-                          <td colSpan={3} className="p-2 bg-slate-50/50 italic text-[10px] text-slate-500">
-                            Memo notes: {activeReceiptPayment.payment.remarks}
+                          <td colSpan={2} className="p-1.5 pl-3 bg-slate-50/50 italic text-[9px] text-slate-500 border-t border-slate-200">
+                            Note: {activeReceiptPayment.payment.remarks}
                           </td>
                         </tr>
                       )}
@@ -1526,47 +1826,48 @@ export default function SchoolFeesTab({
                   </table>
                 </div>
 
-                {/* Dynamic outstanding ledger totals */}
-                <div className="space-y-1.5 text-right text-xs">
-                  {(() => {
-                    const bill = activeReceiptPayment.bill;
-                    const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + bill.otherFee;
-                    const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
-                    const outstanding = expectedTotal - totalPaid;
-
-                    return (
-                      <div className="inline-block border-t border-slate-400 pt-3 pl-12 space-y-1.5 font-sans">
-                        <p className="flex justify-between gap-12"><span className="text-slate-500">Expected total term bill:</span> <span className="font-mono font-semibold">GHS {expectedTotal.toFixed(2)}</span></p>
-                        <p className="flex justify-between gap-12"><span className="text-slate-500">Total installments paid to-date:</span> <span className="font-mono font-bold text-emerald-700">GHS {totalPaid.toFixed(2)}</span></p>
-                        <p className="flex justify-between gap-12 font-bold text-slate-950 border-t border-slate-300 pt-1.5 text-[13px]"><span className="font-bold">Remaining balance due:</span> <span className="font-mono">GHS {outstanding.toFixed(2)}</span></p>
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* Footer terms stamp lines */}
-                <div className="pt-12 grid grid-cols-2 gap-8 text-center text-[10px]">
-                  <div className="space-y-4">
-                    <p className="text-slate-400">Issued and verified electronically</p>
-                    <div className="border-t border-dashed border-slate-400 pt-1">
-                      <p className="font-medium text-slate-700">BILLING OFFICE SIGNATURE</p>
-                      <p className="italic text-slate-400">{schoolInfo.name} accounts division</p>
+                {/* Totals - Side by side to save height */}
+                <div className="flex justify-between items-end text-[10px] border-t border-slate-300 pt-2">
+                  <div className="flex items-center gap-2">
+                    <div className="p-0.5 bg-white border border-slate-200 rounded-md shrink-0">
+                      <QRCodeSVG 
+                        value={`${window.location.origin}/?tab=fees&studentId=${activeReceiptPayment.bill.studentId}&receiptNo=${activeReceiptPayment.payment.receiptNo}`}
+                        size={40} 
+                        level="M" 
+                      />
+                    </div>
+                    <div className="text-left space-y-0.5">
+                      <p className="text-slate-400 text-[8px] uppercase font-bold tracking-tighter">Verification</p>
+                      <p className="text-[8px] text-slate-500 leading-tight">Scan to verify electronic ledger statement</p>
                     </div>
                   </div>
+                  <div className="text-right space-y-1">
+                    {(() => {
+                      const bill = activeReceiptPayment.bill;
+                      const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + bill.otherFee;
+                      const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
+                      const outstanding = expectedTotal - totalPaid;
 
-                  <div className="space-y-4">
-                    <p className="text-slate-400">Received timestamp: {new Date().toLocaleDateString('en-US', { hour: '2-digit', minute: '2-digit' })}</p>
-                    <div className="border-t border-dashed border-slate-400 pt-1">
-                      <p className="font-medium text-slate-700">PARENT / GUARDIAN SIGN</p>
-                      <p className="italic text-slate-400">Authorized payer signature line</p>
-                    </div>
+                      return (
+                        <div className="space-y-0.5">
+                          <p className="flex justify-between gap-6"><span className="text-slate-500">Paid to-date:</span> <span className="font-mono font-bold text-emerald-700">GHS {totalPaid.toFixed(2)}</span></p>
+                          <p className="flex justify-between gap-6 font-bold text-slate-950 border-t border-slate-300 pt-0.5 text-[11px]"><span className="font-bold">Balance:</span> <span className="font-mono">GHS {outstanding.toFixed(2)}</span></p>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
-                <div className="text-center pt-4 border-t border-slate-200 text-[9px] text-slate-400 font-mono">
-                  Thank you for securing our students education. This document represents a valid official payment installment.
+                {/* Signature - Compact */}
+                <div className="pt-2 grid grid-cols-2 gap-4 text-center text-[9px]">
+                  <div className="border-t border-dashed border-slate-400 pt-1">
+                    <p className="font-medium text-slate-700 uppercase tracking-tighter">Accounts Office</p>
+                  </div>
+                  <div className="border-t border-dashed border-slate-400 pt-1">
+                    <p className="font-medium text-slate-700 uppercase tracking-tighter">Bursar / Signature</p>
+                  </div>
                 </div>
-
+                </div>
               </div>
             </div>
           </motion.div>
@@ -1607,6 +1908,12 @@ export default function SchoolFeesTab({
                     <Printer className="h-3.5 w-3.5 inline mr-1" /> Print Details
                   </button>
                   <button
+                    onClick={() => handleExportLedgerCSV(activeLedgerStudent)}
+                    className="px-3.5 py-2 hover:bg-slate-50 border border-slate-200 text-slate-600 font-semibold rounded-xl text-xs transition cursor-pointer bg-white"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5 inline mr-1 text-[#059669]" /> Download CSV
+                  </button>
+                  <button
                     onClick={() => handleExportFeesPDF('fee-ledger-print-area', `ledger_${activeLedgerStudent.studentId}`)}
                     className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer"
                   >
@@ -1621,165 +1928,132 @@ export default function SchoolFeesTab({
                 </div>
               </div>
 
-            <div className="flex-1 overflow-y-auto p-8" id="fee-ledger-print-area">
-              <div className="border-[3px] border-double border-slate-800 p-6 space-y-6 bg-white text-slate-900 text-left">
+            <div className="flex-1 overflow-y-auto p-4" id="fee-ledger-print-area">
+              <div className="border-[2px] border-double border-slate-800 p-4 space-y-3 bg-white text-slate-900 text-left h-full flex flex-col justify-between">
                 
-                {/* Crest and School metadata */}
-                <div className="flex justify-between items-start pb-4 border-b-2 border-slate-800">
-                  <div className="space-y-1">
-                    <h1 className="text-md font-bold tracking-tight text-slate-950 uppercase">{schoolInfo.name}</h1>
-                    <p className="text-[10px] font-semibold text-slate-500 tracking-wider">Motto: "{schoolInfo.motto}"</p>
-                    <p className="text-[10px] text-slate-700">{schoolInfo.gpsAddress} • Tel: {schoolInfo.telephone}</p>
-                    <p className="text-[9px] text-slate-500 font-mono uppercase">EMIS CODE: {schoolInfo.emisCode} • CIRCUIT: {schoolInfo.circuit}</p>
+                {/* Official Crest & School metadata - Compact for DL */}
+                <div className="flex justify-between items-center pb-2 border-b border-slate-800 shrink-0">
+                  <div className="space-y-0.5">
+                    <h1 className="text-sm font-bold tracking-tight text-slate-950 uppercase leading-tight">{schoolInfo.name}</h1>
+                    <p className="text-[9px] font-semibold text-slate-500 tracking-wider leading-none">Motto: "{schoolInfo.motto}"</p>
+                    <p className="text-[9px] text-slate-700 leading-tight">{schoolInfo.gpsAddress} • Tel: {schoolInfo.telephone}</p>
                   </div>
-                  {schoolInfo.logoUrl ? (
-                    <img referrerPolicy="no-referrer" src={schoolInfo.logoUrl} className="h-16 w-16 object-contain" alt="School Crest" />
-                  ) : (
-                    <div className="p-2 border border-slate-200 rounded bg-slate-50 text-slate-400">
-                      <Receipt className="h-8 w-8" />
+                  <div className="text-right">
+                    <span className="text-[10px] font-bold uppercase tracking-wider bg-slate-50 px-2.5 py-0.5 rounded border border-slate-200">
+                      BILLING & LEDGER
+                    </span>
+                    <p className="text-[9px] text-slate-500 font-mono mt-0.5">Academic: {activeLedgerStudent.academicYear} • {activeLedgerStudent.term}</p>
+                  </div>
+                </div>
+
+                {/* DL Columns content layout */}
+                <div className="grid grid-cols-2 gap-4 text-[10px] font-sans flex-1">
+                  
+                  {/* Left Column: Student details & Expected bills table */}
+                  <div className="space-y-2 border-r border-slate-200 pr-3 flex flex-col justify-between">
+                    <div className="bg-slate-50 p-1.5 rounded space-y-0.5 border border-slate-100">
+                      <p><span className="text-slate-500 font-medium uppercase text-[8px] tracking-tight">Student Name:</span> <span className="font-bold text-slate-950 uppercase">{activeLedgerStudent.studentName}</span></p>
+                      <p><span className="text-slate-500 font-medium uppercase text-[8px] tracking-tight">ID:</span> <span className="font-semibold font-mono">{activeLedgerStudent.studentId}</span> | <span className="text-slate-500 font-medium uppercase text-[8px] tracking-tight">Class:</span> <span className="font-semibold">{activeLedgerStudent.class}</span></p>
                     </div>
-                  )}
-                </div>
 
-                {/* Ledger Title with Reference No */}
-                <div className="text-center py-2 bg-slate-100 border-b border-t border-slate-300">
-                  <h2 className="text-sm font-bold uppercase tracking-widest text-slate-950">STUDENT TRANSACTION STATEMENT & LEDGER</h2>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 text-xs font-sans">
-                  <div className="space-y-1.5">
-                    <p><span className="text-slate-500 font-medium">NAME OF STUDENT:</span> <span className="font-bold text-slate-950 capitalize">{activeLedgerStudent.studentName}</span></p>
-                    <p><span className="text-slate-500 font-medium">STUDENT ID:</span> <span className="font-semibold font-mono text-slate-950">{activeLedgerStudent.studentId}</span></p>
-                    <p><span className="text-slate-500 font-medium">CLASS / DIVISION:</span> <span className="font-semibold text-slate-950">{activeLedgerStudent.class}</span></p>
-                  </div>
-
-                  <div className="space-y-1.5 text-right">
-                    <p><span className="text-slate-500 font-medium">ACADEMIC DIVISION:</span> <span className="font-semibold text-slate-950">{activeLedgerStudent.academicYear} • {activeLedgerStudent.term}</span></p>
-                    <p><span className="text-slate-500 font-medium">STATEMENT DATE:</span> <span className="font-semibold font-mono text-slate-950">{new Date().toISOString().split('T')[0]}</span></p>
-                  </div>
-                </div>
-
-                {/* EXPECTED TERM LEVIES SUMS */}
-                <div className="space-y-2">
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">I. Summary of Term expected Bills</p>
-                  <table className="w-full text-xs border border-slate-400 border-collapse">
-                    <thead>
-                      <tr className="bg-slate-100 font-bold border-b border-slate-400 text-[10px] text-slate-600 text-left">
-                        <th className="p-2">Levy Category component name</th>
-                        <th className="p-2 text-right">Expected Levy Amount (GHS)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-300">
-                      <tr>
-                        <td className="p-2">Standard School Tuition Fees</td>
-                        <td className="p-2 text-right font-mono">GHS {activeLedgerStudent.schoolFees.toFixed(2)}</td>
-                      </tr>
-                      <tr>
-                        <td className="p-2">Utility and Maintenance levy</td>
-                        <td className="p-2 text-right font-mono">GHS {activeLedgerStudent.utilityBill.toFixed(2)}</td>
-                      </tr>
-                      <tr>
-                        <td className="p-2">Sports development dues</td>
-                        <td className="p-2 text-right font-mono">GHS {activeLedgerStudent.sportsFees.toFixed(2)}</td>
-                      </tr>
-                      <tr>
-                        <td className="p-2">PTA annual dues allocation</td>
-                        <td className="p-2 text-right font-mono">GHS {activeLedgerStudent.ptaDues.toFixed(2)}</td>
-                      </tr>
-                      {activeLedgerStudent.otherFee > 0 && (
-                        <tr>
-                          <td className="p-2">Other Levy / Miscellaneous ({activeLedgerStudent.otherFeeDescription || 'Other'})</td>
-                          <td className="p-2 text-right font-mono">GHS {activeLedgerStudent.otherFee.toFixed(2)}</td>
-                        </tr>
-                      )}
-                      <tr className="bg-slate-100 font-bold border-t border-slate-400">
-                        <td className="p-2">Combined Levy sum expected results:</td>
-                        <td className="p-2 text-right font-mono">
-                          GHS {(() => {
-                            const total = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + activeLedgerStudent.otherFee;
-                            return total.toFixed(2);
-                          })()}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* INSTALLMENT STATEMENTS HISTORY */}
-                <div className="space-y-2">
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">II. Ledger payment installments registered</p>
-                  <table className="w-full text-xs border border-slate-400 border-collapse">
-                    <thead>
-                      <tr className="bg-slate-100 font-bold border-b border-slate-400 text-[10px] text-slate-600 text-left">
-                        <th className="p-2">Date received</th>
-                        <th className="p-2">Receipt Code</th>
-                        <th className="p-2">Allocated component</th>
-                        <th className="p-2">Method</th>
-                        <th className="p-2 text-right">Credit (Paid)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-300">
-                      {activeLedgerStudent.payments.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="p-4 text-center text-slate-400 italic">No installment payments have been credited to this ledger statement yet.</td>
-                        </tr>
-                      ) : (
-                        activeLedgerStudent.payments.map((p) => {
-                          return (
-                            <tr key={p.id}>
-                              <td className="p-2 font-mono">{p.date}</td>
-                              <td className="p-2 font-semibold font-mono text-slate-800">{p.receiptNo}</td>
-                              <td className="p-2">{p.component}</td>
-                              <td className="p-2">{p.method}</td>
-                              <td className="p-2 text-right font-mono text-emerald-700 font-semibold">GHS {p.amount.toFixed(2)}</td>
+                    <div className="space-y-1">
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider">I. Summary of Expected Bills</p>
+                      <table className="w-full text-[9px] border border-slate-300">
+                        <tbody>
+                          <tr className="border-b border-slate-200">
+                            <td className="p-1 pl-1.5 text-slate-600">Tuition Fees</td>
+                            <td className="p-1 text-right pr-1.5 font-mono">GHS {activeLedgerStudent.schoolFees.toFixed(2)}</td>
+                          </tr>
+                          <tr className="border-b border-slate-200">
+                            <td className="p-1 pl-1.5 text-slate-600">Utility Bill</td>
+                            <td className="p-1 text-right pr-1.5 font-mono">GHS {activeLedgerStudent.utilityBill.toFixed(2)}</td>
+                          </tr>
+                          <tr className="border-b border-slate-200">
+                            <td className="p-1 pl-1.5 text-slate-600">Sports & PTA</td>
+                            <td className="p-1 text-right pr-1.5 font-mono">GHS {(activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues).toFixed(2)}</td>
+                          </tr>
+                          {activeLedgerStudent.otherFee > 0 && (
+                            <tr className="border-b border-slate-200">
+                              <td className="p-1 pl-1.5 text-slate-600">Other Levy</td>
+                              <td className="p-1 text-right pr-1.5 font-mono">GHS {activeLedgerStudent.otherFee.toFixed(2)}</td>
                             </tr>
-                          );
-                        })
-                      )}
-                      <tr className="bg-slate-100 font-bold border-t border-slate-400">
-                        <td colSpan={4} className="p-2 text-right">Sum credited cash paid installments:</td>
-                        <td className="p-2 text-right font-mono text-emerald-700">
-                          GHS {(() => {
-                            const total = activeLedgerStudent.payments.reduce((sum, p) => sum + p.amount, 0);
-                            return total.toFixed(2);
-                          })()}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Overall Statements Summary balances */}
-                <div className="space-y-1 text-right text-xs pt-4 border-t border-slate-200">
-                  {(() => {
-                    const expectedTotal = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + activeLedgerStudent.otherFee;
-                    const totalPaid = activeLedgerStudent.payments.reduce((sum, p) => sum + p.amount, 0);
-                    const outstanding = expectedTotal - totalPaid;
-
-                    return (
-                      <div className="inline-block space-y-1 font-sans">
-                        <p className="flex justify-between gap-12"><span className="text-slate-500">I. Combined levies expected sum:</span> <span className="font-mono">GHS {expectedTotal.toFixed(2)}</span></p>
-                        <p className="flex justify-between gap-12"><span className="text-slate-500">II. Total credited paid payments:</span> <span className="font-mono text-emerald-700">- GHS {totalPaid.toFixed(2)}</span></p>
-                        <p className="flex justify-between gap-12 font-bold text-slate-950 border-t-2 border-slate-800 pt-1.5 text-[13px]"><span className="font-bold">III. Current cumulative ledger balance due:</span> <span className="font-mono">GHS {outstanding.toFixed(2)}</span></p>
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* Signature box footer */}
-                <div className="pt-12 grid grid-cols-2 gap-8 text-center text-[10px]">
-                  <div className="p-4 rounded border border-slate-100 bg-slate-50/50">
-                    <p className="font-medium text-slate-700 tracking-wide">ACCOUNTS DEPARTMENT</p>
-                    <p className="text-slate-400 mt-0.5">Approved Ledger Administrator</p>
-                    <div className="h-8"></div>
-                    <p className="border-t border-dashed border-slate-400 pt-1 text-slate-400">Official Stamp & Signature Date</p>
+                          )}
+                          <tr className="bg-slate-100 font-bold">
+                            <td className="p-1 pl-1.5 text-slate-900">Total Term Bill</td>
+                            <td className="p-1 text-right pr-1.5 font-mono text-slate-900">
+                              GHS {(() => {
+                                const total = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + activeLedgerStudent.otherFee;
+                                return total.toFixed(2);
+                              })()}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
 
-                  <div className="p-4 rounded border border-slate-100 bg-slate-50/50 flex flex-col justify-between">
-                    <p className="font-medium text-slate-700">STUDENT / PARENT COPY</p>
-                    <p className="text-slate-400 mt-0.5">Please match against payment clips</p>
-                    <div className="h-8"></div>
-                    <p className="border-t border-dashed border-slate-400 pt-1 text-slate-400">Receiver Verification Line</p>
+                  {/* Right Column: Payments table & Outstanding balances */}
+                  <div className="space-y-2 flex flex-col justify-between">
+                    <div className="space-y-1">
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider">II. Credited Installments History</p>
+                      <div className="border border-slate-300 rounded max-h-[85px] overflow-hidden">
+                        <table className="w-full text-[9px]">
+                          <thead>
+                            <tr className="bg-slate-100 border-b border-slate-300 text-slate-500 text-[8px] uppercase">
+                              <th className="p-1 text-left pl-1.5">Date</th>
+                              <th className="p-1 text-left">Receipt No</th>
+                              <th className="p-1 text-right pr-1.5">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            {activeLedgerStudent.payments.length === 0 ? (
+                              <tr>
+                                <td colSpan={3} className="p-2 text-center text-slate-400 italic text-[8px]">No payments credited yet.</td>
+                              </tr>
+                            ) : (
+                              activeLedgerStudent.payments.slice(0, 3).map((p) => (
+                                <tr key={p.id}>
+                                  <td className="p-1 font-mono pl-1.5">{p.date}</td>
+                                  <td className="p-1 font-mono font-semibold">{p.receiptNo}</td>
+                                  <td className="p-1 text-right pr-1.5 font-mono text-emerald-700 font-bold">GHS {p.amount.toFixed(2)}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      {activeLedgerStudent.payments.length > 3 && (
+                        <p className="text-[7px] text-right text-slate-400 italic pr-1 leading-none">Showing latest 3 transactions</p>
+                      )}
+                    </div>
+
+                    {/* Overall Statements Summary balances */}
+                    <div className="bg-slate-50 p-1.5 rounded space-y-0.5 border border-slate-100">
+                      {(() => {
+                        const expectedTotal = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + activeLedgerStudent.otherFee;
+                        const totalPaid = activeLedgerStudent.payments.reduce((sum, p) => sum + p.amount, 0);
+                        const outstanding = expectedTotal - totalPaid;
+
+                        return (
+                          <div className="space-y-0.5 font-sans text-[10px]">
+                            <div className="flex justify-between"><span className="text-slate-500 font-medium">Expected Total:</span> <span className="font-mono">GHS {expectedTotal.toFixed(2)}</span></div>
+                            <div className="flex justify-between"><span className="text-slate-500 font-medium">Total Paid To-Date:</span> <span className="font-mono text-emerald-700 font-bold">GHS {totalPaid.toFixed(2)}</span></div>
+                            <div className="flex justify-between border-t border-slate-300 pt-0.5 font-bold text-slate-950 text-[11px]"><span className="font-bold">Outstanding Balance:</span> <span className="font-mono">GHS {outstanding.toFixed(2)}</span></div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Signatures Footer - Side by side compact */}
+                <div className="grid grid-cols-2 gap-4 text-center text-[8px] border-t border-slate-200 pt-1.5 shrink-0">
+                  <div className="border-t border-dashed border-slate-400 pt-0.5">
+                    <p className="font-bold text-slate-700 uppercase tracking-tighter">Bursar / Accounts Office</p>
+                  </div>
+                  <div className="border-t border-dashed border-slate-400 pt-0.5">
+                    <p className="font-bold text-slate-700 uppercase tracking-tighter">Official Verification & Stamp</p>
                   </div>
                 </div>
 
@@ -1876,7 +2150,7 @@ export default function SchoolFeesTab({
                     </span>
                   </div>
                   <textarea
-                    rows={5}
+                    rows={4}
                     value={reminderCustomMessage}
                     onChange={(e) => {
                       setReminderCustomMessage(e.target.value);
@@ -1884,7 +2158,16 @@ export default function SchoolFeesTab({
                     }}
                     className="w-full text-xs p-3 border border-slate-200 rounded-xl bg-white font-medium focus:outline-none focus:ring-1 focus:ring-amber-500 text-slate-700 leading-relaxed resize-none"
                   />
-                  <p className="text-[9px] text-slate-400 italic leading-snug">The SMS contains the parent's highly secure credentials token to bypass signups.</p>
+                  
+                  {/* Safe Live Preview (Fictional Example) to avoid Data breach / PII leaks on screen */}
+                  <div className="p-3 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-1">
+                    <span className="text-[9.5px] font-black uppercase text-indigo-750 font-sans tracking-wide block">🛡 GDPR Shield: Safe Fictional Preview</span>
+                    <p className="text-[10.5px] text-slate-650 font-medium leading-relaxed font-sans italic select-none">
+                      "{compileRandomReminderMessage(reminderCustomMessage)}"
+                    </p>
+                  </div>
+
+                  <p className="text-[9px] text-slate-400 italic leading-snug">The SMS template contains curly bracket variables like <code className="bg-slate-200 text-slate-700 px-0.5 rounded font-bold font-mono text-[8px]">{'{guardianName}'}</code> and <code className="bg-slate-200 text-slate-700 px-0.5 rounded font-bold font-mono text-[8px]">{'{reportLink}'}</code> which are compiled securely on transmission.</p>
                 </div>
 
                 {reminderSmsSuccess && (
@@ -1897,22 +2180,33 @@ export default function SchoolFeesTab({
 
               {/* ACTION FOOTER BUTTONS */}
               <div className="space-y-2 pt-4 border-t border-slate-200">
-                <button
-                  type="button"
-                  disabled={reminderSendingSms || !reminderRecipientPhone}
-                  onClick={handleSendReminderSMS}
-                  className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold shadow-md transition transform active:translate-y-0.5 select-none ${!reminderRecipientPhone ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-600 text-white'}`}
-                >
-                  {reminderSendingSms ? (
-                    <>
-                      <RotateCcw size={12} className="animate-spin" /> Transmitting cellular SMS...
-                    </>
-                  ) : (
-                    <>
-                      <Send size={12} /> Dispatch Secure Link SMS
-                    </>
-                  )}
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={reminderSendingSms || !reminderRecipientPhone}
+                    onClick={handleSendReminderSMS}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold shadow-md transition transform active:translate-y-0.5 select-none ${!reminderRecipientPhone ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-600 text-white'}`}
+                  >
+                    {reminderSendingSms ? (
+                      <>
+                        <RotateCcw size={12} className="animate-spin" /> Sending SMS...
+                      </>
+                    ) : (
+                      <>
+                        <Send size={12} /> Dispatch SMS
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!reminderRecipientPhone}
+                    onClick={handleSendReminderWhatsApp}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold shadow-md transition transform active:translate-y-0.5 select-none ${!reminderRecipientPhone ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white'}`}
+                  >
+                    <MessageSquare size={12} /> WhatsApp Link
+                  </button>
+                </div>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -1942,7 +2236,8 @@ export default function SchoolFeesTab({
                                   body { font-family: 'Inter', sans-serif; }
                                 </style>
                               </head>
-                              <body onload="window.print(); window.close();">
+                              <body onload="window.print(); window.close();" style="position: relative;">
+                                ${getWatermarkHtml(schoolInfo.crestUrl)}
                                 ${printContents}
                               </body>
                             </html>
@@ -2295,7 +2590,8 @@ export default function SchoolFeesTab({
                                   body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; }
                                 </style>
                               </head>
-                              <body onload="window.print(); window.close();">
+                              <body onload="window.print(); window.close();" style="position: relative;">
+                                ${getWatermarkHtml(schoolInfo.crestUrl)}
                                 <div class="max-w-4xl mx-auto">${printContents}</div>
                               </body>
                             </html>
@@ -2579,6 +2875,123 @@ export default function SchoolFeesTab({
       </div>
     </div>
 
+    {/* BULK RECEIPTS PRINT AREA (HIDDEN) */}
+    <div id="bulk-receipts-print-area" className="hidden">
+      {bulkReceiptData.map((data, idx) => (
+        <div key={`${data.payment.id}-${idx}`} className="bulk-receipt-item relative bg-white text-slate-900 text-left border-[2px] border-double border-slate-800 p-4 space-y-3 flex flex-col justify-between mb-8 overflow-hidden" style={{ width: '220mm', height: '110mm', overflow: 'hidden', pageBreakAfter: 'always' }}>
+          {/* Watermark */}
+          <div className="absolute inset-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo.crestUrl) }} />
+          
+          <div className="relative z-10 flex flex-col h-full justify-between">
+          {/* Official Crest & School metadata */}
+          <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+            <div className="space-y-0.5">
+              <h1 className="text-sm font-bold tracking-tight text-slate-950 uppercase leading-tight">{schoolInfo.name}</h1>
+              <p className="text-[9px] font-semibold text-slate-500 tracking-wider">Motto: "{schoolInfo.motto}"</p>
+              <p className="text-[9px] text-slate-700 leading-tight">{schoolInfo.gpsAddress} • Tel: {schoolInfo.telephone}</p>
+            </div>
+            {schoolInfo.logoUrl ? (
+              <img referrerPolicy="no-referrer" src={schoolInfo.logoUrl} className="h-10 w-10 object-contain" alt="School Crest" />
+            ) : (
+              <div className="p-1 border border-slate-200 rounded bg-slate-50 text-slate-400">
+                <Receipt className="h-6 w-6" />
+              </div>
+            )}
+          </div>
+
+          {/* Receipt Title */}
+          <div className="text-center py-1 bg-slate-50 border-b border-slate-200">
+            <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-950">OFFICIAL PAYMENT RECEIPT</h2>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[10px] font-sans">
+            <div className="space-y-1">
+              <p><span className="text-slate-500">CODE:</span> <span className="font-mono font-bold">{data.payment.receiptNo}</span></p>
+              <p><span className="text-slate-500">STUDENT:</span> <span className="font-bold uppercase">{data.bill.studentName}</span></p>
+              <p><span className="text-slate-500">ID:</span> <span className="font-semibold font-mono">{data.bill.studentId}</span></p>
+            </div>
+
+            <div className="space-y-1 text-right">
+              <p><span className="text-slate-500">DATE:</span> <span className="font-semibold font-mono">{data.payment.date}</span></p>
+              <p><span className="text-slate-500">TERM:</span> <span className="font-semibold">{data.bill.academicYear} • {data.bill.term}</span></p>
+              <p><span className="text-slate-500">METHOD:</span> <span className="font-bold">{data.payment.method}</span></p>
+            </div>
+          </div>
+
+          {/* Main receipt ledger breakdown */}
+          <div className="border border-slate-800 rounded overflow-hidden">
+            <table className="w-full text-[10px]">
+              <thead>
+                <tr className="bg-slate-100 text-slate-700 font-bold uppercase border-b border-slate-800 text-[9px]">
+                  <th className="p-1.5 text-left pl-3">Description</th>
+                  <th className="p-1.5 text-right pr-3">Amount (GHS)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td className="p-2 pl-3">
+                    <p className="font-bold text-slate-900 uppercase">{data.payment.component}</p>
+                  </td>
+                  <td className="p-2 text-right pr-3 font-mono font-bold text-slate-900 bg-slate-50">
+                    {data.payment.amount.toFixed(2)}
+                  </td>
+                </tr>
+                {data.payment.remarks && (
+                  <tr>
+                    <td colSpan={2} className="p-1.5 pl-3 bg-slate-50/50 italic text-[9px] text-slate-500 border-t border-slate-200">
+                      Note: {data.payment.remarks}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Totals */}
+          <div className="flex justify-between items-end text-[10px] border-t border-slate-300 pt-2">
+            <div className="flex items-center gap-2">
+              <div className="p-0.5 bg-white border border-slate-200 rounded-md shrink-0">
+                <QRCodeSVG 
+                  value={`${window.location.origin}/?tab=fees&studentId=${data.bill.studentId}&receiptNo=${data.payment.receiptNo}`}
+                  size={40} 
+                  level="M" 
+                />
+              </div>
+              <div className="text-left space-y-0.5">
+                <p className="text-slate-400 text-[8px] uppercase font-bold tracking-tighter">Verification</p>
+                <p className="text-[8px] text-slate-500 leading-tight">Scan to verify electronic ledger statement</p>
+              </div>
+            </div>
+            <div className="text-right space-y-1">
+              {(() => {
+                const bill = data.bill;
+                const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + bill.otherFee;
+                const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
+                const outstanding = expectedTotal - totalPaid;
+
+                return (
+                  <div className="space-y-0.5">
+                    <p className="flex justify-between gap-6"><span className="text-slate-500">Paid to-date:</span> <span className="font-mono font-bold text-emerald-700">GHS {totalPaid.toFixed(2)}</span></p>
+                    <p className="flex justify-between gap-6 font-bold text-slate-950 border-t border-slate-300 pt-0.5 text-[11px]"><span className="font-bold">Balance:</span> <span className="font-mono">GHS {outstanding.toFixed(2)}</span></p>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* Signature */}
+          <div className="pt-2 grid grid-cols-2 gap-4 text-center text-[9px]">
+            <div className="border-t border-dashed border-slate-400 pt-1">
+              <p className="font-medium text-slate-700 uppercase tracking-tighter">Accounts Office</p>
+            </div>
+            <div className="border-t border-dashed border-slate-400 pt-1">
+              <p className="font-medium text-slate-700 uppercase tracking-tighter">Bursar / Signature</p>
+            </div>
+          </div>
+          </div>
+        </div>
+      ))}
+    </div>
     </div>
   );
 }

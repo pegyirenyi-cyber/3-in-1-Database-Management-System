@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>School Management App Access & Portal Links</title>
+    <!-- Tailwind CSS CDN for pristine modern typography & styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0b0f19;
+            background-image: radial-gradient(circle at top right, rgba(99, 102, 241, 0.08), transparent),
+                              radial-gradient(circle at bottom left, rgba(16, 185, 129, 0.04), transparent);
+        }
+        .font-display {
+            font-family: 'Space Grotesk', sans-serif;
+        }
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col justify-between antialiased selection:bg-indigo-500 selection:text-white">
+
+    <!-- Top Glow Effect -->
+    <div class="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-96 bg-indigo-500/10 blur-[120px] rounded-full pointer-events-none"></div>
+
+    <!-- Main Container -->
+    <main class="max-w-4xl w-full mx-auto px-6 py-16 relative z-10 flex-grow flex flex-col justify-center">
+        
+        <!-- Header -->
+        <header class="text-center mb-12">
+            <div class="inline-flex items-center gap-2 px-3.5 py-1.5 bg-indigo-500/10 border border-indigo-500/20 rounded-full mb-6">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span class="text-xs font-bold text-indigo-300 tracking-wider uppercase">Live Production System</span>
+            </div>
+            <h1 class="font-display text-4xl sm:text-5xl font-black text-white tracking-tight leading-none mb-4">
+                School Management <span class="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-purple-400 to-emerald-400">Portal</span>
+            </h1>
+            <p class="text-slate-400 text-base max-w-xl mx-auto leading-relaxed">
+                Access the dynamic administrative dashboards, student registries, academic assessment analytics, and secure parent portals.
+            </p>
+        </header>
+
+        <!-- Main Cards Grid -->
+        <div class="grid md:grid-cols-2 gap-6 mb-12">
+            
+            <!-- Shared/Production Build Card -->
+            <div class="bg-slate-900/60 backdrop-blur-md border border-slate-800/80 rounded-3xl p-8 hover:border-indigo-500/30 transition-all duration-300 flex flex-col justify-between group shadow-xl">
+                <div>
+                    <div class="flex justify-between items-start mb-6">
+                        <div class="p-3 bg-indigo-500/10 rounded-2xl border border-indigo-500/20 group-hover:bg-indigo-500/20 transition-all">
+                            <svg class="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 009 11.5a13.96 13.96 0 01-1.89-3.53a13.9 13.9 0 00-2.041-3.44l-.09-.054M11 5.082V2.92m0 2.162a3 3 0 100 4h0M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                        </div>
+                        <span class="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full border border-emerald-500/20 font-bold uppercase tracking-wider">Recommended</span>
+                    </div>
+                    <h2 class="font-display text-2xl font-black text-white tracking-tight mb-2">Primary App Access</h2>
+                    <p class="text-slate-400 text-sm leading-relaxed mb-6">
+                        Complete portal access optimized for administrators and educators. Perform assessments, print bulk QR codes, and generate school report sheets.
+                    </p>
+                </div>
+                <a href="https://ais-pre-cuvan7wrfijtvxl7bs7yc6-926639073031.europe-west2.run.app" target="_blank" class="w-full py-4 px-6 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 active:translate-y-0.5 transition-all text-white font-bold text-center rounded-2xl shadow-lg shadow-indigo-500/10 flex items-center justify-center gap-2">
+                    <span>Launch Portal Website</span>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                </a>
+            </div>
+
+            <!-- Development Build Card -->
+            <div class="bg-slate-900/60 backdrop-blur-md border border-slate-800/80 rounded-3xl p-8 hover:border-emerald-500/30 transition-all duration-300 flex flex-col justify-between group shadow-xl">
+                <div>
+                    <div class="flex justify-between items-start mb-6">
+                        <div class="p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20 group-hover:bg-emerald-500/20 transition-all">
+                            <svg class="w-6 h-6 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                            </svg>
+                        </div>
+                        <span class="text-[10px] font-mono bg-indigo-500/10 text-indigo-400 px-2.5 py-1 rounded-full border border-indigo-500/20 font-bold uppercase tracking-wider">Dev Stream</span>
+                    </div>
+                    <h2 class="font-display text-2xl font-black text-white tracking-tight mb-2">Development Sandbox</h2>
+                    <p class="text-slate-400 text-sm leading-relaxed mb-6">
+                        Real-time development environment representing live source edits. Perfect for evaluating diagnostic traces, layout changes, and database modifications.
+                    </p>
+                </div>
+                <a href="https://ais-dev-cuvan7wrfijtvxl7bs7yc6-926639073031.europe-west2.run.app" target="_blank" class="w-full py-4 px-6 bg-slate-800 hover:bg-slate-700 active:translate-y-0.5 transition-all text-slate-200 hover:text-white font-bold text-center rounded-2xl border border-slate-700 flex items-center justify-center gap-2">
+                    <span>Open Sandbox Link</span>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                </a>
+            </div>
+
+        </div>
+
+        <!-- System Updates & Features List -->
+        <div class="bg-slate-900/40 border border-slate-800/60 rounded-3xl p-8">
+            <h3 class="font-display text-lg font-bold text-white mb-6 flex items-center gap-2">
+                <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                Key System Configurations & Updates
+            </h3>
+            <ul class="space-y-4 text-sm text-slate-350">
+                <li class="flex items-start gap-3">
+                    <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-2 shrink-0"></span>
+                    <div>
+                        <strong class="text-slate-200">Avery Address Labels (Mailers)</strong>: Print complete parent and guardian details in standard 3-column mailing labels, equipped with micro QR keys to allow direct scanning from postal materials.
+                    </div>
+                </li>
+                <li class="flex items-start gap-3">
+                    <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-2 shrink-0"></span>
+                    <div>
+                        <strong class="text-slate-200">Real-Time Academic Performance Analytics</strong>: Calibrated dashboard distribution stats to filter out completely unentered and blank grades, preventing statistical chart skewing.
+                    </div>
+                </li>
+                <li class="flex items-start gap-3">
+                    <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-2 shrink-0"></span>
+                    <div>
+                        <strong class="text-slate-200">Universal Secure Parent Portal</strong>: Automatically generates unique access tokens from ID codes to serve dynamic, responsive academic reports securely.
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-900 bg-slate-950/40 py-6 text-center text-xs text-slate-500 font-mono relative z-10 select-none">
+        <div class="max-w-4xl mx-auto px-6 flex flex-col sm:flex-row justify-between items-center gap-4">
+            <span>Powered by Google AI Studio Build</span>
+            <span class="text-indigo-400/80">Ref: a2d8d304-855b-466a-8f1a-47e69bbb165b</span>
+        </div>
+    </footer>
+
+</body>
+</html>

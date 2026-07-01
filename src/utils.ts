@@ -83,3 +83,46 @@ export function generateSecureToken(studentId: string, year: string, term: strin
   return `${part1}${part2}`.toUpperCase();
 }
 
+/**
+ * Triggers a global toast notification event.
+ */
+export function triggerToast(text: string, type: 'success' | 'error' | 'info' = 'success') {
+  const event = new CustomEvent('app-toast', { detail: { text, type } });
+  window.dispatchEvent(event);
+}
+
+const GHANA_CREST_SVG_WATERMARK = `
+<svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 420px; height: 420px; color: #0f172a;">
+  <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" />
+  <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,32 L 68,32 C 68,32 68,58 50,74 C 32,58 32,32 32,32 Z" fill="none" stroke="currentColor" stroke-width="1.2" />
+  <path d="M 50,32 L 50,74" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 32,50 L 68,50" stroke="currentColor" stroke-width="0.6" />
+  <polygon points="50,45 52,49 57,49 53,52 55,56 50,54 45,56 47,52 43,49 48,49" fill="currentColor" opacity="0.6" />
+  <path d="M 53,36 L 65,36 L 65,46 L 53,46 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 53,41 L 65,41" stroke="currentColor" stroke-width="0.4" />
+  <line x1="41" y1="36" x2="41" y2="46" stroke="currentColor" stroke-width="1.2" />
+  <circle cx="41" cy="35" r="1.2" fill="currentColor" />
+  <path d="M 23,35 C 19,48 19,63 34,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 77,35 C 81,48 81,63 66,74" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <path d="M 25,79 L 75,79 C 75,79 65,85 50,85 C 35,85 25,79 25,79 Z" fill="none" stroke="currentColor" stroke-width="0.6" />
+  <text x="50" y="83" font-size="2.6" font-family="'Inter', sans-serif" font-weight="bold" text-anchor="middle" fill="currentColor" letter-spacing="0.3">KNOWLEDGE & CHARACTER</text>
+  <text x="50" y="16" font-size="3.0" font-family="'Inter', sans-serif" font-weight="900" text-anchor="middle" fill="currentColor" letter-spacing="0.8">GHANA EDUCATION SERVICE</text>
+</svg>
+`;
+
+export function getWatermarkHtml(crestUrl?: string | null, size = 320): string {
+  const crestMarkup = crestUrl 
+    ? `<img src="${crestUrl}" style="width: ${size}px; height: ${size}px; object-fit: contain;" />`
+    : GHANA_CREST_SVG_WATERMARK.replace('width: 420px; height: 420px;', `width: ${size}px; height: ${size}px;`);
+
+  return `
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 0; user-select: none; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; opacity: 0.045;">
+      <div style="width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center;">
+        ${crestMarkup}
+      </div>
+    </div>
+  `;
+}
+
+
